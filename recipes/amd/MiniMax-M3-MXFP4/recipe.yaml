@@ -1,0 +1,116 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/minimax-m3.md
+meta:
+  title: "MiniMax-M3 (FP8 experts)"
+  slug: "minimax-m3"
+  provider: "MiniMax"
+  description: >-
+    427B / 23B-active MoE served text-only on one 8-card Gaudi 2 node at 128K context, from AMD's MXFP4 checkpoint re-encoded exactly to
+    per-channel FP8 experts.
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - text
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "amd/MiniMax-M3-MXFP4"
+  architecture: moe
+  parameter_count: "427B"
+  active_parameters: "23B"
+  context_length: 1048576
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with vllm-gaudi's pure-Python minimax_m3_py parser (upstream's minimax_m3 needs a Rust extension)."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "minimax_m3_py"]
+  reasoning:
+    description: "minimax_m3 reasoning parser; the port patches it so streamed reasoning is not emitted as content."
+    args: ["--reasoning-parser", "minimax_m3"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: fp8
+    vram_minimum_gb: 530
+    description: "Routed experts FP8 per channel (exact re-encoding of the MXFP4 values), everything else BF16: 411 GiB, one 8-card node."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 8, tp: 8, ep: true }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "8"
+    - "--enable-expert-parallel"
+    - "--enable-ep-weight-filter"                 # each card reads only its 16 of the 128 experts at load
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "32"
+    - "--max-num-batched-tokens"
+    - "8192"
+    - "--enable-chunked-prefill"
+    - "--gpu-memory-utilization"
+    - "0.92"
+    - "--block-size"
+    - "128"
+    - "--enable-prompt-tokens-details"
+    - "--limit-mm-per-prompt"
+    - '{"image": 0, "video": 0}'                  # text only; the vision tower is not built
+    - "--reasoning-parser"
+    - "minimax_m3"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "minimax_m3_py"
+    - "--trust-remote-code"
+  env:
+    CHECKPOINT_DIR: "/models/MiniMax-M3-FP8"      # output of ports/minimax-m3/convert/repack.py
+    PT_HPU_LAZY_MODE: "0"                         # the FP8 expert path was validated in torch.compile mode
+    LOG_LEVEL_PT_BRIDGE: "4"                      # silences the PT bridge log flood of compile mode
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_SCALE_ADJUSTMENT: "false"                # FP8 weights are exact powers of two; no x0.5 load
+    VLLM_M3_FP8_MOE: "native"                     # Habana's fused FP8 SwiGLU-OAI kernel (dequant = reference path)
+    VLLM_MOE_CHUNK: "256"                         # kernel chunk-size hint
+    VLLM_MOE_TOKEN_BOUNDARY: "2048"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "3600"    # first prefills compile inline; the 300 s default kills the engine
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "3600000"
+  port: minimax-m3
+  serve_model: "$CHECKPOINT_DIR"
+  buckets: null
+  required_fixes:
+    - prompt-order                  # prefix-cache read-before-write across requests
+    - sampling-rows-refresh         # device sampling rows stale after batch reorders
+    - structured-output-rows        # structured-output steps sample rows with the wrong params
+    - bad-words-index               # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows              # logit_bias, min_p, min_tokens silently ignored
+    - async-discard-counter         # AttributeError on the first preemption under async scheduling
+    - resumed-prefill-logits        # a request resumed after preemption repeats its earlier output
+    - gather-logprobs-int32         # top_logprobs ids corrupted
+    - prompt-logprobs               # prompt_logprobs request kills the engine
+    - logprobs-decode-guard         # a bad logprob id no longer kills the API server
+    - rank-exception-fatal          # an exception on a non-zero TP rank stops the engine instead of serving garbage
+  verified:
+    - "Built and served as written: install.sh on the stock v0.26.0 image, the v0.26.0 fix profile, this command, one 8-card node; run_gates.sh ALL PASS"
+    - "Golden prompts 5/5 (arithmetic, code, facts, a get_weather tool call); greedy loops 0/10"
+    - "Needles 3/3 at 16K, 32K, 64K, 100K and 125K prompt tokens"
+    - "prompt_logprobs over 11,901 tokens aligned, 0 bad entries; top_logprobs 16 concurrent requests, 0 errors"
+    - "Streamed and non-streamed reasoning split cleanly (no <mm:think> in content); streamed tool call with name and arguments"
+    - "Decode 25.0 tok/s at one stream, 21.9 per stream at 8 streams (1.6K-token prompts)"
+    - "Converter re-run: one MoE layer reproduced 768/768 tensors byte for byte; shared experts 9/9; validate.py inventory and samples pass"
+  notes:
+    - "Serve at the model's default temperature 1.0: at 0.6 and below, hard prompts can reason without end (finish_reason length, empty content)."
+    - >-
+      Weight load: about 10 minutes from idle shared storage with --enable-ep-weight-filter, 38 minutes measured on a busy store; without the filter
+      every card reads all 411 GiB.
+    - "Licence: MiniMax Community License (non-commercial grant; commercial use needs 'Built with MiniMax M3' and a notice to MiniMax)."
