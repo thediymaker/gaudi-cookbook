@@ -1,0 +1,122 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/inkling-small.md
+meta:
+  title: "Inkling-Small"
+  slug: "inkling-small"
+  provider: "Thinking Machines"
+  description: "276B-A12B MoE with relative-position attention and short convs, text only, BF16 at 256K context on one 8-card Gaudi 2 node (port)."
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - text
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "thinkingmachines/Inkling-Small"
+  architecture: moe
+  parameter_count: "276B"
+  active_parameters: "12B"
+  context_length: 1048576
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the port's pure-Python inkling_py parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "inkling_py"]
+  reasoning:
+    description: "Thinking blocks go to the reasoning field (inkling_py); set reasoning_effort per request."
+    args: ["--reasoning-parser", "inkling_py"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: bf16
+    vram_minimum_gb: 639
+    description: "BF16 weights (532 GB), one 8-card node, text only (vision, audio and the MTP head are not loaded)."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 8, tp: 8, ep: false }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  port: inkling-small
+  max_model_len: 262144
+  serve_args:
+    - "--tensor-parallel-size"
+    - "8"
+    - "--dtype"
+    - "bfloat16"
+    - "--max-model-len"
+    - "262144"
+    - "--num-gpu-blocks-override"
+    - "2560"                                  # 327,680 tokens = 1.25 x 256K; keeps HBM headroom under 256K prefills
+    - "--max-num-seqs"
+    - "16"
+    - "--max-num-batched-tokens"
+    - "2048"
+    - "--block-size"
+    - "128"                                   # the conv-state snapshots are per 128-token block
+    - "--max-cudagraph-capture-size"
+    - "2048"
+    - "--tokenizer-mode"
+    - "hf"                                    # use the checkpoint's chat_template.jinja
+    - "--gpu-memory-utilization"
+    - "0.75"
+    - "--trust-remote-code"
+    - "--enable-prompt-tokens-details"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "inkling_py"
+    - "--reasoning-parser"
+    - "inkling_py"
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_USE_V2_MODEL_RUNNER: "0"             # Inkling defaults to vLLM's V2 runner; the HPU runner is V1
+    VLLM_CONTIGUOUS_PA: "false"               # decode conv slots need block_list in logical order (checked at startup)
+    VLLM_GRAPH_RESERVED_MEM: "0.4"            # graph memory headroom for long contexts, paired with 0.75 utilization
+    INKLING_PREFILL_BIAS_BUDGET: "805306368"  # 768 MiB per prefill bias sub-block
+    INKLING_DECODE_WINDOW_PLUS1: "1"          # local layers see their whole 512-token window in decode
+    INKLING_MOE_SINGLE_REDUCE: "1"            # one all-reduce per MoE layer
+    INKLING_LOCAL_WINDOW_PREFILL: "1"         # local layers read only their window in chunked prefill
+    INKLING_STEP_HOIST: "1"                   # per-step metadata once per forward
+    VLLM_LONG_PREFILL_SHARE: "0.5"            # a long prefill takes at most half the wall time while others decode
+    VLLM_LONG_PREFILL_SHARE_ASYNC: "1"
+    VLLM_LONG_PREFILL_MIN_TOKENS: "32768"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "7200"
+    VLLM_RPC_TIMEOUT: "7200000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "5400"  # first-use graph compiles of long-context buckets
+  buckets: null
+  required_fixes:
+    - prompt-order               # prefix-cache hits read before they are written in the same step
+    - sampling-rows-refresh      # every request sampled with its own parameters after rows reorder
+    - structured-output-rows     # grammar rows keep their own sampling parameters
+    - so-row-owners              # grammar masks on the right rows when a long prompt is chunked
+    - bad-words-index            # one request's bad_words can neither stop the engine nor ban tokens elsewhere
+    - logitsprocs-rows           # min_p, logit_bias and min_tokens take effect (ignored on stock)
+    - async-inputs               # stale decode input ids under async scheduling
+    - resumed-prefill-logits     # a request resumed after preemption must not repeat its output
+    - gather-logprobs-int32      # top_logprobs ids read back corrupted otherwise
+    - prompt-logprobs            # prompt_logprobs crashes the engine otherwise
+    - logprobs-decode-guard      # a bad logprob id no longer kills the API server
+    - seeded-sampling            # a seeded request segfaults a TP worker otherwise
+    - rank-exception-fatal       # a failed rank stops the engine instead of serving garbage
+    - vllm-long-prefill-share    # opt-in: other streams keep decoding while a 256K prompt prefills
+  verified:
+    - "Preflight in the image (plugin, parsers, KV layout, CPU tests): 21 passed"
+    - "Smoke (arithmetic, tool call, JSON mode, tool_choice required), greedy repeats, reasoning split, streamed reasoning and tool call: pass"
+    - "Needles at both ends of 3K and 6K prompts 4/4; at 8K, 32K and 131K x 3 depths 9/9; at 200K and 250K x 3 depths 6/6"
+    - "200 logprobs requests at concurrency 8: 200/200 clean; 16 concurrent 4K needles 16/16; a 264,111-token prompt gets HTTP 400 in 0.4 s"
+    - >-
+      Prefix-cache hit vs cold, 14 prompts: every hit recalled its code, 9 to 11 of 14 byte-identical, every split at a near-tie (the gate was
+      changed from byte-identical after its first run)
+    - "Three 100K prompts resident at once: 0 preemptions; a 250K prompt while 16 streams decode: needle found, streams 28.3 tok/s before, 34.7 during"
+  notes:
+    - "Text only: the vision and audio towers and the MTP draft head are not built; their tensors are skipped at load."
+    - "Cold start is dominated by reading 532 GB of weights: 35 to 75 minutes from network storage."
+    - "Prompts longer than --max-model-len get HTTP 400 at admission; the server refuses to start if the KV pool cannot hold one max-length request."

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inkling-hpu"
+version = "0.1.0"
+description = "Inkling-Small (text) on Intel Gaudi for vllm-gaudi releases/v0.30.0"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+
+[project.entry-points."vllm.general_plugins"]
+inkling_hpu = "inkling_hpu:register"
+
+[tool.setuptools]
+packages = ["inkling_hpu"]
