@@ -1,0 +1,5 @@
+# The sidecar runs in the vllm-gaudi v0.26.0 image, which already has torch, transformers, fastapi, httpx and
+# prometheus-client. SNAC is the audio codec; soundfile writes mp3, opus and flac. Both install with --no-deps so
+# nothing in the image changes.
+snac==1.2.1
+soundfile==0.13.1

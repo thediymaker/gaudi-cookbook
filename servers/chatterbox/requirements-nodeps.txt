@@ -1,0 +1,7 @@
+# Installed with --no-deps. chatterbox-tts pins torch 2.6, torchaudio 2.6, numpy<2 and gradio; installing its
+# dependencies would replace the Habana PyTorch fork. The server needs only what requirements.txt lists.
+chatterbox-tts==0.1.7
+resemble-perth==1.0.1
+s3tokenizer==0.3.0
+conformer==0.3.2
+torchaudio==2.11.0

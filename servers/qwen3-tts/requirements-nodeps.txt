@@ -1,0 +1,4 @@
+# Installed with --no-deps: their declared dependencies would replace the Habana torch (torchaudio) or pull
+# packages the server does not use (qwen-tts asks for gradio and an exact transformers).
+torchaudio==2.11.0
+qwen-tts==0.1.1

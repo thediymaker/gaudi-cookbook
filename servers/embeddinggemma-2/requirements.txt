@@ -1,0 +1,6 @@
+# Resolved on the Gaudi 1.24.1 pytorch-installer image (Python 3.12, torch 2.11.0a0 Habana fork).
+# The EmbeddingGemma 2 classes first shipped in transformers 5.19. PyAV (av 12.1.0) is already in the base image.
+transformers==5.20.2
+huggingface_hub==1.33.0
+fastapi==0.162.0
+uvicorn==0.54.0
