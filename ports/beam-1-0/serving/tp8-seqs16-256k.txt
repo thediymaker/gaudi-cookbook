@@ -1,0 +1,24 @@
+# Beam TP8 bucket file for --max-num-seqs 16 at --max-model-len 262144 (256K trial; vllm-beam-1-0-256k-test).
+# tools/beam/buckets-seqs16.txt plus a top prompt point at 2048 - query/128 context blocks, and decode buckets
+# that reach 2048 blocks for one sequence and the ~6.1K-block KV pool for 4.
+# 128K file notes: prompt buckets = vllm-gaudi's exp buckets at --max-num-batched-tokens 4096 / --max-model-len 131072 / block 128
+# (the 132 the baseline server generates); decode buckets coarse (4x block steps) for --max-num-seqs 16,
+# so the number of captured decode HPU graphs (each holds device memory) stays bounded.
+# Prompt: (bs, query, context blocks)
+(1, 128, [0, 1, 2, 4, 8, 16, 32, 63, 126, 250, 498, 1023, 2047])
+(1, 256, [0, 1, 2, 4, 8, 16, 32, 63, 126, 250, 498, 1022, 2046])
+(1, 384, [0, 1, 2, 4, 8, 16, 32, 63, 126, 250, 498, 1021, 2045])
+(1, 512, [0, 1, 2, 4, 8, 16, 32, 63, 126, 250, 498, 1020, 2044])
+(1, 640, [0, 1, 2, 4, 8, 16, 32, 63, 126, 250, 498, 1019, 2043])
+(1, 896, [0, 1, 2, 4, 8, 16, 32, 63, 126, 250, 498, 1017, 2041])
+(1, 1280, [0, 1, 2, 4, 8, 16, 32, 63, 126, 250, 498, 1014, 2038])
+(1, 1664, [0, 1, 2, 4, 8, 16, 32, 63, 126, 250, 498, 1011, 2035])
+(1, 2304, [0, 1, 2, 4, 8, 16, 32, 63, 126, 250, 498, 1006, 2030])
+(1, 3072, [0, 1, 2, 4, 8, 16, 32, 63, 126, 250, 498, 1000, 2024])
+(1, 4096, [0, 1, 2, 4, 8, 16, 32, 63, 126, 250, 498, 992, 2016])
+# Decode: (bs, 1, total blocks of the batch)
+(1, 1, [16, 64, 256, 1024, 2048])
+(2, 1, [32, 128, 512, 2048, 4096])
+(4, 1, [64, 256, 1024, 4096, 8192])
+(8, 1, [128, 512, 2048, 8192])
+(16, 1, [256, 1024, 4096, 12288])

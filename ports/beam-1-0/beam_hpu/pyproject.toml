@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "beam-hpu"
+version = "1.0.0"
+description = "Beam-1.0 (compressed-tensors FP8) on Intel Gaudi 2 for vllm-gaudi releases/v0.30.0"
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+beam_hpu = "beam_hpu:register"
+
+# Find packages instead of listing them, so a non-editable install keeps every module.
+[tool.setuptools.packages.find]
+include = ["beam_hpu*"]

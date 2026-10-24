@@ -1,0 +1,4 @@
+# The vendored vLLM files stay as upstream wrote them (their sha256 is checked on install), so they
+# are neither linted nor reformatted here.
+extend = "../../../pyproject.toml"
+extend-exclude = ["vllm"]

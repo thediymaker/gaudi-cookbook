@@ -1,0 +1,14 @@
+# Copies of the platform-neutral new files of vLLM pull request #62052 (Beam reasoning and tool
+# parsers), https://github.com/vllm-project/vllm/pull/62052 at its merge commit
+# 153a17166e5d07bc38184dedeea542d2e8885e55: the response-template parser framework and the
+# response-template grammar the Beam parsers are built on. Each file keeps its upstream SPDX header
+# (Apache-2.0, the vLLM contributors) and is byte-identical to upstream, except two comment lines in
+# content_parsers.py where an em dash became " - ".
+# patches/vllm_pr_62052.py installs them into the vLLM tree and refuses any file whose sha256
+# differs from this list. One line per file: sha256, two spaces, path relative to vendor/.
+9a37f5ea7f9b63e853af1cc6229e532bd856e365e7fba9f951380064aad4c9c9  vllm/parser/chat_parsing/__init__.py
+c3dbb38f615d120b5e4f4649c6a6fc1f23f72437ef02484a2c9d7e85f9d48c33  vllm/parser/chat_parsing/content_parsers.py
+2174901f56946ab191ef0c23eb239db1ddaf885c829ae9a8386fa2a8a090ee43  vllm/parser/chat_parsing/response_parser.py
+d68f89cbc5ee1ef11a1489acb2071b2374fc2513245c1bbe95d76adac47ae6a4  vllm/parser/chat_parsing/response_templates.py
+f2a8f41f8b0f5934410c7674227e7cebd50a720072de9670e7f38bd58cfcb1a5  vllm/parser/response_template.py
+5c9ea556d1c170bd42eae2f5da98b288611fa47c39ac966ac989351e311b733e  vllm/parser/response_template_grammar.py

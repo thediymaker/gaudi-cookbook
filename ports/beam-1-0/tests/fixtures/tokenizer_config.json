@@ -1,0 +1,64 @@
+{
+  "backend": "tokenizers",
+  "bos_token": null,
+  "eos_token": "<|return|>",
+  "extra_special_tokens": [],
+  "is_local": true,
+  "local_files_only": false,
+  "model_max_length": 1048576,
+  "pad_token": "<|endoftext|>",
+  "reflection_grammar_version": "harmony_xml",
+  "response_template": {
+    "defaults": {
+      "role": "assistant"
+    },
+    "start_anchor_pattern": "<\\|start\\|>assistant",
+    "fields": {
+      "thinking": {
+        "open": "<|channel|>analysis<|message|>",
+        "close": [
+          "<|end|><|start|>assistant",
+          "<|constrain|><|start|>assistant",
+          "<|start|>assistant"
+        ],
+        "content": "text"
+      },
+      "content": {
+        "open": "<|channel|>final<|message|>",
+        "close": [
+          "<|return|>",
+          "<|end|>",
+          "<|call|>"
+        ],
+        "content": "text"
+      },
+      "tool_calls": {
+        "open_pattern": " to=(?P<name>[^\\s<]+)<\\|channel\\|>analysis <\\|constrain\\|>xml<\\|message\\|>",
+        "close": [
+          "<|end|><|start|>assistant",
+          "<|call|>"
+        ],
+        "repeats": true,
+        "content": "xml-inline",
+        "content_args": {
+          "tag_pattern": "<rfl:parameter name=\"(?P<key>[^\"]+)\">\\n(?P<value>.*?)\\n(?:</rfl:parameter>|(?=<rfl:parameter name=\"))",
+          "value_parser": {
+            "name": "text",
+            "args": {
+              "strip": false
+            }
+          }
+        },
+        "transform": {
+          "type": "function",
+          "function": {
+            "name": "{name}",
+            "arguments": "{content}"
+          }
+        }
+      }
+    }
+  },
+  "tokenizer_class": "TokenizersBackend",
+  "unk_token": null
+}

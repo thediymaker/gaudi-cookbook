@@ -37,7 +37,8 @@ per-channel method. Two numerical details matter:
   the differences that pick the experts.
 - **bf16 rounding points.** The reference rounds to bf16 at many steps (sandwich norms, depth-scaled residuals,
   gate). The HPU graph compiler removes bf16 round trips it sees as redundant, so an exact mode rounds with integer
-  ops. Production runs with it off: it makes every recipe bigger, and the gates pass without it (see Correctness).
+  ops. Production runs with it off: it makes every compiled graph bigger, and the gates pass without it (see
+  Correctness).
 
 **Frontend.** The parsers and the always-on response grammar are backported to vLLM v0.30.0. Tool-call arguments
 stream as fragments instead of arriving when the call closes, which had left long tool calls silent for minutes. The
@@ -63,6 +64,21 @@ batch 1 and 19 ms at batch 4. Expert parallelism wins here because the per-card 
 inputs) instead of 256 sliced experts (1,024 inputs), a much cheaper launch, and group-limited routing (4 of 8 groups,
 one group per card) keeps the device imbalance small. Because a step costs about the same at batch 1 and 4, 16
 sequences are nearly free per step.
+
+**Runner changes.** Three changes to vllm-gaudi's runner and ops are specific to this port; the rest come from the
+[fixes pack](../fixes/index.md):
+
+- **Exact sliding windows.** vllm-gaudi builds per-sequence window block lists only for Gemma 4, gives decode one block
+  too few for an exact window, and lets prefill with cached context see one key too many. The port's patch adds model
+  type `beam` to the window paths, extends [swa-decode-window](../fixes/swa-decode-window.md) to Beam, and drops the
+  oldest window block instead of masking it completely when the last block is full: Beam has no attention sinks, so a
+  fully masked block would turn the blockwise softmax into NaN.
+- **FusedSDPA workspace.** A biased prompt-attention call keeps a workspace of about 60 bytes per (query, key) pair for
+  the life of the process. At 4,096-token chunks that reached 8 to 31 GiB per card from 32K to 128K of cached context,
+  more than the cards had left, and the engine returned NaN logits or died. Calls that would need more than 2 GiB run
+  as 256-row query tiles through vllm-gaudi's own tiling path: the same attention for about 3.5% more attention time.
+- **Prefill run-ahead.** In prefills of 256 tokens or more the host waits for layer N-1 before launching layer N, so
+  queued lazy graphs cannot pile up activations past the free memory.
 
 **256K.** Only 9 of 52 layers keep full-length KV, so the pool holds 776,448 tokens per replica, about 3 times a
 256K request.
@@ -134,5 +150,15 @@ a 250K prompt peak at 86.0 of 96 GiB per card.
 
 ## Availability
 
-The integration code is not published in this repository yet. It depends on model code outside vllm-gaudi: a model
-plugin with the loader, frontend backports and runner patches.
+The port is in this repository: [`ports/beam-1-0/`](https://github.com/thediymaker/gaudi-cookbook/tree/main/ports/beam-1-0),
+with the recipe [Beam-1.0-501B-A23B-FP8](../recipes/beam-1-0-501b-a23b-fp8.md). It builds from a stock
+`releases/v0.30.0` image with `ports/beam-1-0/Dockerfile` and serves the public checkpoint as published. It contains
+the model plugin with the `beam` load format, the backported parsers with the vendored files of vLLM PR #62052, the
+runner patches above, the 256K bucket file, CPU tests, build gates, and device gates (`tests/hpu/run_gates.sh`) that
+run the perplexity, decode-vs-prefill, needle, copy, tool, isolation and stress checks against a running server.
+
+The cookbook build differs from the one first brought up mainly in where the generic runner fixes live: the fixes
+the port had carried itself (prompt order, one logit per resumed prefill, int32 logprob ids, chunked prompt logprobs)
+now come from the fixes pack's `v0.30.0` profile, together with the pack's other generic fixes. Rebuilt that way from
+the stock image and served with the recipe's command, it passed the device gates with the same perplexity numbers to
+the last printed digit; see the recipe page.

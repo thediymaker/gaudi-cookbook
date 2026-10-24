@@ -1,0 +1,126 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/beam-1-0-501b-a23b-fp8.md
+meta:
+  title: "Beam-1.0-501B-A23B-FP8"
+  slug: "beam-1-0-501b-a23b-fp8"
+  provider: "Reflection"
+  description: "501B MoE (23B active) reasoning and coding model, compressed-tensors FP8, 256K context on one 8-card Gaudi 2 node, through the beam-1-0 port."
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - text
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "reflection/Beam-1.0-501B-A23B-FP8"
+  architecture: moe
+  parameter_count: "501B"
+  active_parameters: "23B"
+  context_length: 1048576
+
+features:
+  tool_calling:
+    description: "Tool calls with the beam parser and the response grammar; arguments are typed by each tool's JSON schema and stream as they are written."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "beam"]
+  reasoning:
+    description: >-
+      Split the analysis channel from the answer. The model always reasons; reasoning_effort minimal to max sets the budget,
+      and none is served as minimal.
+    args: ["--reasoning-parser", "beam"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: fp8
+    vram_minimum_gb: 604
+    description: "The official compressed-tensors FP8 checkpoint (503 GB) as published, eight Gaudi 2 cards with expert parallelism."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 8, tp: 8, ep: true }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  port: beam-1-0
+  max_model_len: 262144
+  serve_args:
+    - "--tensor-parallel-size"
+    - "8"
+    - "--enable-expert-parallel"
+    - "--load-format"
+    - "beam"                                  # the port's loader: same weights, about 6 min instead of 36
+    - "--dtype"
+    - "bfloat16"
+    - "--block-size"
+    - "128"
+    - "--max-model-len"
+    - "262144"
+    - "--max-num-seqs"
+    - "16"
+    - "--max-num-batched-tokens"
+    - "4096"
+    - "--gpu-memory-utilization"
+    - "0.90"
+    - "--max-cudagraph-capture-size"
+    - "4"                                     # turns HPU graphs on; decode needs them
+    - "--enable-prefix-caching"
+    - "--enable-prompt-tokens-details"
+    - "--async-scheduling"
+    - "--reasoning-parser"
+    - "beam"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "beam"
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"   # TP collectives in lazy mode with HPU graphs
+    VLLM_CONTIGUOUS_PA: "false"
+    VLLM_SKIP_WARMUP: "true"                  # decode graphs are captured per bucket at first use
+    VLLM_FP32_SOFTMAX: "true"
+    VLLM_GRAPH_RESERVED_MEM: "0.4"
+    VLLM_BUCKETING_FROM_FILE: "/opt/gaudi-cookbook/ports/beam-1-0/serving/tp8-seqs16-256k.txt"
+    VLLM_ENGINE_READY_TIMEOUT_S: "7200"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "3600" # a 250K prompt prefills next to running decodes
+    VLLM_BEAM_ALWAYS_CONSTRAIN_OUTPUT: "1"    # response grammar on every assistant turn (upstream default)
+    VLLM_BEAM_STREAM_TOOL_ARGS: "1"           # tool-call arguments stream while they are written
+    BEAM_EXACT_ROUNDING: "0"                  # plain bf16 casts: faster decode, gates pass
+    BEAM_PREFILL_INFLIGHT: "1"                # bound prefill run-ahead to one layer
+    BEAM_FSDPA_WS_GIB: "2"                    # long prompt chunks with context run as query tiles
+    BEAM_FSDPA_Q_TILE: "256"
+    BEAM_GRAMMAR_DEVICE_MASK: "1"             # grammar bitmask applied on the device
+  buckets: null                               # the bucket file ships with the port (VLLM_BUCKETING_FROM_FILE)
+  required_fixes:
+    - prompt-order             # prefix-cache hits read before they are written in the same step
+    - structured-output-rows   # every chat turn carries a grammar: rows must keep their own sampling parameters
+    - so-row-owners            # grammar masks on the right rows when a long prompt is chunked
+    - async-inputs             # stale decode input ids under async scheduling
+    - resumed-prefill-logits   # a request resumed after preemption must not repeat its output
+    - gather-logprobs-int32    # top_logprobs ids read back corrupted otherwise
+    - prompt-logprobs          # prompt_logprobs (the perplexity gate) crashes or is wrong otherwise
+    - logprobs-decode-guard    # a bad logprob id no longer kills the API server
+    - seeded-sampling          # a seeded request segfaults a TP worker otherwise
+    - swa-decode-window        # the port's sliding-window patch extends it to model type beam
+    - moe-explicit-overload    # the FP8 MoE op through the overload packet forces a host sync per layer
+    - rank-exception-fatal     # a failed rank stops the engine instead of serving garbage
+  verified:
+    - "Build gates 8/8 and CPU tests 103 passed in the port image built by install.sh from the stock releases/v0.30.0 image"
+    - "Smoke, 20 chat prompts at temperature 0: 20/20 correct, finish stop 20/20, reasoning 20/20, no markup"
+    - "Perplexity vs the per-token FP8 CPU reference: -0.09% / +0.23% / +0.04% on 3 passages; top-1 and top-20 KL within the gates"
+    - "Decode vs prefill, 8 x 512 greedy tokens: mean |dlogprob| 0.032 (gate 0.05)"
+    - "Needles 12/12 at 16K, 64K, 129K and 255K x 3 depths; no-needle control clean"
+    - "Copy test 64/64 at 129,938 and 254,938 tokens"
+    - "Tools 11/11 (auto, required, named, none, streaming and not, parallel calls, json_schema, effort none)"
+    - "Isolation: 8 concurrent requests, own code 8/8, foreign content 0"
+    - "Stress: 15 streaming decodes next to a 250K-token prompt, 15/15 complete, server healthy"
+  notes:
+    - >-
+      Needs the beam-1-0 port image: docker build -f ports/beam-1-0/Dockerfile from the stock releases/v0.30.0 image. install.sh applies
+      the v0.30.0 fix profile before the port's runner patches, so the launch's fix step finds every fix applied.
+    - "The KV pool holds about 776K tokens (only 9 of 52 layers keep full-length KV): about 3x a 256K request."
+    - "Do not set --chat-template-content-format openai: the Beam template takes string content, and every chat request then fails with HTTP 400."
+    - "Outputs are not bit-identical across batch compositions or cache hits (per-token FP8 activations turn kernel-shape differences into flips at near-ties)."
