@@ -6,11 +6,13 @@ lower numerical error than the stock op, and also run DeepSeek-V4.1-Flash, GLM-5
 [Beyond gpt-oss](#beyond-gpt-oss) for how each number was measured).
 
 Two Gaudi 2 TPC kernels run the routed experts of an MXFP4 mixture-of-experts layer directly from the packed
-weights, with no bf16 unpack round trip. For decode calls of up to 32 tokens they replace the stock
-`torch.ops.hpu.mixture_of_experts.bias_mxfp4_fused_weights` op that vllm-gaudi uses for gpt-oss. Prefill keeps the
-stock op.
+weights, with no bf16 unpack round trip. For small decode calls they replace the stock
+`torch.ops.hpu.mixture_of_experts` MXFP4 ops: for gpt-oss, calls of up to 32 tokens replace the
+`bias_mxfp4_fused_weights` op that vllm-gaudi uses. The package builds one variant per model family (gpt-oss,
+GLM-5.x, DeepSeek-V4.1-Flash, Muse Spark Open, Kimi-K2.7), each with its own parity test and benchmark. The
+vLLM hook for gpt-oss ships here; the other models call the kernels from their [ports](../ports/index.md).
 
-Sources, build script, vLLM hook, tests and benchmark:
+Sources, build script, gpt-oss vLLM hook, tests and benchmark:
 [`kernels/mxfp4-moe/`](https://github.com/thediymaker/gaudi-cookbook/tree/main/kernels/mxfp4-moe).
 
 !!! summary "At a glance"
@@ -30,7 +32,11 @@ Sources, build script, vLLM hook, tests and benchmark:
 | `openai/gpt-oss-120b` | Covered and measured: TP1, TP2 + EP and TP4 + EP |
 | `openai/gpt-oss-20b` | Expected to work, not measured. Same K, I, top-k and layout; 32 experts |
 | gpt-oss with tensor-parallel experts (TP > 1 without `--enable-expert-parallel`) | Not tested. Per-rank shapes the kernels do not support (I not a multiple of 32) fall back to the stock op |
-| Other MXFP4 MoE models (GLM-5.x, Muse Spark Open, DeepSeek-V4.1-Flash, MiMo-V2.6-Pro) | Measured with model-specific integrations that are not in this package; see [Beyond gpt-oss](#beyond-gpt-oss) |
+| GLM-5.3, GLM-5.2 (MXFP4 checkpoints) | Variant `glm`: decode kernels and the prefill unpack, parity and per-call timings on one card in this package. The model hook is in the port |
+| DeepSeek-V4.1-Flash (MXFP4 checkpoint) | Variant `dsv41`: decode kernels, parity and per-call timings on one card in this package. The port adds its `dsv41_sinkhorn` kernel with `--extra-kernel` and holds the model hook |
+| Muse Spark Open | Variant `muse`: decode kernels, parity and per-call timings on one card in this package. The model hook is in the port |
+| Kimi-K2.7 (MXFP4 checkpoint) | Variant `kimi`: decode kernels, parity and per-call timings on one card in this package. New kernel for K = 7168; no end-to-end measurement yet |
+| MiMo-V2.6-Pro (MXFP4 checkpoint) | Measured end to end (see [Beyond gpt-oss](#beyond-gpt-oss)) with the `glm` kernels and a `torch.compile` op library that is not in this package; no variant of its own |
 
 ## The bottleneck
 
@@ -141,6 +147,28 @@ The parity test has three parts:
 The kernel is about 3x closer to fp32 than the stock op in every case. It accumulates in fp32, applies bias and
 activation in fp32, and rounds to bf16 only once, for the intermediate.
 
+**Every variant.** `tests/run_parity.sh` on one card with each model's real expert weights, at the per-card shape
+of the layout named. Measured as: one Gaudi 2 card, vllm-gaudi `v0.30.0` image (Gaudi software 1.24.1), the build
+of this repository, random top-k routing over all experts and every route local ("hot"), T = 1 up to the
+variant's token cap, CPU fp32 reference as above. gpt-oss was also run on a vllm-gaudi `v0.26.0` image with the
+same results.
+
+| Variant | Model, layer | Per-card shape | Kernel rel_l2 vs fp32 | Stock rel_l2 vs fp32 |
+| --- | --- | --- | --- | --- |
+| `gptoss` | gpt-oss-120b, layer 18 (also its own router) | TP2 + EP: 64 of 128 experts, K = I = 2880 | 1.62e-3 to 1.71e-3 | 4.34e-3 to 6.25e-3 |
+| `glm` | GLM-5.3 MXFP4, layer 40 | EP 4 x TP 2: 64 of 256 experts, K 6144, I 1024 | 1.65e-3 to 1.66e-3 | 4.65e-3 to 5.15e-3 |
+| `dsv41` | DeepSeek-V4.1-Flash MXFP4, layer 3 | EP 8: 48 of 384 experts, K 5120, I 2304 | 1.64e-3 to 1.68e-3 | 3.75e-3 to 3.75e-2 |
+| `muse` | Muse Spark Open, layer 30 | EP 2 x TP 4: 128 of 256 experts, K 4096, I 1024 | 1.66e-3 | 4.52e-3 to 4.91e-3 |
+| `kimi` | Kimi-K2.7 MXFP4, layer 3 | EP 8: 48 of 384 experts, K 7168, I 2048 | 1.65e-3 to 1.67e-3 | 4.75e-3 to 5.52e-3 |
+
+All five print `PARITY PASS` and `SIG_DEVICE PASS`. The stock op's largest DeepSeek-V4.1-Flash errors (2.4e-2 and
+3.8e-2) are the 8-token calls with all 48 experts touched; the kernel stays at 1.7e-3 there.
+
+For the `glm` prefill path (`mxk_deq` per expert, then the stock bf16 MoE op), the same run at 256, 1024 and 4096
+tokens gave rel_l2 5.14e-3 to 5.22e-3 against fp32, equal to the stock MXFP4 op, and differed from the stock op by
+1.2e-4 to 1.8e-4. The unpacked bf16 weights of the experts checked (first, middle, last) are bit-identical to an
+exact CPU unpack (`PREFILL PASS`).
+
 Two kernel calls with identical input shapes in one lazy graph (T = 1 to 32) give bit-identical results to the same
 calls run alone (see [pitfalls](#limitations-and-pitfalls)).
 
@@ -156,24 +184,39 @@ End to end, the output is not bit-identical to the stock op:
 ### Per MoE call, one card
 
 Layer 18 of `openai/gpt-oss-120b`, real weights, x RMS 1. Each value is µs per call inside an HPU graph (a chain
-of 8 calls, median of 30 replays).
+of 8 calls, median of 30 replays). Measured as: per-call, one card, `bench/bench_moe.py --variant gptoss
+--e-local 32` with the build of this repository on a vllm-gaudi `v0.26.0` image (Gaudi software 1.24.1), stock
+op and kernel in separate processes.
 
 | Tokens | Routing | Local routes | Stock µs | Kernel µs | Speed-up |
 | --- | --- | --- | --- | --- | --- |
-| 1 | random | 1 | 246.8 | 51.7 | 4.8x |
-| 2 | random | 2 | 529.2 | 81.2 | 6.5x |
-| 4 | random | 4 | 1138.3 | 141.5 | 8.0x |
-| 8 | random | 7 | 2363.2 | 234.8 | 10.1x |
-| 16 | random | 17 | 3000.7 | 533.9 | 5.6x |
-| 32 | random | 31 | 3460.6 | 952.5 | 3.6x |
-| 32 | model router | 37 | 3337.8 | 1129.2 | 3.0x |
-| 8 | all local | 32 | 4096.4 | 967.6 | 4.2x |
+| 1 | random | 1 | 246.0 | 51.5 | 4.8x |
+| 2 | random | 2 | 528.7 | 82.4 | 6.4x |
+| 4 | random | 4 | 1153.3 | 141.6 | 8.1x |
+| 8 | random | 7 | 2362.9 | 235.8 | 10.0x |
+| 16 | random | 17 | 3003.3 | 532.3 | 5.6x |
+| 32 | random | 31 | 3437.5 | 952.3 | 3.6x |
+| 1 | all local | 4 | 523.9 | 140.9 | 3.7x |
+| 8 | all local | 32 | 4082.0 | 968.2 | 4.2x |
 
-A fresh build of this repository's sources on a stock vllm-gaudi v0.26.0 image (Gaudi software 1.24.1) reproduces
-these timings within 3% and passes `tests/run_parity.sh` on the same layer: kernel relative error against the fp32
-reference about 1.6e-3, stock op about 5e-3, at every token count from 1 to 32.
+An earlier build of the same kernel code, timed the same way with the layer's own router at 32 tokens (37 local
+routes), gave 3337.8 µs stock and 1129.2 µs kernel (3.0x).
 
-The table above is the 32-local-expert shape (one rank of TP4 + EP). The 128-local-expert shape (TP1) gives:
+The table above is the 32-local-expert shape (one rank of TP4 + EP). The 64-local-expert shape (one rank of
+TP2 + EP), measured the same way on the same image but with random weights of the layer's shape:
+
+| Tokens | Routing | Local routes | Stock µs | Kernel µs | Speed-up |
+| --- | --- | --- | --- | --- | --- |
+| 1 | random | 3 | 427.2 | 113.9 | 3.8x |
+| 2 | random | 4 | 761.3 | 141.5 | 5.4x |
+| 4 | random | 7 | 1466.2 | 231.2 | 6.3x |
+| 8 | random | 16 | 3238.3 | 499.8 | 6.5x |
+| 16 | random | 31 | 5713.0 | 947.4 | 6.0x |
+| 32 | random | 65 | 6863.7 | 1975.1 | 3.5x |
+| 1 | all local | 4 | 525.6 | 142.4 | 3.7x |
+| 8 | all local | 32 | 4562.4 | 972.4 | 4.7x |
+
+The 128-local-expert shape (TP1), from an earlier build of the same kernel code timed the same way:
 
 | Tokens | Local routes | Stock µs | Kernel µs | Speed-up |
 | --- | --- | --- | --- | --- |
@@ -184,6 +227,64 @@ The table above is the 32-local-expert shape (one rank of TP4 + EP). The 128-loc
 The kernel costs about 30 µs per local route at any token count. The stock op costs about 250 to 300 µs per touched
 expert at small counts, but amortises the unpack when several routes share an expert. So the speed-up peaks around
 8 tokens and narrows to 3x to 3.6x at 32.
+
+### Per-call timings by variant
+
+Measured as: per-call, one card, `bench/bench_moe.py --variant <name>` with the build of this repository on a
+vllm-gaudi `v0.30.0` image (Gaudi software 1.24.1), random weights of the variant's per-card shape, stock op and
+kernel in separate processes, µs per call inside an HPU graph (a chain of 8 calls, median of 30 replays).
+
+**`kimi`** (Kimi-K2.7, EP 8: 48 of 384 experts, K 7168, I 2048, top-8; stock op `mxfp4_fused_weights`):
+
+| Tokens | Routing | Local routes | Stock µs | Kernel µs | Speed-up |
+| --- | --- | --- | --- | --- | --- |
+| 1 | random | 1 | 390.2 | 68.7 | 5.7x |
+| 2 | random | 1 | 432.1 | 77.8 | 5.6x |
+| 4 | random | 4 | 1043.3 | 217.5 | 4.8x |
+| 8 | random | 6 | 1589.7 | 310.6 | 5.1x |
+| 16 | random | 12 | 3002.7 | 589.5 | 5.1x |
+| 1 | all local | 8 | 2055.2 | 398.2 | 5.2x |
+| 8 | all local | 64 | 9687.8 | 2976.3 | 3.3x |
+
+**`muse`** (Muse Spark Open, EP 2 x TP 4: 128 of 256 experts, K 4096, I 1024 per card, top-8; per-route w2
+output; the stock path is the per-route equivalent built from `mxfp4_fused_weights`):
+
+| Tokens | Routing | Local routes | Stock µs | Kernel µs | Speed-up |
+| --- | --- | --- | --- | --- | --- |
+| 1 | random | 3 | 381.2 | 66.9 | 5.7x |
+| 2 | random | 8 | 764.4 | 139.7 | 5.5x |
+| 4 | random | 16 | 1457.7 | 260.0 | 5.6x |
+| 1 | all local | 8 | 694.4 | 138.7 | 5.0x |
+| 4 | all local | 32 | 2301.5 | 489.2 | 4.7x |
+
+**`dsv41`** (DeepSeek-V4.1-Flash, EP 8: 48 of 384 experts, K 5120, I 2304, top-6; stock op
+`bias_mxfp4_fused_weights`):
+
+| Tokens | Routing | Local routes | Stock µs | Kernel µs | Speed-up |
+| --- | --- | --- | --- | --- | --- |
+| 1 | random | 1 | 368.4 | 61.1 | 6.0x |
+| 2 | random | 1 | 447.4 | 62.1 | 7.2x |
+| 4 | random | 2 | 654.7 | 108.1 | 6.1x |
+| 8 | random | 4 | 1129.9 | 192.1 | 5.9x |
+| 16 | random | 12 | 2499.6 | 521.8 | 4.8x |
+| 1 | all local | 6 | 1344.1 | 264.2 | 5.1x |
+| 8 | all local | 48 | 7974.2 | 2007.8 | 4.0x |
+
+**`glm`** (GLM-5.3 and GLM-5.2, EP 4: 64 local experts, K 6144, I 1024 per card, top-8; stock op
+`mxfp4_fused_weights`):
+
+| Tokens | Routing | Local routes | Stock µs | Kernel µs | Speed-up |
+| --- | --- | --- | --- | --- | --- |
+| 1 | random | 1 | 273.0 | 42.2 | 6.5x |
+| 2 | random | 5 | 598.7 | 128.6 | 4.7x |
+| 4 | random | 9 | 979.3 | 219.5 | 4.5x |
+| 8 | random | 14 | 1525.4 | 331.6 | 4.6x |
+| 16 | random | 29 | 2672.5 | 659.9 | 4.0x |
+| 1 | all local | 8 | 928.8 | 191.9 | 4.8x |
+| 8 | all local | 64 | 4691.9 | 1397.5 | 3.4x |
+
+**`gptoss`** on `v0.30.0`, 64 local experts: every row is within 1% of the 64-local-expert table above (T1 3.8x,
+T8 6.4x, T32 3.5x).
 
 ### End to end, gpt-oss-120b
 
@@ -252,11 +353,22 @@ device time shows up only partly.
 
 ## Limitations and pitfalls
 
-- **Decode only.** A call runs on the kernels only if it has at most 32 tokens
+- **Decode only.** Prefill keeps the stock op (`glm` adds an unpack kernel for it, see
+  [Prefill](#prefill-unpack-once-then-the-stock-op)). For gpt-oss, a call runs on the kernels only if it has at most 32 tokens
   (`MXFP4_TPC_MOE_MAX_TOKENS`, at most 32) and at most 128 routes. Prefill, mixed batches and decode batches
   larger than 32 keep the stock op. With `--max-num-seqs` above 32, the larger decode buckets use the stock op.
-- **Supported shapes.** K and I must be at most 3072 and multiples of 32, with at most 128 local experts. Layers
-  must have gpt-oss biases and interleaved gate/up rows. Anything else keeps the stock op, and the runtime logs why.
+- **Supported shapes.** For gpt-oss, K and I must be at most 3072 and multiples of 32, with at most 128 local
+  experts. Layers must have gpt-oss biases and interleaved gate/up rows. Anything else keeps the stock op, and the
+  runtime logs why. The other variants check their limits in the kernel glue, and a call outside them fails to
+  compile instead of falling back, so the model hook must check first:
+
+    | Variant | K | I per card | Tokens per call |
+    | --- | --- | --- | --- |
+    | `glm`, `muse` | multiple of 512, at most 6144 | multiple of 512, at most 3072 | at most 16 (`muse`: the port uses 4) |
+    | `dsv41` | multiple of 512, at most 6144 | multiple of 256, at most 3072 | at most 16 |
+    | `kimi` | multiple of 512, at most 8192 | multiple of 512, at most 3072 | at most 16 |
+
+    Every variant also needs at most 128 routes per call and at most 128 local experts.
 - **Lazy mode only.** The op library uses the legacy `hpu_custom_op.h` API. The PT2 custom-op API fails in lazy
   mode when the op's input comes from a native op in the same lazy graph. Eager and `torch.compile` serving are
   not covered.
@@ -272,7 +384,11 @@ device time shows up only partly.
 - **Identical input signatures.** Lazy-mode legacy custom ops are cached by input signature, not by GUID. In one
   process, a second custom op with the same input shapes silently returns the first op's result. The two kernels
   here have 5 and 6 tensor inputs, so they cannot collide. Benchmarks must still run one implementation per process.
-  Any new op added to this library needs a distinct signature.
+  Any new op added to this library needs a distinct signature. `tests/parity_hpu.py --impl sig` checks every
+  variant for this.
+- **Views from an earlier graph.** A legacy custom op that is given a slice view (one expert, `w13[e]`) created in
+  an earlier lazy graph can read the wrong data; native ops read the same view correctly. Take the view in the same
+  graph as the call, as the `glm` prefill path does.
 - **Rebuild per image.** The op library links against the image's torch and habana-torch-plugin. The kernel ELFs
   target Gaudi 2 only.
 - **Not bit-identical to stock.** Greedy outputs diverge at bf16 near-ties (see [Parity](#parity)). Compare greedy
@@ -294,12 +410,39 @@ tpc-clang pitfalls met while writing the kernels (Gaudi software 1.24.1, tpc-cla
 
 ## Build, enable and verify
 
-The package has its own [README](https://github.com/thediymaker/gaudi-cookbook/tree/main/kernels/mxfp4-moe). In
-short:
+The package has its own [README](https://github.com/thediymaker/gaudi-cookbook/tree/main/kernels/mxfp4-moe) with
+the full op reference. In short:
 
-**Build** inside the serving image. The Habana `pytorch-installer` base ships everything the build needs:
-`tpc-clang` at `/opt/habanalabs/bin/tpc-clang`, `tpc_kernel_lib_interface.h` in `/usr/include/habanalabs`, and
-`hpu_custom_op.h` in the `habana_frameworks` package.
+**Build** inside the serving image, one variant per image. The Habana `pytorch-installer` base ships everything the
+build needs: `tpc-clang` at `/opt/habanalabs/bin/tpc-clang`, `tpc_kernel_lib_interface.h` in
+`/usr/include/habanalabs`, and `hpu_custom_op.h` in the `habana_frameworks` package.
+
+```bash
+kernels/mxfp4-moe/build.sh [--variant gptoss|glm|dsv41|muse|kimi] [--extra-kernel DIR]... OUT_DIR
+```
+
+| Variant | Kernels | Model |
+| --- | --- | --- |
+| `gptoss` (default) | `mxk_w13xib`, `mxk_w2xb` | gpt-oss, through `python/` in this package |
+| `glm` | `mxk_w13x`, `mxk_w2x`, `mxk_deq` | GLM-5.3 and GLM-5.2, decode and the prefill unpack |
+| `dsv41` | `mxk_w13xi`, `mxk_w2x` | DeepSeek-V4.1-Flash (its port adds `dsv41_sinkhorn` with `--extra-kernel`) |
+| `muse` | `mxk_w13x`, `mxk_w2xr` | Muse Spark Open |
+| `kimi` | `mxk_w13xt`, `mxk_w2x` | Kimi-K2.7 MXFP4 |
+
+`build.sh` compiles the variant's kernels with `tpc-clang -march=gaudi2 -O2` and embeds the ELFs in `libmxk_tpc.so`,
+which forwards every stock GUID. It builds `libmxk_op_lazy.so` with the variant's `torch.ops.custom_op` ops against
+the image's torch, and writes a `MANIFEST` with versions and sha256 sums. The build fails unless two gates pass: the
+library lists every stock GUID unchanged followed by exactly the variant's GUIDs, and the op library registers the
+variant's ops and no op of another variant. `--extra-kernel DIR` adds a model-only TPC kernel a port supplies
+(`<guid>.c`, `glue.inc`, `op.cpp`) to the same two libraries, so `GC_KERNEL_PATH` stays one file.
+
+The `MANIFEST` also records a `code_sha256` per kernel: the hash of its machine code (the `.text` and
+`.tpc_metadata` sections). tpc-clang embeds the source text and the build command in the ELF, so the ELF hash
+changes with any comment or path, but the code hash does not. Built from this repository, every kernel of the
+`gptoss`, `glm`, `dsv41` and `muse` variants has the same code hash as the kernels of the same name in the
+libraries the measurements on this page ran on.
+
+For gpt-oss, build and install in one image stage:
 
 ```dockerfile
 FROM <your-vllm-gaudi-v0.26.0-image>
@@ -308,13 +451,11 @@ RUN /opt/mxfp4-moe/src/build.sh /opt/mxfp4-moe/lib \
  && python3 /opt/mxfp4-moe/src/python/install_mxfp4_tpc_moe.py
 ```
 
-`build.sh` compiles the two kernels with `tpc-clang -march=gaudi2 -O2` and embeds the ELFs in `libmxk_tpc.so`. It
-also builds `libmxk_op_lazy.so` against the image's torch and runs a gate: every stock GUID must be present
-unchanged, plus the two kernels. Finally it writes a `MANIFEST` with versions and sha256 sums. The installer copies
-the runtime into `vllm_gaudi/ops/` and adds two hooks. If any of its 11 anchors in vllm-gaudi is missing, it exits 1
-before writing anything.
+The installer copies the runtime into `vllm_gaudi/ops/` and adds two hooks. If any of its 11 anchors in vllm-gaudi
+is missing, it exits 1 before writing anything. The other variants are installed by their ports, which call the
+ops from the model's MoE forward.
 
-**Enable:**
+**Enable (gpt-oss):**
 
 ```bash
 export PT_HPU_LAZY_MODE=1 HPU_MXFP4_NATIVE=1 MXFP4_TPC_MOE=1
@@ -334,21 +475,32 @@ The remaining engine flags, and the fixes gpt-oss needs on `v0.26.0`, are in the
 
 **Verify:**
 
-1. The engine log shows `MXFP4 TPC MoE installed: mxk_tpc mxfp4-moe-v8-<hash>` and
+1. On one card, before enabling any variant:
+   `kernels/mxfp4-moe/tests/run_parity.sh --variant <name> --lib <build> [--checkpoint <dir>]` must report
+   `PARITY PASS` and `SIG_DEVICE PASS`, and `PREFILL PASS` for `glm`. Without `--checkpoint` it uses random
+   weights of the variant's serving shapes.
+2. gpt-oss: the engine log shows `MXFP4 TPC MoE installed: mxk_tpc gptoss-v8-<hash>` and
    `MXFP4 TPC MoE enabled (E_local=64 K=2880 I=2880, <= 32 tokens, ...)` (64 local experts at TP2 + EP).
-2. `grep -l libmxk_tpc.so /proc/*/maps` inside the container lists the engine worker processes.
-3. On one card, `kernels/mxfp4-moe/tests/run_parity.sh --checkpoint <gpt-oss-120b snapshot>` must report
-   `PARITY PASS` and `SIG_DEVICE PASS`. Without `--checkpoint` it uses random weights of the same shapes.
-4. For speed, run `kernels/mxfp4-moe/bench/bench_moe.py` once per implementation, then `--compare`.
+3. `grep -l libmxk_tpc.so /proc/*/maps` inside the container lists the engine worker processes.
+4. For speed, run `kernels/mxfp4-moe/bench/bench_moe.py --variant <name>` once per implementation, then `--compare`.
 
-**Rollback:** set `MXFP4_TPC_MOE=0`. The hooks are then inert and the engine serves exactly as stock.
+**Rollback (gpt-oss):** set `MXFP4_TPC_MOE=0`. The hooks are then inert and the engine serves exactly as stock.
 
 ## Beyond gpt-oss
 
-The same kernel core runs other MXFP4 MoE models. The headers build two more variants through compile-time switches:
+The same kernel core runs other MXFP4 MoE models. Compile-time switches in the headers stamp out the other
+kernels of the package:
 
-- a SiLU variant without bias for `[gate; up]` row layouts;
-- a per-route w2 output for models that apply a per-route operation before the token sum.
+- `mxk_w13x`: SiLU without bias for `[gate; up]` row layouts (GLM-5.x, Muse Spark Open);
+- `mxk_w13xi`: the same for interleaved gate/up rows, with a clamped SwiGLU (DeepSeek-V4.1-Flash);
+- `mxk_w13xt`: `mxk_w13x` for K above 6144, reading the activation row past the first 6144 values from memory
+  instead of vector local memory (Kimi-K2.7, K = 7168);
+- `mxk_w2x`: the down projection with the weighted sum per token;
+- `mxk_w2xr`: a per-route w2 output for models that apply a per-route operation before the token sum (Muse Spark
+  Open).
+
+`build.sh --variant` picks the set each model needs (see [Build](#build-enable-and-verify)).
+[Per-call timings by variant](#per-call-timings-by-variant) has one-card numbers.
 
 With model-specific integrations, the kernels serve five more models on one 8-card Gaudi 2 node. How each number
 was measured is part of the result, so the table says it:
@@ -356,11 +508,10 @@ was measured is part of the result, so the table says it:
 | Model | Setup | Stock op | With the kernel | Gain | How it was measured |
 | --- | --- | --- | --- | --- | --- |
 | GLM-5.3 (MXFP4 checkpoint) | TP 8 + EP 8, one MTP draft token, 2K prompt, 1 stream | 23.3 tok/s | 59.1 tok/s | 2.5x | Three same-node A/Bs chained: first kernel vs stock 1.96x, then two kernel revisions 1.13x and 1.14x |
-| DeepSeek-V4.1-Flash (MXFP4 checkpoint) | TP 8, 1 stream | 16.7 tok/s | 23.3 tok/s | 1.4x | Same-pod A/B, kernel off and on |
+| DeepSeek-V4.1-Flash (MXFP4 checkpoint) | TP 8, 1 stream | 20.7 tok/s | 37.6 tok/s | 1.8x | Same-pod A/B, the published recipe with `DSV41_MXK` off and on |
 | GLM-5.2 (MXFP4 checkpoint) | TP 8 + EP 8, one MTP draft token, 1 stream | 23.1 tok/s | 47.8 tok/s | 2.1x | Same benchmark on a stock pod and on kernel pods; not a same-node A/B |
 | Muse Spark Open | 8 cards, 1 stream | 22.3 tok/s | 33.5 tok/s | 1.5x | Same deployment, manifest and clients; only the image and the kernel flag differ (node not recorded as the same) |
 | Muse Spark Open | 8 cards, 4 streams, per stream | 10.9 tok/s | 23.3 tok/s | 2.1x | Same |
-| Muse Spark Open | one MoE call at 1 token | 375 µs | 66 µs | 5.7x | Per-call timing on one card, as in the gpt-oss table above |
 | MiMo-V2.6-Pro (MXFP4 checkpoint) | 8 cards, 1 stream | 18.1 tok/s | 39.7 tok/s | 2.2x | Same node and configuration: stock pod, then kernel pod |
 
 - **GLM-5.3** keeps the same tool-call, needle and GSM8K results as the stock op. Greedy outputs agree on 99.1% of
@@ -372,8 +523,8 @@ was measured is part of the result, so the table says it:
   global attention. It matches the reference model's perplexity within 0.4% (top-1 agreement 97.6%) and serves on
   one 8-card node.
 
-These integrations depend on model code outside vllm-gaudi and are not part of this package yet. The ports
-themselves are described under [Ports](../ports/index.md).
+The kernels, their parity tests and their benchmarks are in this package. The model hooks depend on model code
+outside vllm-gaudi and live in the ports, described under [Ports](../ports/index.md).
 
 ### Prefill: unpack once, then the stock op
 
@@ -383,7 +534,10 @@ experts' MXFP4 weights straight to bf16 in one pass, and the stock bf16 MoE op t
 bit-identical to the stock path for prompts of 300 to 33K tokens, and time to first token drops by 22% to 26%
 (2K prompt 0.64 to 0.49 s, 8K prompt 2.01 to 1.49 s). Measured as: a baseline pod and a pod with the prefill
 path on two nodes with the same configuration; the decode-side differences between them do not touch prefill. Under an EP 4 x TP 2 layout the gain is about
-half and the output is no longer bit-identical. This path is also not in the package yet.
+half and the output is no longer bit-identical: with the GLM-5.3 recipe (EP 4 x TP 2), the 2K prompt went from 0.64 to
+0.52 s (19%) and the 8K prompt from 1.96 to 1.76 s (10%), and greedy output on 16 prompts x 192 tokens stayed
+token-identical. Measured as: same pod, server restarted with `GLM_MXK_PREFILL` flipped, median of 3. `mxk_deq` is part of the `glm` variant, and
+`tests/parity_hpu.py --variant glm` checks it (`PREFILL PASS`); the prefill hook is in the GLM port.
 
 Public MXFP4 checkpoints in other formats are not covered either. Checkpoints with `quant_method: quark` do not
 load as packed MXFP4 on stock vllm-gaudi `v0.26.0`, because `quark` is not in the HPU platform's supported

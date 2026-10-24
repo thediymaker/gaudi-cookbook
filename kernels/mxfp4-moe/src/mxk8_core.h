@@ -52,11 +52,42 @@
 #define MXK8_XCH 12
 #endif
 __local__ bfloat128 v8_x[4 * MXK8_XCH];
+// MXK8_XTAIL 1 (w13 only; the Kimi build, K = 7168): rows longer than the stage. Chunks c >= MXK8_XCH are read from
+// the activation tensor itself (4 loads per chunk per pass), so the pass functions take the tensor as one more
+// argument. 14 staged chunks do not fit: VLM is shared with the batch buffers and the register spills.
+#ifndef MXK8_XTAIL
+#define MXK8_XTAIL 0
+#endif
+#if MXK8_XTAIL
+__local__ int s8_xrow;                     // activation row of the staged route
+#define MXK8_XPARAM , tensor xp
+#define MXK8_XARG , xp
+#define MXK8_LDX(xv, c)                                                                                 \
+    {                                                                                                   \
+        if ((c) < MXK8_XCH) {                                                                           \
+            xv[0] = v8_x[4 * (c)]; xv[1] = v8_x[4 * (c) + 1]; xv[2] = v8_x[4 * (c) + 2]; xv[3] = v8_x[4 * (c) + 3]; \
+        } else {                                                                                        \
+            int5 cx_ = {(c) * 512, s8_xrow, 0, 0, 0};                                                   \
+            xv[0] = v_bf16_ld_tnsr_b(cx_, xp); cx_[0] += 128;                                           \
+            xv[1] = v_bf16_ld_tnsr_b(cx_, xp); cx_[0] += 128;                                           \
+            xv[2] = v_bf16_ld_tnsr_b(cx_, xp); cx_[0] += 128;                                           \
+            xv[3] = v_bf16_ld_tnsr_b(cx_, xp);                                                          \
+        }                                                                                               \
+    }
+#define MXK8_XNCH(nch) ((nch) < MXK8_XCH ? (nch) : MXK8_XCH)
+#define MXK8_XROW(row) s8_xrow = (row);
+#else
+#define MXK8_XPARAM
+#define MXK8_XARG
 #define MXK8_LDX(xv, c) { xv[0] = v8_x[4 * (c)]; xv[1] = v8_x[4 * (c) + 1]; xv[2] = v8_x[4 * (c) + 2]; xv[3] = v8_x[4 * (c) + 3]; }
+#define MXK8_XNCH(nch) (nch)
+#define MXK8_XROW(row)
+#endif
 // copy activation row `row` (nch chunks, nch even) of xp into v8_x; chunks past the tensor read as zeros
 #define MXK8_STAGE_X(xp, row, nch)                                                                      \
     {                                                                                                   \
-        for (int c_ = 0; c_ < (nch); c_++) {                                                            \
+        MXK8_XROW(row)                                                                                  \
+        for (int c_ = 0; c_ < MXK8_XNCH(nch); c_++) {                                                   \
             int5 cx_ = {c_ * 512, (row), 0, 0, 0};                                                      \
             v8_x[4 * c_] = v_bf16_ld_tnsr_b(cx_, xp); cx_[0] += 128;                                    \
             v8_x[4 * c_ + 1] = v_bf16_ld_tnsr_b(cx_, xp); cx_[0] += 128;                                \
@@ -248,7 +279,7 @@ inline void mxk8_first(int n0, int n1, int n2, int n3, int e, tensor w, tensor s
 inline float128 mxk8_pass_act(int n0, int n1, int n2, int n3, int e, int m0, int m1, int m2, int m3, int f,
                               int nch, tensor w, tensor s, ushort128 pat0, uchar256 zero8, float alpha,
                               float limit, float beta, float ascale,
-                              uchar256 (&bA)[4], uchar256 (&bB)[4], uchar256 (&sP)[4])
+                              uchar256 (&bA)[4], uchar256 (&bB)[4], uchar256 (&sP)[4] MXK8_XPARAM)
 {
     MXK8_PASS_BODY
     float128 r;
@@ -266,7 +297,7 @@ inline float128 mxk8_pass_act(int n0, int n1, int n2, int n3, int e, int m0, int
 // the four horizontal sums (broadcast to all lanes), for callers that batch their epilogue
 inline void mxk8_pass_h4(int n0, int n1, int n2, int n3, int e, int m0, int m1, int m2, int m3, int f,
                          int nch, tensor w, tensor s, ushort128 pat0, uchar256 zero8,
-                         uchar256 (&bA)[4], uchar256 (&bB)[4], uchar256 (&sP)[4], float64 (&h)[4])
+                         uchar256 (&bA)[4], uchar256 (&bB)[4], uchar256 (&sP)[4], float64 (&h)[4] MXK8_XPARAM)
 {
     MXK8_PASS_BODY
     h[0] = h0; h[1] = h1; h[2] = h2; h[3] = h3;
@@ -279,7 +310,7 @@ inline void mxk8_pass_h4(int n0, int n1, int n2, int n3, int e, int m0, int m1, 
 // lsel: lane mask selecting row 0 / row 1 (lid4 == 0 for the unpacked layout, (lid4 & 1) == 0 for the packed one)
 inline float128 mxk8_pass_dot(int n0, int n1, int n2, int n3, int e, int m0, int m1, int m2, int m3, int f,
                               int nch, tensor w, tensor s, ushort128 pat0, uchar256 zero8, uint64 lsel,
-                              uchar256 (&bA)[4], uchar256 (&bB)[4], uchar256 (&sP)[4])
+                              uchar256 (&bA)[4], uchar256 (&bB)[4], uchar256 (&sP)[4] MXK8_XPARAM)
 {
     MXK8_PASS_BODY
     float128 r;

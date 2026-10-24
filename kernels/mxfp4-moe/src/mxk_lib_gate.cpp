@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Build gate for libmxk_tpc.so (no Gaudi device needed): dlopen the library the way the graph compiler does and
-// check that GetKernelGuids(Gaudi 2) lists every stock GUID unchanged plus mxk_w13xib and mxk_w2xb, that the six
-// entry points the graph compiler reads are exported, and that GetLibVersion matches the stock library.
-// Exit 0 = pass.
-//   mxk_lib_gate <libmxk_tpc.so> [stock libtpc_kernels.so]
+// check that GetKernelGuids(Gaudi 2) lists every stock GUID unchanged and in order, followed by exactly the GUIDs
+// named on the command line, that the six entry points the graph compiler reads are exported, and that
+// GetLibVersion matches the stock library. Exit 0 = pass.
+//   mxk_lib_gate <libmxk_tpc.so> <stock libtpc_kernels.so> <guid>...
 #include <dlfcn.h>
 #include <cstdio>
 #include <cstring>
-#include <set>
 #include <string>
 #include <vector>
 #include "tpc_kernel_lib_interface.h"
@@ -29,28 +28,34 @@ static std::vector<std::string> guids(void* h, const char* what) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s <libmxk_tpc.so> [stock lib]\n", argv[0]); return 2; }
-    const char* stockp = argc > 2 ? argv[2] : "/usr/lib/habanalabs/libtpc_kernels.so";
-    void* stock = dlopen(stockp, RTLD_NOW | RTLD_LOCAL);
+    if (argc < 4) { fprintf(stderr, "usage: %s <libmxk_tpc.so> <stock lib> <guid>...\n", argv[0]); return 2; }
+    void* stock = dlopen(argv[2], RTLD_NOW | RTLD_LOCAL);
     void* ours = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!stock || !ours) { fprintf(stderr, "dlopen failed: %s\n", dlerror()); return 1; }
     const char* ver = (const char*)dlsym(ours, "mxk_tpc_version");
     auto gs = guids(stock, "stock"), go = guids(ours, "ours");
     if (gs.empty() || go.empty()) return 1;
-    std::set<std::string> so(go.begin(), go.end());
+    std::vector<std::string> want(argv + 3, argv + argc);
     int bad = 0;
-    if (go.size() != gs.size() + 2) { fprintf(stderr, "guid count %zu != stock %zu + 2\n", go.size(), gs.size()); bad++; }
+    if (go.size() != gs.size() + want.size()) {
+        fprintf(stderr, "guid count %zu != stock %zu + %zu\n", go.size(), gs.size(), want.size());
+        bad++;
+    }
     for (size_t i = 0; i < gs.size() && i < go.size(); i++)
         if (gs[i] != go[i]) { fprintf(stderr, "stock guid %zu differs: %s vs %s\n", i, gs[i].c_str(), go[i].c_str()); bad++; break; }
-    for (const char* n : {"mxk_w13xib", "mxk_w2xb"})
-        if (!so.count(n)) { fprintf(stderr, "missing %s\n", n); bad++; }
+    std::string list;
+    for (size_t i = 0; i < want.size(); i++) {
+        size_t j = gs.size() + i;
+        if (j >= go.size() || go[j] != want[i]) { fprintf(stderr, "missing or out of order: %s\n", want[i].c_str()); bad++; }
+        list += (i ? ", " : "") + want[i];
+    }
     for (const char* n : {"GetLibVersion", "InstantiateTpcKernel", "GetSupportedDataLayouts", "GetShapeInference",
                           "GetSuggestedManipulation", "HabanaKernel"})
         if (!dlsym(ours, n)) { fprintf(stderr, "missing entry point %s\n", n); bad++; }
     auto lv = (pfnGetLibVersion)dlsym(ours, "GetLibVersion");
     auto lvs = (pfnGetLibVersion)dlsym(stock, "GetLibVersion");
     if (lv && lvs && lv() != lvs()) { fprintf(stderr, "GetLibVersion differs from stock\n"); bad++; }
-    printf("%s: %zu GUIDs (stock %zu + mxk_w13xib, mxk_w2xb), %s\n", ver ? ver : "?", go.size(), gs.size(),
+    printf("%s: %zu GUIDs (stock %zu + %s), %s\n", ver ? ver : "?", go.size(), gs.size(), list.c_str(),
            bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;
 }

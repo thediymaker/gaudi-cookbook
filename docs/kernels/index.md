@@ -12,7 +12,7 @@ library links against that image's PyTorch build.
 
 | Kernel | Replaces | Helps when | Models | Gain |
 | --- | --- | --- | --- | --- |
-| [MXFP4 MoE decode](mxfp4-moe.md) | `mixture_of_experts.bias_mxfp4_fused_weights` for calls of at most 32 tokens | Decode of MXFP4 MoE models, where the routed experts dominate the step | `openai/gpt-oss-120b` (measured), `openai/gpt-oss-20b` (same shapes, not measured); GLM-5.3, GLM-5.2 and Muse Spark Open through model-specific integrations ([results](mxfp4-moe.md#beyond-gpt-oss)) | gpt-oss: 3x to 10x per MoE call, up to 3.2x decode tok/s end to end. GLM-5.3: 2.5x single stream (23.3 to 59.1 tok/s). Muse Spark Open: 5.7x per MoE call |
+| [MXFP4 MoE decode](mxfp4-moe.md) | The stock MXFP4 MoE op for decode-sized calls (per-variant caps) | Decode of MXFP4 MoE models, where the routed experts dominate the step | Five build variants: `gptoss` (`openai/gpt-oss-120b` measured, `gpt-oss-20b` same shapes), `glm` (GLM-5.3, GLM-5.2, with a prefill unpack), `dsv41` (DeepSeek-V4.1-Flash), `muse` (Muse Spark Open), `kimi` (Kimi-K2.7). Non-gpt-oss models run it through their [port](../ports/index.md) | Per MoE call, one card: gpt-oss 3x to 10x, GLM-5.x 3.4x to 6.5x, DeepSeek-V4.1-Flash 4.0x to 7.2x, Muse Spark Open 4.7x to 5.7x, Kimi 3.3x to 5.7x. End to end: gpt-oss up to 3.2x decode tok/s; GLM-5.3 2.5x single stream (23.3 to 59.1 tok/s) |
 
 ## When a custom kernel helps
 

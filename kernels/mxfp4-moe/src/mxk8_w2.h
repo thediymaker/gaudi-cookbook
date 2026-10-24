@@ -27,6 +27,9 @@
 #ifndef MXK8_BIAS
 #define MXK8_BIAS 0
 #endif
+#if MXK8_XTAIL
+#error "MXK8_XTAIL is for the w13 kernels only"
+#endif
 #if MXK8_BIAS && MXK8_ROUTE
 #error "MXK8_BIAS is combine mode (mxk_w2xb) only"
 #endif

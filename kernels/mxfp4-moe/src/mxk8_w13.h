@@ -143,7 +143,7 @@ void main(tensor xp, tensor ids, tensor w, tensor s, tensor ap, int K, int topk,
         MXK8_ROWS(ng0, m0, m1, m2, m3)
 #if MXK8_ACT_BATCH
         float64 h[4];
-        mxk8_pass_h4(r0, r1, r2, r3, e, m0, m1, m2, m3, f, nch, w, s, pat0, zero8, bA, bB, sP, h);
+        mxk8_pass_h4(r0, r1, r2, r3, e, m0, m1, m2, m3, f, nch, w, s, pat0, zero8, bA, bB, sP, h MXK8_XARG);
         {
             bool256 la = from_bool64(v_u32_cmp_eq_b(lid4, (unsigned)m, 0, to_bool64((bool256){0}), 1, 0));
             bool256 lb = from_bool64(v_u32_cmp_eq_b(lid4, (unsigned)(m + 32), 0, to_bool64((bool256){0}), 1, 0));
@@ -182,7 +182,7 @@ void main(tensor xp, tensor ids, tensor w, tensor s, tensor ap, int K, int topk,
         }
 #else
         float128 r = mxk8_pass_act(r0, r1, r2, r3, e, m0, m1, m2, m3, f, nch, w, s, pat0, zero8, alpha, limit,
-                                   beta, ascale, bA, bB, sP);
+                                   beta, ascale, bA, bB, sP MXK8_XARG);
         int5 co = {col, s8_sorted[gi], 0, 0, 0};
         v_bf16_st_tnsr_partial(co, ap, v_convert_f32_to_bf16_all_b(r), 1, 0);
 #endif
