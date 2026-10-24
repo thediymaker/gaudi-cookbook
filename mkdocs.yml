@@ -54,16 +54,40 @@ nav:
   - Recipes:
       - recipes/index.md
       - Qwen3-30B-A3B-2507: recipes/qwen3-30b-a3b-2507.md
-      - Qwen3-Coder-30B-A3B: recipes/qwen3-coder-30b-a3b-instruct.md
+      - Qwen3-Coder-30B-A3B-Instruct: recipes/qwen3-coder-30b-a3b-instruct.md
+      - Qwen3.5-27B-FP8: recipes/qwen3-5-27b-fp8.md
+      - Qwen3.8-27B: recipes/qwen3-8-27b.md
       - Qwen3.6-27B-FP8: recipes/qwen3-6-27b-fp8.md
       - Qwen3.6-35B-A3B-FP8: recipes/qwen3-6-35b-a3b-fp8.md
       - Qwen3-Embedding-8B: recipes/qwen3-embedding-8b.md
+      - Qwen3-Embedding-4B: recipes/qwen3-embedding-4b.md
+      - Qwen3-VL-Embedding-8B: recipes/qwen3-vl-embedding-8b.md
+      - Gemma 4 E2B IT: recipes/gemma-4-e2b-it.md
+      - Qwen-AgentWorld-35B-A3B: recipes/qwen-agentworld-35b-a3b.md
+      - Ornith-1.0-35B: recipes/ornith-1-0-35b.md
+      - Qwen3-VL-32B-Instruct-FP8: recipes/qwen3-vl-32b-instruct-fp8.md
+      - GLM-4.5V-FP8: recipes/glm-4-5v-fp8.md
+      - Muse Glimmer 30B: recipes/muse-glimmer-30b.md
       - Qwen3-235B-A22B-2507-FP8: recipes/qwen3-235b-a22b-2507-fp8.md
+      - Qwen3.5-122B-A10B-FP8: recipes/qwen3-5-122b-a10b-fp8.md
+      - Qwen3-Coder-Next: recipes/qwen3-coder-next.md
+      - Devstral-2-123B-Instruct-2512: recipes/devstral-2-123b-instruct-2512.md
       - Gemma 4 31B IT: recipes/gemma-4-31b-it.md
       - gpt-oss-120b: recipes/gpt-oss-120b.md
-      - Llama 4 Scout: recipes/llama-4-scout-17b-16e-instruct.md
+      - Llama 4 Scout 17B-16E Instruct: recipes/llama-4-scout-17b-16e-instruct.md
       - Laguna-S-2.1: recipes/laguna-s-2-1.md
+      - MiniMax-M2.7: recipes/minimax-m2-7.md
       - Qwen3.5-397B-A17B-FP8: recipes/qwen3-5-397b-a17b-fp8.md
+      - Beam-1.0-501B-A23B-FP8: recipes/beam-1-0-501b-a23b-fp8.md
+      - Muse Spark Open: recipes/muse-spark-open.md
+      - "GLM-5.2 (MXFP4)": recipes/glm-5-2-mxfp4.md
+      - "GLM-5.3 (MXFP4)": recipes/glm-5-3-mxfp4.md
+      - GLM-5.3-Flash: recipes/glm-5-3-flash.md
+      - DeepSeek-V4.1-Flash-1017: recipes/deepseek-v4-1-flash-1017.md
+      - "Kimi-K2.7-Code (MXFP4)": recipes/kimi-k2-7-code.md
+      - MiniMax-M3: recipes/minimax-m3.md
+      - MiMo-V2.6-Flash-RL: recipes/mimo-v2-6-flash-rl.md
+      - Inkling-Small: recipes/inkling-small.md
   - Fixes:
       - fixes/index.md
       - fixes/prompt-order.md
@@ -76,6 +100,7 @@ nav:
       - fixes/async-discard-counter.md
       - fixes/resumed-prefill-logits.md
       - fixes/hybrid-decode-pad.md
+      - fixes/gdn-prefix-cache.md
       - fixes/penalty-shapes.md
       - fixes/logits-empty-guard.md
       - fixes/gather-logprobs-int32.md
@@ -90,15 +115,21 @@ nav:
       - fixes/fp8-moe-gather.md
       - fixes/moe-router-weight-on-input.md
       - fixes/mm-merge-idxcopy.md
+      - fixes/mm-encoder-budget.md
+      - fixes/mm-pooling-inputs.md
+      - fixes/glm4-moe-3d-input.md
       - fixes/rope-cpu-cache.md
       - fixes/rank-exception-fatal.md
       - fixes/vllm-long-prefill-share.md
+      - fixes/pipeline-parallel.md
       - fixes/structured-outputs-auto-whitespace.md
       - fixes/xgrammar-generation-eos-stop.md
       - fixes/glm47-streaming-text-markers.md
+      - fixes/glm45v-box-tokens.md
       - fixes/gptoss-harmony-parse-recovery.md
       - fixes/gemma4-required-tool-grammar.md
       - fixes/gemma4-buffered-tool-args.md
+      - fixes/gemma4-fast-prefill.md
       - fixes/qwen3-strict-think-end.md
       - fixes/llama4-tools-lenient.md
       - fixes/gemma4-bos-tokenizer.md
@@ -114,6 +145,8 @@ nav:
       - Beam-1.0: ports/beam-1-0.md
       - MiMo-V2.6-Flash: ports/mimo-v2-6-flash.md
       - Kimi-K2.7-Code: ports/kimi-k2-7.md
+      - MiniMax-M3: ports/minimax-m3.md
+      - Inkling-Small: ports/inkling-small.md
   - Results:
       - results/index.md
       - Platform findings: results/platform-findings.md
@@ -132,3 +165,4 @@ nav:
       - Rollouts and scaling: kubernetes/rollouts-and-scaling.md
       - Routing: kubernetes/routing.md
       - Observability: kubernetes/observability.md
+      - Multi-node: kubernetes/multi-node.md

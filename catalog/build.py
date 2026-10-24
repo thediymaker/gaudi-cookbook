@@ -61,7 +61,8 @@ KERNEL = {
         ("2.1\u00d7", "Muse Spark Open per stream at 4 streams: 10.9 \u2192 23.3 tok/s"),
         ("2\u20134\u00d7", "lower error than the stock op against an fp32 reference"),
     ],
-    # (model, setup, stock, with the kernel, gain, how it was measured, where it lives)
+    # (model, setup, stock, with the kernel, gain, how it was measured, where it lives: recipe:<id>, port:<id>
+    # (links the port's recipe once one exists, else its write-up) or doc:<path>)
     "models": [
         (
             "openai/gpt-oss-120b",
@@ -70,7 +71,7 @@ KERNEL = {
             "52.4",
             "3.2\u00d7",
             "same-node A/B",
-            "package",
+            "recipe:openai/gpt-oss-120b",
         ),
         (
             "GLM-5.3 (MXFP4)",
@@ -79,16 +80,16 @@ KERNEL = {
             "59.1",
             "2.5\u00d7",
             "3 same-node A/Bs chained",
-            "results",
+            "port:glm-5-mxfp4",
         ),
         (
             "DeepSeek-V4.1-Flash (MXFP4)",
             "8 cards, TP 8, 1 stream",
-            "16.7 tok/s",
-            "23.3",
-            "1.4\u00d7",
-            "same-pod A/B",
-            "results",
+            "20.7 tok/s",
+            "37.6",
+            "1.8\u00d7",
+            "same-pod A/B, published recipe",
+            "port:deepseek-v4-1-flash",
         ),
         (
             "GLM-5.2 (MXFP4)",
@@ -97,7 +98,7 @@ KERNEL = {
             "47.8",
             "2.1\u00d7",
             "stock pod vs kernel pods",
-            "results",
+            "port:glm-5-mxfp4",
         ),
         (
             "Muse Spark Open",
@@ -106,7 +107,7 @@ KERNEL = {
             "33.5",
             "1.5\u00d7",
             "same deployment, image + flag swapped",
-            "results",
+            "port:muse-spark-open",
         ),
         (
             "Muse Spark Open",
@@ -115,7 +116,7 @@ KERNEL = {
             "23.3",
             "2.1\u00d7",
             "same deployment, image + flag swapped",
-            "results",
+            "port:muse-spark-open",
         ),
         (
             "MiMo-V2.6-Pro (MXFP4)",
@@ -124,7 +125,7 @@ KERNEL = {
             "39.7",
             "2.2\u00d7",
             "same node: stock pod, then kernel pod",
-            "results",
+            "doc:kernels/mxfp4-moe/#beyond-gpt-oss",
         ),
     ],
     "models_note": "GLM, DeepSeek, MiMo and Muse Spark Open use model-specific integrations that are not in the cookbook yet. "
@@ -251,8 +252,8 @@ RESULTS = [
     (
         "EmbeddingGemma 2",
         "Bidirectional multimodal embedder",
-        "145k to 235k text tok/s per card",
-        "per-call, one card; cosine ≥ 0.9999",
+        "95k to 235k text tok/s per card",
+        "per-call, one card; cosine ≥ 0.9995",
         "results/embeddinggemma-2/",
     ),
 ]
@@ -384,8 +385,31 @@ def serve_block(model, pairs, indent="", exec_=False, extra=()):
     return lines
 
 
+def serve_target(r):
+    """The model argument of `vllm serve`, and the extra args it implies.
+
+    A recipe that serves a converted local checkpoint sets gaudi.serve_model (for example "$CHECKPOINT_DIR"); the
+    served name then stays the public model id.
+    """
+    local = r["gaudi"].get("serve_model")
+    if not local:
+        return r["id"], ()
+    return (f'"{local}"' if local.startswith("$") else local), (f"--served-model-name {r['id']}",)
+
+
+def port_of(r):
+    return r["gaudi"].get("port")
+
+
+def image_of(r):
+    """The image the launch runs in: the stock image, or the port image built from it."""
+    port = port_of(r)
+    return f"<your-{port}-image>" if port else r["gaudi"]["image"]["placeholder"]
+
+
 def uses_cookbook(r):
-    return bool(r["gaudi"].get("required_fixes")) or any(str(a).startswith("fixes/") for a in r["gaudi"]["serve_args"])
+    g = r["gaudi"]
+    return bool(port_of(r) or g.get("required_fixes")) or any(str(a).startswith("fixes/") for a in g["serve_args"])
 
 
 def build_commands(r, enabled, fix_pack):
@@ -399,12 +423,22 @@ def build_commands(r, enabled, fix_pack):
     for block in (setup, fixes):
         if block:
             shell += [""] + block
-    shell += [""] + serve_block(r["id"], pairs)
+    model, named = serve_target(r)
+    shell += [""] + serve_block(model, pairs, extra=named)
     shell_text = "\n".join(shell).strip("\n")
 
-    image = g["image"]["placeholder"]
+    image = image_of(r)
     cb = uses_cookbook(r)
-    docker = [
+    port = port_of(r)
+    docker = []
+    if port:
+        docker += [
+            f"# 0. Build the port image from a stock image (ports/{port}/README.md).",
+            f"docker build -f gaudi-cookbook/ports/{port}/Dockerfile \\",
+            f"  --build-arg BASE={g['image']['placeholder']} -t {image} gaudi-cookbook",
+            "",
+        ]
+    docker += [
         "# 1. Write the launch script (the Shell tab)" + (" next to a checkout of this repository." if cb else "."),
         "cat > launch.sh <<'EOF'",
         shell_text,
@@ -427,14 +461,17 @@ def build_commands(r, enabled, fix_pack):
         if block:
             script += block
     slug = r["meta"].get("slug") or r["repo"].lower()
-    extra = (f"--served-model-name {slug}", "--host 0.0.0.0", "--port 8000", "--shutdown-timeout 120")
-    script += serve_block(r["id"], pairs, exec_=True, extra=extra)
+    model, named = serve_target(r)
+    extra = (*(named or (f"--served-model-name {slug}",)), "--host 0.0.0.0", "--port 8000", "--shutdown-timeout 120")
+    script += serve_block(model, pairs, exec_=True, extra=extra)
     cards = str(g["cards"]["total"])
     k8s = [
         "# Container for kubernetes/manifests/vllm-deployment.yaml: keep the template's probes, volumes,",
         "# hugepages and drain settings, and size CPU and memory per card (docs/kubernetes/pod-spec.md).",
     ]
-    if cb:
+    if port:
+        k8s.append(f"# The port image (ports/{port}/Dockerfile) carries this repository at {IMAGE_COOKBOOK}.")
+    elif cb:
         k8s.append(f"# Assumes this repository is copied into the image at {IMAGE_COOKBOOK}.")
     k8s += [
         "containers:",
@@ -529,11 +566,16 @@ def check(recipes, fix_pack):
             bad += 1
             continue
         mine = shell_tokens(build_commands(r, set(r.get("features") or {}), fix_pack)["shell"])
-        blocks = [b for b in docs_launch_blocks(r["page"]) if f"vllm serve {r['id']}" in b]
+        # Compare as shell tokens, so `vllm serve "$X"` and `vllm serve $X` both match.
+        target = shlex.split(serve_target(r)[0])[0]
+        serve = f"vllm serve {target}"
+        blocks = [
+            b
+            for b in docs_launch_blocks(r["page"])
+            if any(t[t[:1] == ["exec"] :][:3] == ["vllm", "serve", target] for t in shell_tokens(b))
+        ]
         if len(blocks) != 1:
-            print(
-                f"{r['id']}: expected one Launch block with 'vllm serve {r['id']}' in {r['page']}, found {len(blocks)}"
-            )
+            print(f"{r['id']}: expected one Launch block with '{serve}' in {r['page']}, found {len(blocks)}")
             bad += 1
             continue
         theirs = shell_tokens(blocks[0])
@@ -585,20 +627,28 @@ ICONS = {
 }
 
 
-def spotlight(prefix):
+def spotlight(prefix, recipes):
     stats = "".join(
         f'<div class="stat"><div class="stat-num">{E(n)}</div><div class="stat-label">{E(t)}</div></div>'
         for n, t in KERNEL["stats"]
     )
     gptoss = next(iter(KERNEL["recipes"]))
     org, repo = gptoss.split("/")
-    tags = {
-        "package": f'<a class="tag ok" href="{prefix}{org}/{repo}/">in the cookbook</a>',
-        "results": '<span class="tag">results only</span>',
-    }
+
+    def tag(where):
+        kind, _, target = where.partition(":")
+        if kind == "port":
+            r = next((r for r in recipes if port_of(r) == target), None)
+            if r is None:
+                return f'<a class="tag" href="{prefix}{DOCS_DIR}ports/{target}/">write-up</a>'
+            target = r["id"]
+        elif kind == "doc":
+            return f'<a class="tag" href="{prefix}{DOCS_DIR}{target}">write-up</a>'
+        return f'<a class="tag ok" href="{prefix}{target}/">recipe</a>'
+
     rows = "".join(
         f'<tr><td class="mono">{E(m)}</td><td>{E(setup)}</td><td class="num">{E(a)}</td><td class="num"><b>{E(b)}</b></td>'
-        f'<td class="num gain">{E(g)}</td><td class="muted">{E(how)}</td><td>{tags[where]}</td></tr>'
+        f'<td class="num gain">{E(g)}</td><td class="muted">{E(how)}</td><td>{tag(where)}</td></tr>'
         for m, setup, a, b, g, how, where in KERNEL["models"]
     )
     return f"""<section class="spotlight">
@@ -771,6 +821,8 @@ def recipe_card(r, prefix, logos):
         f'<span class="badge subtle">{icon(t if t in ICONS else "text", 10)}{E(TASK_LABELS.get(t, t))}</span>'
         for t in tasks
     ]
+    if port_of(r):
+        badges.append(f'<span class="badge port">{icon("box", 10)}Port</span>')
     if r["id"] in KERNEL["recipes"]:
         badges.append(
             f'<span class="badge boost">{icon("zap", 10)}{E(KERNEL["recipes"][r["id"]]["stats"][0][0])} with kernel</span>'
@@ -909,7 +961,7 @@ def home_page(recipes, logos):
       <span>vllm-gaudi <b>v0.26.0</b> &middot; <b>v0.30.0</b></span>
     </div>
   </header>
-  {spotlight(p)}
+  {spotlight(p, recipes)}
   <section id="all">
     {section_head("All recipes", f'<span class="eyebrow-sub" data-count>{len(recipes)} shown</span><button type="button" class="link-btn" data-clear hidden>Clear filters</button>')}
     <div class="filters">
@@ -1124,20 +1176,34 @@ def guide_html(r, recipes, prefix):
     return re.sub(r'href="([^"]+)"', link, out)
 
 
+def port_links(r, prefix):
+    port = port_of(r)
+    if not port:
+        return ""
+    return (
+        f'<a href="{prefix}{DOCS_DIR}ports/{port}/">How it was ported {icon("book", 11)}</a>'
+        f'<a href="{REPO_URL}/tree/main/ports/{port}">Port code {icon("external", 10)}</a>'
+    )
+
+
 def recipe_page(r, recipes, fix_pack, fix_status, logos):
     p = "../../"
     m, g, meta = r["model"], r["gaudi"], r["meta"]
     status = status_of(r)
     moe = m.get("architecture") == "moe"
-    tags = [
-        f'<span class="badge lg">{icon("layers" if moe else "cpu", 11)}{E(m.get("architecture", ""))}</span>',
-        f'<span class="badge lg mono">{E(m.get("parameter_count", ""))}'
-        + (f" / {E(m['active_parameters'])} active" if moe and m.get("active_parameters") else "")
-        + "</span>",
-        f'<span class="badge lg mono">{int(g["max_model_len"]):,} ctx served</span>',
-        f'<span class="badge lg mono upper">{E(precision_of(r))}</span>',
-        f'<span class="badge lg mono">vllm-gaudi {E(release_of(r))}</span>',
-    ] + [f'<span class="badge lg secondary">{E(TASK_LABELS.get(t, t))}</span>' for t in meta.get("tasks") or []]
+    tags = (
+        [
+            f'<span class="badge lg">{icon("layers" if moe else "cpu", 11)}{E(m.get("architecture", ""))}</span>',
+            f'<span class="badge lg mono">{E(m.get("parameter_count", ""))}'
+            + (f" / {E(m['active_parameters'])} active" if moe and m.get("active_parameters") else "")
+            + "</span>",
+            f'<span class="badge lg mono">{int(g["max_model_len"]):,} ctx served</span>',
+            f'<span class="badge lg mono upper">{E(precision_of(r))}</span>',
+            f'<span class="badge lg mono">vllm-gaudi {E(release_of(r))}</span>',
+        ]
+        + ([f'<span class="badge lg port">{icon("box", 11)}Port</span>'] if port_of(r) else [])
+        + [f'<span class="badge lg secondary">{E(TASK_LABELS.get(t, t))}</span>' for t in meta.get("tasks") or []]
+    )
     status_html = (
         f'<span class="status-pill verified">{icon("shield", 12)}Verified on Gaudi 2</span>'
         if status == "verified"
@@ -1168,6 +1234,7 @@ def recipe_page(r, recipes, fix_pack, fix_status, logos):
           {status_html}
           <a href="https://huggingface.co/{E(r["id"])}">Hugging Face {icon("external", 10)}</a>
           <a href="{doc_url}">Full guide {icon("book", 11)}</a>
+          {port_links(r, p)}
         </div>
       </div>
     </div>

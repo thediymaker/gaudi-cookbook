@@ -22,7 +22,7 @@ Everything here was run on these components. Treat anything outside them as unte
 | Gaudi software | 1.24.1. The container release must match the host driver. |
 | Base image | `vault.habana.ai/gaudi-docker/1.24.1/ubuntu24.04/habanalabs/pytorch-installer-2.11.0` |
 | vllm-gaudi | `v0.26.0` tag (`b059f9c`, vLLM `568afb3a`) or `releases/v0.30.0` branch (`058f107`, vLLM `ced6857a`) |
-| Execution mode | lazy mode, `PT_HPU_LAZY_MODE=1` |
+| Execution mode | lazy mode, `PT_HPU_LAZY_MODE=1`, unless the recipe's `gaudi.env` sets `PT_HPU_LAZY_MODE=0` (compile mode: the Gated DeltaNet hybrids, MiMo-V2.6-Flash and MiniMax-M3) |
 
 ## Where to look
 
@@ -33,8 +33,10 @@ Everything here was run on these components. Treat anything outside them as unte
 | Explain an error, crash or wrong output | the `## Symptom` section of every `fixes/*/README.md` | Search for the error text: `grep -rn -A8 "^## Symptom" fixes/*/README.md`. Each fix lists who is affected and the releases. |
 | Know which fixes a release needs | `python3 fixes/apply_all.py --list` and `docs/fixes/index.md` | The profile for the release covers the generic fixes. Opt-in fixes are named on the command line. |
 | Build a serving image | `docs/getting-started.md` | Follow the build steps. They keep the Habana PyTorch fork. |
-| Speed up gpt-oss decode | `kernels/mxfp4-moe/README.md` and `docs/kernels/mxfp4-moe.md` | Opt-in and gpt-oss MXFP4 only. See the rules below. |
-| Port a model that has no vllm-gaudi path | `docs/ports/*.md`, then `docs/results/platform-findings.md` | The ports describe the design and the gates; the platform findings list Gaudi behaviours that break new models (FusedSDPA sinks and windows, fp32 trig, lazy-mode casts). The port code is not published, so do not claim it is. |
+| Speed up MXFP4 MoE decode | `kernels/mxfp4-moe/README.md` and `docs/kernels/mxfp4-moe.md` | Opt-in. gpt-oss uses the hook in `kernels/mxfp4-moe/python/`; GLM-5.x, DeepSeek-V4.1-Flash, Muse Spark Open and Kimi use their port. See the rules below. |
+| Serve a ported model (a recipe with `gaudi.port`) | `ports/<port>/README.md`, then the recipe | Build the port image from the stock image with `ports/<port>/Dockerfile`, then launch as for any recipe. Run `ports/<port>/tests/hpu/run_gates.sh` before serving users. |
+| Port a model that has no vllm-gaudi path | `ports/README.md`, `docs/ports/*.md`, then `docs/results/platform-findings.md` | The port contract says how a port is laid out; the write-ups describe each design and its gates; the platform findings list Gaudi behaviours that break new models (FusedSDPA sinks and windows, fp32 trig, lazy-mode casts). |
+| Serve a model that does not run on vLLM (text-to-speech, EmbeddingGemma 2) | `servers/README.md`, then `servers/<server>/README.md` | Build the server image from its `Dockerfile`, then run `tests/hpu/run_gates.sh` on the device. Orpheus is the exception: its LLM half runs on a stock vllm-gaudi image with fixes. |
 | Run on Kubernetes | `docs/kubernetes/*.md`, `kubernetes/manifests/`, `kubernetes/tools/` | Start with `docs/kubernetes/pod-spec.md`. Replace the placeholders `<registry>/<image>:<tag>`, `<storage-class>` and namespace `llm`. |
 | Debug "Device acquire failed", missing cards or stalled engines | `docs/kubernetes/health-and-failure.md` | The matching tool is in `kubernetes/tools/`. Each prints its usage with `-h`. |
 
@@ -72,18 +74,21 @@ over rebuilding it from the YAML.
   Performance numbers are single runs at the stated shape. Do not present them as guarantees, and
   do not carry them over to other hardware, images or flags.
 - **Respect "What not to do".** Recipes record settings that break the model, such as prefix
-  caching on Gated DeltaNet models with the stock releases. Do not turn these back on to gain
-  speed.
+  caching on Gated DeltaNet models with the stock releases and without the `gdn-prefix-cache`
+  fix. Do not turn these back on to gain speed.
 - **Ask before touching shared hardware.** Ask the user first before you apply manifests, delete
   pods, or run a tool that takes cards:
   - `hpu-acquire-check.sh` only reads without node names. Its live test takes cards on the nodes
     you name.
   - `hpu-fleet-sweep.sh` is read-only, over SSH.
   - `hpu-resource-audit.py` only reads manifest files.
-- **Treat the kernel as opt-in.** The MXFP4 kernel is for gpt-oss MXFP4 checkpoints, decode calls
-  of at most 32 tokens. It must be built inside the serving image. Run `tests/run_parity.sh` and
-  check for `PARITY PASS` and `SIG_DEVICE PASS` before enabling `MXFP4_TPC_MOE=1`. Rollback is
-  `MXFP4_TPC_MOE=0`.
+- **Treat the kernel as opt-in.** The MXFP4 kernel has one build variant per model family
+  (`build.sh --variant gptoss|glm|dsv41|muse|kimi`); never use one variant for another model. Each
+  variant has shape caps (see "Op reference" in `kernels/mxfp4-moe/README.md`), and calls outside
+  them must stay on the stock op. Build it inside the serving image, and run
+  `tests/run_parity.sh --variant <name>` and check for `PARITY PASS` and `SIG_DEVICE PASS` before
+  enabling it. gpt-oss switches with `MXFP4_TPC_MOE=1` (rollback `MXFP4_TPC_MOE=0`); a port names its
+  own switch in its README.
 - **Cite the page.** When you give the user a setting from here, name the file it came from, so
   they can read the reasoning and the evidence.
 
@@ -96,12 +101,14 @@ ruff check . && ruff format --check .
 yamllint -c .yamllint.yaml recipes kubernetes .github
 python3 scripts/gen_llms_txt.py --check   # docs/llms.txt is generated; rerun without --check after changes
 mkdocs build --strict          # pip install -r requirements-docs.txt
-pytest fixes                   # skips what it cannot run here (no torch, no vLLM, no device)
-GAUDI_FIXES_ROOT=<site-packages of a release> GAUDI_FIXES_PROFILE=v0.30.0 pytest fixes/test_fixes.py
+pytest --import-mode=importlib fixes ports servers kernels   # skips what needs torch, vLLM or a device
+GAUDI_FIXES_ROOT=<dir with a release's vllm/ and vllm_gaudi/> GAUDI_FIXES_PROFILE=v0.30.0 \
+    pytest --import-mode=importlib fixes ports
 ```
 
-The second line applies the whole profile twice to a temporary copy of a release's sources.
-Run it whenever a fix or `apply_all.py` changes.
+The last command applies the profile and every recipe's fix set twice to a temporary copy of a
+release's sources, and runs each port's patch chain if the port targets that release. Run it for
+both releases whenever a fix, a port patch or `apply_all.py` changes.
 
 | Change | What it needs |
 | --- | --- |

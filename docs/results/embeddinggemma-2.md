@@ -4,7 +4,8 @@ EmbeddingGemma 2 is a 740M multimodal embedding model: text, images, audio and v
 one 768-dimension vector. vllm-gaudi v0.30.0 cannot serve it, because the model uses bidirectional attention
 and the HPU attention path in that release is causal only. A small custom server built on transformers runs it
 on one Gaudi 2 card instead, with HPU graphs in lazy mode. It matches a CPU fp32 reference to a cosine of at
-least 0.9999 for every modality and embeds text at roughly 145k to 235k tokens per second per card.
+least 0.9995 for every modality, as close as the stock model in bf16 on the CPU gets, and embeds text at roughly
+95k to 235k tokens per second per card, depending on where the client runs.
 
 !!! summary "At a glance"
     - **Checkpoint:** [google/embeddinggemma-2](https://huggingface.co/google/embeddinggemma-2), Apache 2.0,
@@ -13,8 +14,8 @@ least 0.9999 for every modality and embeds text at roughly 145k to 235k tokens p
     - **Hardware:** one Gaudi 2 card per replica, Gaudi software 1.24.1, lazy mode, Habana's PyTorch 2.11
       container with transformers 5.20.2 and PyAV 12.1.0.
     - **Status:** serving production traffic.
-    - **Headline:** cosine at least 0.9999 against a CPU fp32 reference, every modality. Text about 145k to
-      235k tok/s (per-call, one card). Flickr30k 1k caption to image R@1 86.5.
+    - **Headline:** cosine at least 0.9995 against a CPU fp32 reference, every modality, the same floor as the
+      stock model in bf16 on the CPU. Text about 95k to 235k tok/s (per-call, one card). Flickr30k 1k caption to image R@1 86.5.
 
 ## Why vLLM could not serve it
 
@@ -80,7 +81,7 @@ are refused). Audio in any format PyAV decodes is downmixed to mono and resample
 
 | Gate | Result |
 | --- | --- |
-| Cosine vs CPU fp32 reference (processor plus stock model, itself identical to sentence-transformers): text up to 8192 tokens, images of two aspect ratios, two images plus text, audio of 6 s and 35 s, text plus audio, video | at least 0.9999 for every case |
+| Cosine vs CPU fp32 reference (processor plus stock model, itself identical to sentence-transformers): text up to 8192 tokens, images of two aspect ratios, two images plus text, audio of 6 s and 35 s, text plus audio, video | at least 0.9995 for every case (lowest 0.99957, a 35 s audio clip; the stock model in bf16 on the CPU scores 0.99952 on the same clip) |
 | Same inputs in mixed batches vs one at a time | same vectors |
 | Flickr30k 1k test, caption to image | R@1 86.5, R@5 97.5 |
 | Flickr30k 1k test, image to caption | R@1 95.8, R@5 99.8 |
@@ -90,7 +91,8 @@ are refused). Audio in any format PyAV decodes is downmixed to mono and resample
 
 | Load | Throughput | Single request | Measured as |
 | --- | --- | --- | --- |
-| Text, 240-token passages | about 145k to 235k tok/s across runs | 5 ms per query | per-call, one card |
+| Text, 240-token passages, client in another pod | about 145k to 235k tok/s across runs | 5 ms per query | per-call, one card |
+| Text, 275-token passages, client in the server's pod (the published gate) | 95,627 tok/s, 348 passages/s | 4.9 ms p50 per query | per-call, one card |
 | Text, 240-token passages, one benchmark run | 148,900 tok/s, 613 passages/s | 5.1 ms p50 per query | per-call, one card |
 | Images, 640x480 JPEG | about 35 to 50 images/s | 52 ms | per-call, one card |
 | Audio, 5.9 s clips | about 25 clips/s | not measured | per-call, one card |
@@ -110,5 +112,7 @@ make it faster. CPU preprocessing is about 20 ms per image and 7 ms per audio cl
 
 ## Availability
 
-The server code (engine, API server and media handling) is not published in this repository yet. It depends on
-transformers' EmbeddingGemma 2 model code, not on vllm-gaudi.
+The server is published in [`servers/embeddinggemma-2/`](https://github.com/thediymaker/gaudi-cookbook/tree/main/servers/embeddinggemma-2): the engine, the
+API server, media handling, an image built on the stock Gaudi 1.24.1 PyTorch image with transformers 5.20.2, CPU
+tests, and device gates (`tests/hpu/run_gates.sh`) that check cosine against the stock model in fp32 on the CPU and
+measure throughput. It depends on transformers' EmbeddingGemma 2 model code, not on vllm-gaudi.

@@ -11,4 +11,4 @@ number says how it was measured.
 | [Two-node pipeline parallel](two-node-pipeline.md) | PP 2 x TP 8 across two nodes over the host NIC, a long-context tier | KV pool 709,888 tokens vs about 346K on one node; needles pass at 637K |
 | [Gemma-4-E2B fast prefill](gemma-4-e2b-prefill.md) | KV-shared layers skip work in prefill, ported to HPU | 72.8k to about 170k tok/s prefill on one card (same card) |
 | [Fast text-to-speech](tts-on-gaudi.md) | Qwen3-TTS, Chatterbox and Orpheus on Gaudi 2, with reusable patterns for HF generate loops | Qwen3-TTS about 8x real time with 50 ms to first audio; Chatterbox Turbo 10x to 13x |
-| [EmbeddingGemma 2 without vLLM](embeddinggemma-2.md) | A custom server for a bidirectional multimodal embedder | About 145k to 235k tok/s per card for text; cosine of at least 0.9999 against a CPU fp32 reference |
+| [EmbeddingGemma 2 without vLLM](embeddinggemma-2.md) | A custom server for a bidirectional multimodal embedder | About 95k to 235k tok/s per card for text; cosine of at least 0.9995 against a CPU fp32 reference, the bf16 floor |

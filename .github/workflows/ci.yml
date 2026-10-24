@@ -32,3 +32,45 @@ jobs:
       - run: pip install -r requirements-docs.txt
       - run: mkdocs build --strict
       - run: python3 catalog/build.py --check --no-fetch --out _site
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest==9.1.1 pyyaml==6.0.3
+      # skips what needs torch, vLLM or a device
+      - run: pytest -q --import-mode=importlib fixes ports servers kernels
+
+  fixes-on-release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - profile: v0.26.0
+            vllm: 568afb3a13806beb53bb2e6bd518269357b237c0
+            vllm_gaudi: b059f9c95d6a07f19eb00aa06d1ec8b87b296437
+          - profile: v0.30.0
+            vllm: ced6857afa0ea7b2e3f0846a62e1394e90f15607
+            vllm_gaudi: 058f107a2a63319334c8d442acc854a957e35ce8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest==9.1.1 pyyaml==6.0.3
+      - name: Fetch the release sources
+        run: |
+          fetch() { git init -q "$1" && git -C "$1" fetch -q --depth 1 "$2" "$3" && git -C "$1" checkout -q FETCH_HEAD; }
+          fetch "$RUNNER_TEMP/vllm" https://github.com/vllm-project/vllm ${{ matrix.vllm }}
+          fetch "$RUNNER_TEMP/vllm-gaudi" https://github.com/vllm-project/vllm-gaudi ${{ matrix.vllm_gaudi }}
+          mkdir "$RUNNER_TEMP/site"
+          ln -s "$RUNNER_TEMP/vllm/vllm" "$RUNNER_TEMP/site/vllm"
+          ln -s "$RUNNER_TEMP/vllm-gaudi/vllm_gaudi" "$RUNNER_TEMP/site/vllm_gaudi"
+      # applies the profile and every recipe's fix set twice to a copy of the sources, and the port patch chains
+      - run: pytest -q --import-mode=importlib fixes ports
+        env:
+          GAUDI_FIXES_ROOT: ${{ runner.temp }}/site
+          GAUDI_FIXES_PROFILE: ${{ matrix.profile }}

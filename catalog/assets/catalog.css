@@ -449,6 +449,7 @@ html.dark .spot-btn.primary:hover { color: #0b1020; }
 @media (max-width: 900px) { .spotlight { grid-template-columns: 1fr; padding: 20px; } }
 @media (max-width: 420px) { .spot-stats { grid-template-columns: 1fr; } }
 
+.badge.port { border-color: var(--accent-border); color: var(--accent); }
 .badge.boost { border-color: var(--accent-border); color: var(--accent); background: var(--accent-soft); font-weight: 600; }
 
 .kernel-callout {

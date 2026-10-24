@@ -151,6 +151,18 @@ See also [platform findings](platform-findings.md).
 
 ## Availability
 
-The Qwen3-TTS and Chatterbox servers and the Orpheus sidecar are not published in this repository yet. They
-depend on the upstream model packages (`qwen-tts`, `chatterbox-tts`, `snac`), not on vllm-gaudi. The
-[penalty-shapes](../fixes/penalty-shapes.md) fix used by Orpheus is published.
+The servers are published in [`servers/`](https://github.com/thediymaker/gaudi-cookbook/tree/main/servers) with their images, CPU tests
+and device gates:
+
+- [`servers/qwen3-tts/`](https://github.com/thediymaker/gaudi-cookbook/tree/main/servers/qwen3-tts): the Qwen3-TTS engine and server, built on the stock Gaudi
+  1.24.1 PyTorch image with the `qwen-tts` package.
+- [`servers/chatterbox/`](https://github.com/thediymaker/gaudi-cookbook/tree/main/servers/chatterbox): Chatterbox and Chatterbox Turbo from one card, built on
+  the same image with the `chatterbox-tts` package.
+- [`servers/orpheus/`](https://github.com/thediymaker/gaudi-cookbook/tree/main/servers/orpheus): the vLLM command for Orpheus and the SNAC sidecar, built on a
+  stock vllm-gaudi v0.26.0 image with the v0.26.0 fix profile and [penalty-shapes](../fixes/penalty-shapes.md).
+  The checkpoint is gated: accept its licence on Hugging Face first.
+- [`servers/common/`](https://github.com/thediymaker/gaudi-cookbook/tree/main/servers/common): the SIGPIPE guard, the fatality latch and watchdog, the shared
+  `/v1/audio/speech` formats and the gate script every TTS server uses.
+
+Each server's `tests/hpu/run_gates.sh` measures real-time factor and first audio, checks the audio's length and
+spectrum, and with `--whisper` transcribes the clips.

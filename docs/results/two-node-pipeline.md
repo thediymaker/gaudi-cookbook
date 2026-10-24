@@ -15,7 +15,7 @@ before the MXFP4 TPC kernel and no longer holds.
     - **Hardware:** two 8-card Gaudi 2 nodes. Stage 0 = layers 0 to 41 and the embedding, stage 1 = layers 42 to
       77 and the LM head; TP 8 + EP 8 inside each node; 100 Gbit/s host NIC between them.
     - **Stack:** Gaudi software 1.24.1, a vllm-gaudi 0.24 build (vLLM 0.24), lazy mode, plus a pipeline patch.
-    - **Status:** canary and study. Not in production.
+    - **Status:** study on two test nodes; not a recipe.
     - **Headline:**
         - KV pool 709,888 tokens against about 346K on one node (both at `--gpu-memory-utilization 0.86`).
         - Needles 3/3 at 512K, 600K and 637,640 tokens.
@@ -55,7 +55,7 @@ would need data-parallel attention or a host-memory KV tier.
 
 **Long context.** Past 262K keys stage 0 ran out of device memory in the DSA prefill (indexer scratch, then
 dense-masked attention). Row-budget limits in the DSA patch fixed it without changing the key selection or
-anything below 32K keys, at a cost of 2% to 5% TTFT at 32K to 128K. The long-context canary runs at utilization
+anything below 32K keys, at a cost of 2% to 5% TTFT at 32K to 128K. The long-context configuration runs at utilization
 0.80 (pool 660,352 tokens).
 
 **MTP under PP.** vLLM's config check refuses it: the draft model inherits the pipeline size, and the DeepSeek MTP
@@ -86,12 +86,12 @@ About 30% of the FP8 output error is the weights; the rest is the per-token FP8 
 
 | Speed | Result | Measured as |
 | --- | --- | --- |
-| FP8 PP2, 2K context, 1 / 4 / 32 streams, per stream | 30.5 / 27.8 / 15.5 tok/s (495 aggregate at 32) | canary pair, MTP off, warm |
+| FP8 PP2, 2K context, 1 / 4 / 32 streams, per stream | 30.5 / 27.8 / 15.5 tok/s (495 aggregate at 32) | test pair, MTP off, warm |
 | MXFP4 PP2, same | 14.9 / 11.8 / 4.5 tok/s | same pair, MXFP4 checkpoint |
 | FP8 PP2 + MTP, 1 stream, 2K to 256K | 39 to 46 tok/s, 1.3x to 1.6x over no MTP | a second pair with the MTP patch |
 | Async scheduling under PP, 1 stream | +11% | A/B on the second pair |
-| TTFT, FP8 PP2, 2K / 32K / 128K | 0.29 / 4.55 / 30.7 s | canary pair, warm |
-| Decode at 640K window, 1 stream, 128K / 256K context | 20.8 / 15.9 tok/s | canary pair, utilization 0.80 |
+| TTFT, FP8 PP2, 2K / 32K / 128K | 0.29 / 4.55 / 30.7 s | test pair, warm |
+| Decode at 640K window, 1 stream, 128K / 256K context | 20.8 / 15.9 tok/s | test pair, utilization 0.80 |
 | MoE layer, 1 / 32 tokens, one card | FP8 0.11 / 0.53 ms; stock MXFP4 op 0.50 / 4.53 ms | per-call, one card |
 
 MXFP4 at PP2 runs at the single node's per-card rate: the speed gain came from FP8 experts, not from pipeline
@@ -118,5 +118,20 @@ for the single-node MXFP4 kernel build (different conditions: separate pods and 
 
 ## Availability
 
-The pipeline patches and the FP8 conversion are not published in this repository yet. They depend on model code
-outside vllm-gaudi.
+The pipeline runtime is published as the opt-in fix [pipeline-parallel](../fixes/pipeline-parallel.md), for
+`v0.26.0` and `v0.30.0`: the stage-to-stage transfer, the HPU graph and worker changes, the microbatch cap in the
+scheduler and the per-stage loader. It is generic. On both releases, Qwen3-30B-A3B-Instruct-2507 at PP 2 x TP 2
+over the pod network gave the same greedy answers (12 of 12) and the same teacher-forced top-1 tokens (8,441
+positions, NLL 1.4425) as TP 2 on one node; numbers and the Kubernetes layout are in
+[Multi-node replicas](../kubernetes/multi-node.md).
+
+The GLM-5.3 FP8 configuration above is not a recipe. On `v0.30.0` it needs, on top of the fix:
+
+- the FP8 per-channel conversion of the BF16 experts and its validator, which are not in this repository;
+- GLM-5.3's DSA attention next to FP8 experts: the [glm-5-mxfp4 port](../ports/glm-5-mxfp4.md) carries DSA
+  (with row budgets) on `v0.30.0`, but its loader and kernels target MXFP4 experts, and it was not run with FP8
+  experts or with pipeline stages;
+- the MTP-on-the-last-stage patch and its bucket file, if MTP is wanted (not ported);
+- a verification run on two free 8-card nodes, with the stage split at 42 / 36.
+
+The figures on this page are from the older vllm-gaudi 0.24 build and were not re-measured on a release.

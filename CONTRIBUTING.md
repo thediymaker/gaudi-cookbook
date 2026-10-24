@@ -8,8 +8,9 @@ should run on public images and public checkpoints.
 ## Ground rules
 
 - **Stock first.** A recipe runs on a released vllm-gaudi image, optionally with
-  fixes from [`fixes/`](fixes/). Anything that needs unreleased model code belongs
-  in a write-up, not a recipe.
+  fixes from [`fixes/`](fixes/). A model that needs code vLLM and vllm-gaudi do not
+  have is a port: its code lives in [`ports/`](ports/README.md), installs into the
+  same released image, and its recipe names the port.
 - **Upstream first.** A fix in `fixes/` has an upstream pull request or issue, or
   says why it cannot have one. When the upstream change ships, the fix is marked
   as superseded and later removed.
@@ -29,6 +30,8 @@ should run on public images and public checkpoints.
 | [`recipes/`](recipes/) | One directory per model: `recipe.yaml` plus any bucket files |
 | [`fixes/`](fixes/) | Runtime fixes for released vllm-gaudi images, with tests |
 | [`kernels/`](kernels/) | Custom TPC kernels, their build and their Python glue |
+| [`ports/`](ports/) | Code for models released images cannot serve: a vLLM plugin, patches, kernel build and gates per model |
+| [`servers/`](servers/) | Standalone HPU servers for models that do not run on vLLM, with shared code in `servers/common/` |
 | [`kubernetes/`](kubernetes/) | Manifests and tools for running Gaudi at fleet scale |
 | [`docs/`](docs/) | The documentation site (MkDocs Material) |
 | [`AGENTS.md`](AGENTS.md) | Guide for coding agents that read this repository; keep it in step with the layout |

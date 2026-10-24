@@ -10,7 +10,7 @@ vllm-gaudi never wired it up. This page describes an HPU port and what it does t
     - **Checkpoint:** [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it), Apache 2.0.
     - **Hardware:** one Gaudi 2 card, BF16, vllm-gaudi releases/v0.30.0 (`058f107`), Gaudi software 1.24.1,
       lazy mode.
-    - **Status:** study. Not serving traffic.
+    - **Status:** in the fixes pack as the opt-in fix `gemma4-fast-prefill`, with a verified recipe.
     - **Headline:** prefill-heavy throughput 72.8k to 169.7k tok/s in the matrix run, 176.5k at the sweep peak
       (same card, stock vs fast prefill, both at prompt batch cap 8). Token-exact against stock at prompt batch
       cap 1.
@@ -122,6 +122,9 @@ figure is 108.6k.
 
 ## Availability
 
-The integration code is not published in this repository yet. It patches the vllm-gaudi Gemma 4 model and HPU
-attention backend, and depends on upstream vLLM's KV-sharing model code and on the design of vllm#60445, which
-is still open.
+The port is the opt-in fix [gemma4-fast-prefill](../fixes/gemma4-fast-prefill.md) for
+`releases/v0.30.0`: one stdlib-only `apply.py` that patches the vllm-gaudi Gemma 4 model and the
+HPU attention backend, with a CPU test of the gather, scatter and one-query attention. The recipe
+[Gemma 4 E2B IT](../recipes/gemma-4-e2b-it.md) serves it on one card and lists the checks it
+passed as written. The GPU path it mirrors, [vllm#60445](https://github.com/vllm-project/vllm/pull/60445),
+is still open; nothing has been filed for vllm-gaudi.

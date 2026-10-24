@@ -38,6 +38,7 @@ container images and public checkpoints. Nothing depends on a private build.
 | [`kernels/`](kernels/) | Custom TPC kernels. The MXFP4 MoE decode kernels read the packed E2M1 weights and E8M0 scales directly and make decode 2 to 3x faster. The package ships the gpt-oss integration with build scripts, a parity test and a micro benchmark; GLM and Muse Spark Open results are in the write-up. |
 | [`docs/ports/`](docs/ports/index.md) | Write-ups of models brought up on Gaudi 2 that released images cannot serve: what was hard, how it was solved, the correctness gates and measured speed. The integration code is not published yet. |
 | [`docs/results/`](docs/results/index.md) | Studies and findings that are not tied to one model: platform behaviours and workarounds, prefix caching on Gated DeltaNet hybrids, MoE decode-step anatomy, two-node pipeline parallel, fast prefill, text-to-speech and embeddings. |
+| [`servers/`](servers/README.md) | Small HPU servers for models vLLM does not serve: Qwen3-TTS, Chatterbox and Orpheus text-to-speech behind an OpenAI `/v1/audio/speech` API, and EmbeddingGemma 2 multimodal embeddings, each with an image, CPU tests and device gates. |
 | [`kubernetes/`](kubernetes/) | Running Gaudi at fleet scale: pod spec, bin-pack scheduling, start-up and warm-up, health checks, rollouts, autoscaling, routing and observability, with example manifests and small tools. |
 
 ## Quick start
@@ -119,7 +120,8 @@ mkdocs serve
 
 ## Hardware and scope
 
-Intel Gaudi 2 (HL-225, 96 GB HBM per card, 8 cards per node), lazy mode. Gaudi 3 is not
+Intel Gaudi 2 (HL-225, 96 GB HBM per card, 8 cards per node), lazy mode unless a recipe sets
+compile mode. Gaudi 3 is not
 covered yet. Contributions with Gaudi 3 results are welcome; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 

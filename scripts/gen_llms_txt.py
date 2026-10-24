@@ -49,7 +49,7 @@ def affects(p):
 
 
 nav = re.findall(
-    r"^[ \t]+-[ \t]+(?:[^:\n]+:[ \t]+)?((?:recipes|fixes|kernels|kubernetes)/[\w./-]+\.md)$",
+    r"^[ \t]+-[ \t]+(?:[^:\n]+:[ \t]+)?((?:recipes|fixes|kernels|ports|results|kubernetes)/[\w./-]+\.md)$",
     Path("mkdocs.yml").read_text(),
     re.M,
 )
@@ -57,7 +57,12 @@ rdesc = {}
 for y in sorted(glob.glob("recipes/**/recipe.yaml", recursive=True)):
     s = Path(y).read_text()
     page = re.search(r"Page: docs/recipes/([\w.-]+\.md)", s).group(1)
-    d = re.search(r'^  description: "(.+)"$', s, re.M).group(1)
+    m = re.search(r'^  description: "(.+)"$', s, re.M)
+    if m:
+        d = m.group(1)
+    else:  # a folded block: description: >- and indented lines
+        m = re.search(r"^  description: >-\n((?:    .*\n)+)", s, re.M)
+        d = " ".join(line.strip() for line in m.group(1).splitlines())
     rdesc.setdefault(page, []).append((y, d))
 
 
@@ -69,7 +74,8 @@ L = [
     "# Gaudi Cookbook",
     "",
     "> Tested recipes, runtime fixes, kernels and fleet practices for serving open LLMs with vLLM on Intel Gaudi 2"
-    " through the vllm-gaudi plugin. Gaudi software 1.24.1, vllm-gaudi v0.26.0 and releases/v0.30.0, lazy mode.",
+    " through the vllm-gaudi plugin. Gaudi software 1.24.1, vllm-gaudi v0.26.0 and releases/v0.30.0, lazy mode"
+    " unless a recipe sets compile mode.",
     "",
     "Agents: read AGENTS.md first. It maps tasks to files and gives the rules: check the image before patching, keep"
     " verified and untested apart, and ask before touching shared hardware. The links below point at raw Markdown"
@@ -81,6 +87,7 @@ L = [
     f"- [Getting started]({R}docs/getting-started.md): software baseline, image build steps, container flags.",
     f"- [Recipe format]({R}recipes/README.md): the recipe.yaml schema and its gaudi block.",
     f"- [Fixes contract]({R}fixes/README.md): how the fix pack applies, profiles, exit codes, adding a fix.",
+    f"- [Port contract]({R}ports/README.md): how a model port is laid out and built from a stock image.",
     "",
     "## Recipes",
     "",
@@ -102,7 +109,8 @@ L += [
 for p in section("fixes/"):
     i = p.split("/")[1][:-3]
     L.append(f"- [{i}]({R}fixes/{i}/README.md): {sentence(paras('docs/' + p)[0])} Affects: {affects('docs/' + p)}.")
-for name, prefix in (("Kernels", "kernels/"), ("Kubernetes", "kubernetes/")):
+SECTIONS = (("Kernels", "kernels/"), ("Ports", "ports/"), ("Results", "results/"), ("Kubernetes", "kubernetes/"))
+for name, prefix in SECTIONS:
     L += ["", f"## {name}", ""]
     for p in [p for p in nav if p.startswith(prefix)]:
         L.append(f"- [{title('docs/' + p)}]({R}docs/{p}): {sentence(paras('docs/' + p)[0])}")
@@ -113,6 +121,7 @@ L += [
     f"- [Kubernetes manifests and tools]({R}kubernetes/README.md): what each manifest and tool does;"
     " placeholders to replace.",
     f"- [MXFP4 kernel sources and build]({R}kernels/mxfp4-moe/README.md): layout, toolchain, build, enable, verify.",
+    f"- [Servers]({R}servers/README.md): models that do not run on vLLM (text-to-speech, EmbeddingGemma 2).",
     f"- [Contributing]({R}CONTRIBUTING.md): ground rules for changes.",
     "",
 ]

@@ -116,15 +116,32 @@ single-stream decode are unchanged.
 
 ## Status upstream and in this cookbook
 
-The cookbook's GDN recipes, for example [Qwen3.6-27B-FP8](../recipes/qwen3-6-27b-fp8.md), run with prefix
-caching **off** on the stock releases, because this patch is not in the fixes pack. Upstream vllm-gaudi has since
-merged prefix caching for the non-compact layout (per-block state tensors next to the KV pool), along with fixes
-for defects 2 and 3 above. The in-page layout is not upstream; it was raised as a design discussion, since it
-keeps compact slots and roughly doubles the usable pool on large hybrids. Re-test upstream's path on your model
-before turning caching on.
+The in-page layout is in the fixes pack as the opt-in fix [gdn-prefix-cache](../fixes/gdn-prefix-cache.md),
+for both v0.26.0 and `releases/v0.30.0`, and the cookbook's GDN recipes now run with prefix caching on:
+[Qwen3.6-27B-FP8](../recipes/qwen3-6-27b-fp8.md), [Qwen3.6-35B-A3B-FP8](../recipes/qwen3-6-35b-a3b-fp8.md) and
+[Qwen3.5-397B-A17B-FP8](../recipes/qwen3-5-397b-a17b-fp8.md). Each recipe page lists the gates it passed with
+the fix. The two runner defects found along the way are fixes of their own or part of this one: decode padding
+is [hybrid-decode-pad](../fixes/hybrid-decode-pad.md) (in both profiles, and required first), and new blocks and
+slots are zeroed by gdn-prefix-cache.
+
+Upstream vllm-gaudi took a different path for the same problem: prefix caching with compact GDN off, one state
+tensor per KV block next to the attention pool. It shipped in the v0.30.0 tag
+([vllm-gaudi#1827](https://github.com/vllm-project/vllm-gaudi/pull/1827),
+[#1842](https://github.com/vllm-project/vllm-gaudi/pull/1842)) and on main
+([#1831](https://github.com/vllm-project/vllm-gaudi/pull/1831), [#1853](https://github.com/vllm-project/vllm-gaudi/pull/1853),
+with [#1828](https://github.com/vllm-project/vllm-gaudi/pull/1828) for the async scheduler's chunk split,
+[#1890](https://github.com/vllm-project/vllm-gaudi/pull/1890) for resumes off the chunk grid and
+[#1895](https://github.com/vllm-project/vllm-gaudi/pull/1895) for the multiply-by-mask NaN in prefill). It is not
+in `releases/v0.30.0` at `058f107`, the branch the cookbook's v0.30.0 recipes use. On an image that has it,
+upstream's path needs no runtime patch at about half the KV pool on these models (the 150,775 against 288,446
+tokens above); the fix's anchors are written against the two cookbook releases and refuse other sources. The
+in-page layout itself is not upstream; it is a design discussion, since it keeps compact slots and roughly
+doubles the usable pool on large hybrids.
 
 ## Availability
 
-The integration code is not published in this repository yet. It patches vLLM's scheduler and vllm-gaudi's GDN
-runner outside the fixes pack, and each release needs its own port (v0.30.0 changed the KV tensor layout and the
-async scheduler's chunk split).
+The code is the fix [gdn-prefix-cache](../fixes/gdn-prefix-cache.md): one stdlib-only `apply.py` that patches the
+HPU model runner, vLLM's scheduler and vllm-gaudi's async scheduler, with a CPU test that drives the runner helpers
+on a toy recurrence. Apply it with `python3 fixes/apply_all.py --profile <release> gdn-prefix-cache` and serve
+with `--enable-prefix-caching` and `VLLM_COMPACT_GDN=1`. The measurements on this page were taken with
+an earlier form of the same layout on v0.26.0; the recipe pages carry the runs made with the fix as published.
