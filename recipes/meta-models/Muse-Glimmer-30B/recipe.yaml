@@ -1,0 +1,130 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/muse-glimmer-30b.md
+meta:
+  title: "Muse Glimmer 30B"
+  slug: "muse-glimmer-30b"
+  provider: "Meta"
+  description: "29.6B dense vision-language agent model (3:1 sliding/global attention, image input), BF16, 128K context on two Gaudi 2 cards."
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - multimodal
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "meta-models/Muse-Glimmer-30B"
+  architecture: dense
+  parameter_count: "29.6B"
+  active_parameters: "29.6B"
+  context_length: 131072
+
+# The muse_glimmer tool and reasoning parsers work as a pair (each reads the other's channels), so both are
+# always on in serve_args instead of being separate feature toggles.
+features: {}
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: bf16
+    vram_minimum_gb: 72
+    description: "BF16 weights (59.5 GB, vision tower included), two Gaudi 2 cards."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 2, tp: 2, ep: false }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  max_model_len: 131072
+  serve_args:
+    - "--api-server-count"
+    - "4"                                     # one API server caps a pod near 180 streams
+    - "--tensor-parallel-size"
+    - "2"
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "192"
+    - "--gpu-memory-utilization"
+    - "0.85"
+    - "--block-size"
+    - "128"
+    - "--max-num-batched-tokens"
+    - "8192"
+    - "--enable-chunked-prefill"
+    - "--enable-prefix-caching"
+    - "--enable-prompt-tokens-details"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "muse_glimmer"
+    - "--reasoning-parser"
+    - "muse_glimmer"
+    - "--limit-mm-per-prompt"
+    - '{"image":8,"video":0}'
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"    # required for TP > 1 in lazy mode
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_MULTIMODAL_BUCKETS: "None"           # no fixed vision buckets
+    VLLM_GRAPH_RESERVED_MEM: "0.3"
+    VLLM_GRAPH_PROMPT_RATIO: "0.15"
+    VLLM_GRAPH_PROMPT_STRATEGY: "max_bs"
+    VLLM_GRAPH_DECODE_STRATEGY: "max_bs"
+    VLLM_EXPONENTIAL_BUCKETING: "True"
+    VLLM_PROMPT_BS_BUCKET_MIN: "1"
+    VLLM_PROMPT_BS_BUCKET_STEP: "1"
+    VLLM_PROMPT_BS_BUCKET_MAX: "16"
+    VLLM_DECODE_BS_BUCKET_MIN: "1"
+    VLLM_DECODE_BS_BUCKET_STEP: "1"
+    VLLM_DECODE_BS_BUCKET_MAX: "192"          # kept equal to --max-num-seqs
+    VLLM_PROMPT_SEQ_BUCKET_MIN: "128"
+    VLLM_PROMPT_SEQ_BUCKET_STEP: "4096"
+    VLLM_PROMPT_SEQ_BUCKET_MAX: "131072"
+    VLLM_DECODE_BLOCK_BUCKET_MIN: "128"
+    VLLM_DECODE_BLOCK_BUCKET_STEP: "1024"
+    VLLM_DECODE_BLOCK_BUCKET_MAX: "6144"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"  # the 300 s default can be overrun by first-use graph compiles
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "3600000"
+  port: muse-glimmer-30b
+  buckets: null
+  required_fixes:
+    - prompt-order                  # prefix-cache read-before-write across requests
+    - sampling-rows-refresh         # device sampling rows stale after batch reorders
+    - structured-output-rows        # structured-output steps sample rows with the wrong params
+    - so-row-owners                 # grammar masks shifted by a partial prompt chunk
+    - bad-words-index               # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows              # logit_bias, min_p, min_tokens silently ignored
+    - async-inputs                  # async scheduling decodes some rows from a stale input token
+    - gather-logprobs-int32         # top_logprobs ids corrupted in lazy mode
+    - prompt-logprobs               # prompt_logprobs request kills the engine
+    - logprobs-decode-guard         # a bad logprob id no longer kills the API server
+    - seeded-sampling               # requests with seed can segfault a TP worker
+    - topk-subset-sampler           # generation_config sets top_k 64 / top_p 0.95: no full 202K-vocab sort per step
+    - mm-merge-idxcopy              # multi-image steps fail to graph-compile
+    - rank-exception-fatal          # a failed TP rank stops the engine instead of serving garbage
+  verified:
+    - "Port image path (install.sh on the stock image, then the v0.30.0 profile plus topk-subset-sampler): 11/11 device gates in tests/hpu/run_gates.sh"
+    - "32 concurrent requests 32/32 correct; stock v0.30.0 stops the engine on the first two concurrent requests"
+    - "Needles at 8K, 32K (5% and 95% depth), 120K and 127K prompt tokens: 5/5"
+    - "Vision: shape count and OCR of a rendered image, 8 image sizes 8/8, text-only request after images correct"
+    - >-
+      tool_choice required 24/24 (8 greedy, 16 sampled at the generation defaults), named call with schema-valid arguments, auto still answers in
+      prose; streaming required call has id, name and arguments
+    - >-
+      logprobs 5 on completions 3/3 clean with greedy top-1 at every position; chat top_logprobs; seeded requests 128/128 at 64 concurrent, same-seed
+      repeats identical
+    - "KV cache 1,571,584 tokens (11.99 sequences of 131,072)"
+  notes:
+    - >-
+      The port adds three model-only patches to the stock image: the attention output keeps its 3D shape (batch > 1 stops the engine without it), the
+      sliding layers read only their window in chunked prefill (without it a 120K prompt returned garbage and corrupted later requests), and
+      tool_choice required/named are enforced with a grammar.
+    - "Sampling defaults from generation_config.json are temperature 1.0, top_p 0.95, top_k 64."
+    - "response_format json_schema is not enforced on this model: the grammar waits for a reasoning end that a plain answer never sends."
+    - "tool_choice none can leak ATEM tool markup into content when the model calls a tool anyway."
