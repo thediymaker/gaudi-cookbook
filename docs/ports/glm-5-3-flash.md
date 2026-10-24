@@ -13,7 +13,7 @@ model itself had to be written for vLLM before any Gaudi work could begin. It no
     - **Hardware:** 8 Gaudi 2 cards, TP 8 with expert parallel (36 experts per card). 256K context served,
       512K tested.
     - **Stack:** Gaudi software 1.24.1, vllm-gaudi `v0.26.0`, lazy mode, out-of-tree model plugin.
-    - **Status:** serving production traffic.
+    - **Status:** in service; code and recipe published (see [Availability](#availability)).
     - **Headline:**
         - Single-stream decode 22.8 tok/s at 2K context and 24.2 tok/s at 262K (same image and code; 262K on a
           pod rebuilt with the larger window).
@@ -78,14 +78,14 @@ made the step host-bound.
 explicit-matmul attention; the shipped SDPA path differs only by accumulation order). It runs eager, because
 vllm-gaudi's vision graph wrap is gated on Gemma 3 and on an attribute named `vision_tower`. Images cost compile
 time through the prompt-length buckets they create, not through image geometry, so the deployment caps image
-tokens at 2,048 and bounds the graph cache (`--max-cudagraph-capture-size 2048`, at most 64 cached graphs). Image
-merging uses the [mm-merge-idxcopy](../fixes/mm-merge-idxcopy.md) fix.
+tokens at 2,048 and bounds the graph cache with `--max-cudagraph-capture-size 2048`. Image merging uses the
+[mm-merge-idxcopy](../fixes/mm-merge-idxcopy.md) fix.
 
 **Serving shape.** vLLM derives a 640-token KV block (the attention page is raised to at least the KDA state page)
 and its autosizing over-commits by about one MLA layer, so KV is pinned with `--num-gpu-blocks-override`.
 Prefix caching is off and the layer refuses to start with it, because the KDA layer does not store per-block
 states. Expert parallel replaced expert slicing across TP 8 (48 to 32 ms per token at one stream; different
-conditions: an idle production pod before, a canary after), together with the
+conditions: an idle server before, a second server after), together with the
 [moe-explicit-overload](../fixes/moe-explicit-overload.md) fix. The [async-inputs](../fixes/async-inputs.md) fix
 is required under async scheduling.
 
@@ -113,7 +113,7 @@ The defect hunt ended at these root causes:
 | Tool call after a long document | correct at 129K, 260K and 517K |
 | Decode fast path vs stock, greedy | 12/12 single streams and 56/56 lock-step batched streams identical |
 | Prefill scan vs stock | 20/20 greedy prompts byte-identical; 3 of 56 lock-step batched streams split at near-ties |
-| Vision | image suite 7/7; video (opt-in, not enabled in production) 5/6, the miss is the model's colour naming, checked at pixel level |
+| Vision | image suite 7/7; video (opt-in, not served) 5/6, the miss is the model's colour naming, checked at pixel level |
 
 ## Performance
 
@@ -150,5 +150,10 @@ prefill step, which is why 260K gains less.
 
 ## Availability
 
-The integration code (model package, KDA kernels, Sinkhorn TPC kernel and patches) is not published in this
-repository yet. It depends on model code outside vllm-gaudi.
+The port is published in [`ports/glm-5-3-flash`](https://github.com/thediymaker/gaudi-cookbook/tree/main/ports/glm-5-3-flash):
+the model plugin, the KDA kernels, the Sinkhorn TPC kernel, four source patches, CPU tests and the device gates. It
+installs into a stock vllm-gaudi `v0.26.0` image; the served configuration is the
+[GLM-5.3-Flash recipe](../recipes/glm-5-3-flash.md). The port carries no video path and no MTP head, and upstream's
+GPU kernels from [vllm-project/vllm#53906](https://github.com/vllm-project/vllm/pull/53906) are not used; the
+[port README](https://github.com/thediymaker/gaudi-cookbook/blob/main/ports/glm-5-3-flash/README.md#differences-from-upstream-vllm)
+lists the differences.

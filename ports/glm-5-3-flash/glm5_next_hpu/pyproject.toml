@@ -1,0 +1,23 @@
+# GLM-5.3-Flash (glm5_next) for vllm-gaudi, as an out-of-tree vLLM plugin.
+#
+# vLLM starts its engine core and every tensor-parallel worker as separate processes. A registration call in the
+# parent process is not seen there; the vllm.general_plugins entry point is loaded in every process.
+#
+#   pip install --no-build-isolation --no-deps -e .
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glm5-next-hpu"
+version = "1.0.0"
+description = "GLM-5.3-Flash (glm5_next) model plugin for vllm-gaudi"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+# Sorted after vllm-gaudi's own plugins, so the HPU platform and its ops are in place first.
+"10_glm5_next_hpu" = "glm5_next_hpu:register"
+
+[tool.setuptools]
+packages = ["glm5_next_hpu", "glm5_next_hpu.hf"]

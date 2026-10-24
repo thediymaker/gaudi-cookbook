@@ -1,0 +1,126 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/glm-5-3-flash.md
+meta:
+  title: "GLM-5.3-Flash"
+  slug: "glm-5-3-flash"
+  provider: "Z.ai"
+  description: >-
+    320B MoE (18B active) with KDA linear attention, NoPE MLA, mHC and image input, block FP8, 256K context on eight Gaudi
+    2 cards through the glm-5-3-flash port.
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - text
+    - multimodal
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "zai-org/GLM-5.3-Flash"
+  architecture: moe
+  parameter_count: "320B"
+  active_parameters: "18B"
+  context_length: 1048576
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with vLLM's glm47 parser (streaming text markers fixed by glm47-streaming-text-markers)."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "glm47"]
+  reasoning:
+    description: "Reasoning split with the glm47 parser."
+    args: ["--reasoning-parser", "glm47"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: fp8
+    vram_minimum_gb: 394
+    description: "Block-scaled FP8 (128 x 128) as published (328 GB), eight Gaudi 2 cards, expert parallel."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 8, tp: 8, ep: true }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  port: glm-5-3-flash
+  max_model_len: 262144
+  serve_args:
+    - "--tensor-parallel-size"
+    - "8"
+    - "--enable-expert-parallel"
+    - "--dtype"
+    - "bfloat16"
+    - "--max-model-len"
+    - "262144"
+    - "--max-num-seqs"
+    - "32"
+    - "--num-gpu-blocks-override"
+    - "1280"
+    - "--max-num-batched-tokens"
+    - "8192"
+    - "--max-cudagraph-capture-size"
+    - "2048"
+    - "--enable-chunked-prefill"
+    - "--gpu-memory-utilization"
+    - "0.82"
+    - "--no-enable-prefix-caching"
+    - "--trust-remote-code"
+    - "--reasoning-parser"
+    - "glm47"
+    - "--tool-call-parser"
+    - "glm47"
+    - "--enable-auto-tool-choice"
+    - "--default-chat-template-kwargs"
+    - '{"reasoning_effort": "high"}'
+    - "--chat-template"
+    - "$COOKBOOK/ports/glm-5-3-flash/serving/chat_template.jinja"
+    - "--limit-mm-per-prompt"
+    - '{"image": 4}'
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "7200"
+    VLLM_RPC_TIMEOUT: "7200000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"   # a long prefill that compiles on first touch takes longer than 300 s
+    GLM5_NEXT_VISION: "1"                        # build the vision tower and admit images
+    GLM5_NEXT_IMAGE_MAX_TOKENS: "2048"           # tokens per image (the checkpoint allows 8000)
+    GLM5_NEXT_KDA_SCAN: "1"                      # KDA prefill state carry as a log-depth scan
+    GLM5_NEXT_DECODE_LAYER_GROUP: "45"           # one lazy-mode step per decode forward instead of one per layer
+    GLM5_NEXT_MHC_SINKHORN: "kernel"             # mHC Sinkhorn as one TPC kernel (built by the port)
+  buckets: null
+  required_fixes:
+    - sampling-rows-refresh       # device sampling rows stale after the batch reorders
+    - structured-output-rows      # structured-output steps sample rows with another request's parameters
+    - bad-words-index             # bad_words raises IndexError in the engine core
+    - logitsprocs-rows            # logit_bias, min_p and min_tokens silently ignored
+    - async-inputs                # async scheduling decodes a left-out request from a stale input token
+    - async-discard-counter       # a preempted request with stale async output stops the engine
+    - resumed-prefill-logits      # a request resumed after preemption repeats its earlier output
+    - hybrid-decode-pad           # decode padding lands inside a live KV block on this hybrid model
+    - gather-logprobs-int32       # top_logprobs token ids read back corrupted
+    - prompt-logprobs             # prompt_logprobs stops the engine
+    - logprobs-decode-guard       # one undecodable logprob id shuts down the server
+    - seeded-sampling             # seeded requests can segfault a TP worker
+    - moe-explicit-overload       # the FP8 MoE op forces a host sync per layer in eager prefill
+    - mm-merge-idxcopy            # image embedding merge fails to compile under concurrent images
+    - rank-exception-fatal        # an exception on one TP rank stops the engine instead of serving out of step
+    - xgrammar-generation-eos-stop  # tool_choice required loops: the grammar masks GLM's end-of-turn tokens
+    - glm47-streaming-text-markers  # streaming misses tool calls the model writes as plain-text markers
+  verified:
+    - "Golden: 12 greedy prompts token-identical to the reference outputs"
+    - "Needles: 3/3 at 16K, 63K, 127K and 239K tokens"
+    - "Tool calls 8/8: single, parallel and no call, streamed and not, multi-turn, a call after 32K tokens"
+    - "Images 8/8: colours, quadrants, counting, text before and after; a 5-image prompt rejected with 400"
+    - "Single-stream decode 43.5 tokens/s at 2K and 38.6 at 128K; warm TTFT 2.6 / 10.3 / 23.8 s at 16K / 64K / 128K"
+    - "mHC Sinkhorn kernel bit-identical to vLLM's stock loop at 1 to 1,024 rows"
+    - "Switches off: the same server gates pass and the golden prompts stay token-identical"
+  notes:
+    - "Needs the glm-5-3-flash port image: model plugin, four source patches and the mHC Sinkhorn kernel (ports/glm-5-3-flash/)."
+    - "Prefix caching must stay off: the KDA layer implements only the non-caching state contract and refuses to start with it."
+    - "KV is pinned (--num-gpu-blocks-override 1280, 640-token blocks, 819,200 tokens): autosizing over-commits and fails."
+    - "Video is not served; images only, at most 4 per prompt."
