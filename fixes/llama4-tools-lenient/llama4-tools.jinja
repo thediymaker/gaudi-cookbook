@@ -1,0 +1,141 @@
+{#- Llama 4 chat template for tool use (Scout and Maverick).
+    Parser: llama4_tools_lenient.py in the same directory (--tool-call-parser llama4_lenient).
+
+    Changes from the template shipped with the Hugging Face checkpoints:
+      * past tool calls are re-rendered as valid Python literals (shipped: param="<raw %s>", so a
+        quote or newline made the model's own history invalid and it copied that, and lists became
+        strings such as "[{'content': ...}]")
+      * tool results go in verbatim (shipped: JSON-string-encoded, so file contents reached the
+        model as one escaped line) and, as in Meta's reference encoder, assistant tool-call turns
+        and ipython turns end with <|eom|>
+
+    Options (template kwargs; set per server with --default-chat-template-kwargs, a request's
+    chat_template_kwargs overrides):
+      fmt       'pythonic' [f(a=1)] (default) | 'tag' <function=f>{json}</function>
+                (Meta's documented custom-tool syntax) | 'json'
+      sys_mode  'hf' client system prompt, then the tool list (default)
+                'meta' Meta's default tool rules and tool list first, then the client system
+                prompt
+      defs      'openai' tools as received (default) | 'meta' {"name","description","parameters"}
+      result    'raw' (default) | 'tojson' (shipped behaviour)
+      eom       true (default) | false (shipped: <|eot|>)
+      history   'py' (default) | 'hf' (shipped)
+      seq_rule  false (default) | true: add "dependent calls one at a time" to the rules
+-#}
+{%- set fmt = fmt | default('pythonic') -%}
+{%- set sys_mode = sys_mode | default('hf') -%}
+{%- set defs = defs | default('openai') -%}
+{%- set result = result | default('raw') -%}
+{%- set eom = eom | default(true) -%}
+{%- set history = history | default('py') -%}
+{%- set seq_rule = seq_rule | default(false) -%}
+{%- macro py_value(v) -%}
+    {%- if v is string -%}{{- v | tojson -}}
+    {%- elif v is boolean -%}{{- 'True' if v else 'False' -}}
+    {%- elif v is none -%}{{- 'None' -}}
+    {%- elif v is number -%}{{- v -}}
+    {%- else -%}{{- v | tojson -}}
+    {%- endif -%}
+{%- endmacro -%}
+{%- macro render_defs(tools) -%}
+    {%- if defs == 'meta' -%}
+        {%- set ns = namespace(items=[]) -%}
+        {%- for t in tools -%}
+            {%- set f = t.function if t.function is defined else t -%}
+            {%- set ns.items = ns.items + [{"name": f.name, "description": f.description, "parameters": f.parameters}] -%}
+        {%- endfor -%}
+        {{- ns.items | tojson(indent=4) -}}
+    {%- else -%}
+        {{- tools | tojson(indent=4) -}}
+    {%- endif -%}
+{%- endmacro -%}
+{%- set meta_rules = "You are a helpful assistant and an expert in function composition. You can answer general questions using your internal knowledge OR invoke functions when necessary. Follow these strict guidelines:\n\n1. FUNCTION CALLS:\n- ONLY use functions that are EXPLICITLY listed in the function list below\n- If NO functions are listed (empty function list []), respond ONLY with internal knowledge or \"I don't have access to [Unavailable service] information\"\n- If a function is not in the list, respond ONLY with internal knowledge or \"I don't have access to [Unavailable service] information\"\n- If ALL required parameters are present AND the query EXACTLY matches a listed function's purpose: output ONLY the function call(s)\n- Use exact format: [func_name1(param1=value1, param2=value2), func_name2(...)]\nExamples:\nCORRECT: [get_weather(location=\"Vancouver\"), calculate_route(start=\"Boston\", end=\"New York\")] <- Only if get_weather and calculate_route are in function list\nINCORRECT: get_weather(location=\"New York\")\nINCORRECT: Let me check the weather: [get_weather(location=\"New York\")]\nINCORRECT: [get_events(location=\"Singapore\")] <- If function not in list\n\n2. RESPONSE RULES:\n- For pure function requests matching a listed function: ONLY output the function call(s)\n- For knowledge questions: ONLY output text\n- For missing parameters: ONLY request the specific missing parameters\n- For unavailable services (not in function list): output ONLY with internal knowledge or \"I don't have access to [Unavailable service] information\". Do NOT execute a function call.\n- If the query asks for information beyond what a listed function provides: output ONLY with internal knowledge about your limitations\n- NEVER combine text and function calls in the same response\n- NEVER suggest alternative functions when the requested service is unavailable\n- NEVER create or invent new functions not listed below\n\n3. STRICT BOUNDARIES:\n- ONLY use functions from the list below - no exceptions\n- NEVER use a function as an alternative to unavailable information\n- NEVER call functions not present in the function list\n- NEVER add explanatory text to function calls\n- NEVER respond with empty brackets\n- Use proper Python/JSON syntax for function calls\n- Check the function list carefully before responding\n\n4. TOOL RESPONSE HANDLING:\n- When receiving tool responses: provide concise, natural language responses\n- Don't repeat tool response verbatim\n- Don't add supplementary information\n\nHere is a list of functions in JSON format that you can invoke.\n" -%}
+{%- set json_rules = "Tools: You have access to the following functions. You might need to use one or more function calls to fulfill the task.\nIf none are needed, then proceed to the response.\n\nTool Call Syntax: To call a function, reply with ONLY a JSON object of this form:\n{\"name\": function name, \"parameters\": dictionary of argument name and its value}\nTo call several independent functions at once, put one JSON object per line. Do not use variables.\nDo not include anything else in a reply that calls functions.\n\nHere is a list of functions in JSON format that you can invoke.\n" -%}
+{%- set tag_rules = "You have access to the following functions. If you choose to call a function, ONLY reply in the following format with no prefix or suffix:\n\n<function=example_function_name>{\"example_name\": \"example_value\"}</function>\n\nReminder:\n- Function calls MUST follow the specified format, start with <function= and end with </function>\n- The arguments are a JSON object\n- Required parameters MUST be specified\n- Put each function call on its own line\n\nHere is a list of functions in JSON format that you can invoke.\n" -%}
+{%- set seq_text = "\nIf a call needs the result of another call (edit after read, run after edit), make only the first call and wait: its result comes back before your next reply." -%}
+{%- set tail_text = "\n\nYou can answer general questions or invoke tools when necessary.\nIn addition to tool calls, you should also augment your responses by using the tool outputs." -%}
+{%- set hf_line = {"pythonic": "\nHere is a list of functions in JSON format that you can invoke. Use exact format: [func_name1(param1=value1, param2=value2), func_name2(...)]\n",
+                   "json": "\nHere is a list of functions in JSON format that you can invoke. To call a function reply with ONLY {\"name\": function name, \"parameters\": dictionary of argument name and its value}, one object per line.\n",
+                   "tag": "\nHere is a list of functions in JSON format that you can invoke. To call a function reply with ONLY <function=function_name>{json arguments}</function>, one per line.\n"} -%}
+{%- set rules = {"pythonic": meta_rules, "json": json_rules, "tag": tag_rules} -%}
+{%- macro render_call(tc) -%}
+    {%- set f = tc.function if tc.function is defined else tc -%}
+    {%- if fmt == 'json' -%}
+        {{- '{"name": ' + (f.name | tojson) + ', "parameters": ' + (f.arguments | tojson) + '}' -}}
+    {%- elif fmt == 'tag' -%}
+        {{- '<function=' + f.name + '>' + (f.arguments | tojson) + '</function>' -}}
+    {%- else -%}
+        {{- f.name + '(' -}}
+        {%- for param in f.arguments -%}
+            {%- if history == 'py' -%}{{- param + '=' + py_value(f.arguments[param]) -}}
+            {%- else -%}{{- param + '="' + ("%s" | format(f.arguments[param])) + '"' -}}{%- endif -%}
+            {%- if not loop.last %}, {% endif -%}
+        {%- endfor -%}
+        {{- ')' -}}
+    {%- endif -%}
+{%- endmacro -%}
+{{- bos_token }}
+{%- if tools is defined and tools %}{%- set has_tools = true %}{%- else %}{%- set has_tools = false %}{%- endif %}
+{%- if messages[0]['role'] == 'system' %}
+    {%- if messages[0]['content'] is string %}{%- set user_sys = messages[0]['content'] | trim %}
+    {%- else %}{%- set user_sys = messages[0]['content'][0]['text'] | trim %}{%- endif %}
+    {%- set messages = messages[1:] %}
+{%- else %}
+    {%- set user_sys = none %}
+{%- endif %}
+{%- set ns = namespace(sys='') %}
+{%- if has_tools and (sys_mode == 'meta' or user_sys is none) %}
+    {%- set ns.sys = rules[fmt] + render_defs(tools) + (seq_text if seq_rule else '') + tail_text %}
+    {%- if user_sys %}{%- set ns.sys = ns.sys + '\n\n' + user_sys %}{%- endif %}
+{%- elif has_tools %}
+    {%- set ns.sys = user_sys + hf_line[fmt] + render_defs(tools) + (seq_text if seq_rule else '') %}
+{%- elif user_sys %}
+    {%- set ns.sys = user_sys %}
+{%- endif %}
+{%- if ns.sys %}
+    {{- "<|header_start|>system<|header_end|>\n\n" + ns.sys + "<|eot|>" }}
+{%- endif %}
+{%- for message in messages %}
+    {%- if not (message.role == 'ipython' or message.role == 'tool' or ('tool_calls' in message and message.tool_calls|length != 0)) %}
+        {{- '<|header_start|>' + message['role'] + '<|header_end|>\n\n' }}
+        {%- if message['content'] is string %}
+            {{- message['content'] }}
+        {%- else %}
+            {%- for content in message['content'] %}
+                {%- if content['type'] == 'image' %}{{- '<|image|>' }}
+                {%- elif content['type'] == 'text' %}{{- content['text'] | trim }}{%- endif %}
+            {%- endfor %}
+        {%- endif %}
+        {{- "<|eot|>" }}
+    {%- elif 'tool_calls' in message and message.tool_calls|length != 0 %}
+        {{- '<|header_start|>assistant<|header_end|>\n\n' -}}
+        {%- if message['content'] is string %}
+            {{- message['content'] }}
+        {%- elif message['content'] %}
+            {%- for content in message['content'] %}
+                {%- if content['type'] == 'text' %}{{- content['text'] }}{%- endif %}
+            {%- endfor %}
+        {%- endif %}
+        {%- if fmt == 'pythonic' %}
+            {{- "[" }}
+            {%- for tc in message.tool_calls %}{{- render_call(tc) }}{%- if not loop.last %}, {% endif %}{%- endfor %}
+            {{- "]" }}
+        {%- else %}
+            {%- for tc in message.tool_calls %}{{- render_call(tc) }}{%- if not loop.last %}{{- "\n" }}{% endif %}{%- endfor %}
+        {%- endif %}
+        {{- "<|eom|>" if eom else "<|eot|>" }}
+    {%- else %}
+        {{- "<|header_start|>ipython<|header_end|>\n\n" }}
+        {%- if message.content is string %}
+            {{- message.content | tojson if result == 'tojson' else message.content }}
+        {%- else %}
+            {%- for content in message['content'] %}
+                {%- if content['type'] == 'text' %}{{- content['text'] | tojson if result == 'tojson' else content['text'] }}{%- endif %}
+            {%- endfor %}
+        {%- endif %}
+        {{- "<|eom|>" if eom else "<|eot|>" }}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- '<|header_start|>assistant<|header_end|>\n\n' }}
+{%- endif %}

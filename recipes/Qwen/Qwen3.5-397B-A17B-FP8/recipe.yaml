@@ -1,0 +1,121 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/qwen3-5-397b-a17b-fp8.md
+meta:
+  title: "Qwen3.5-397B-A17B-FP8"
+  slug: "qwen3-5-397b-a17b-fp8"
+  provider: "Qwen"
+  description: "397B MoE (17B active) hybrid (Gated DeltaNet + attention) reasoning model, FP8, native 256K context, text only, on one 8-card Gaudi 2 node."
+  date_added: 2026-10-23
+  date_updated: 2026-10-23
+  tasks:
+    - text
+  related_recipes:
+    - "Qwen/Qwen3.6-35B-A3B-FP8"
+  hardware:
+    gaudi2: supported                       # not re-run end to end with prefix caching off
+
+model:
+  model_id: "Qwen/Qwen3.5-397B-A17B-FP8"
+  architecture: moe
+  parameter_count: "397B"
+  active_parameters: "17B"
+  context_length: 262144
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the qwen3_coder parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
+  reasoning:
+    description: "Split <think> reasoning from the answer. Thinking is on by default; enable_thinking false or reasoning_effort none turns it off."
+    args: ["--reasoning-parser", "qwen3"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: fp8
+    vram_minimum_gb: 488
+    description: "The official FP8 checkpoint (406 GB), eight Gaudi 2 cards with expert parallelism."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 8, tp: 8, ep: true }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  max_model_len: 262144
+  serve_args:
+    - "--tensor-parallel-size"
+    - "8"
+    - "--enable-expert-parallel"
+    - "--max-model-len"
+    - "262144"
+    - "--max-num-seqs"
+    - "16"
+    - "--num-gpu-blocks-override"
+    - "<N>"                                   # pin the pool: see notes (the earlier value assumed the prefix-caching layout)
+    - "--gpu-memory-utilization"
+    - "0.85"
+    - "--max-num-batched-tokens"
+    - "4096"
+    - "--enable-chunked-prefill"
+    - "--no-enable-prefix-caching"            # see notes: no GDN prefix caching on this release
+    - "--enable-prompt-tokens-details"
+    - "--language-model-only"
+    - "--reasoning-parser"
+    - "qwen3"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "qwen3_coder"
+  env:
+    PT_HPU_LAZY_MODE: "0"                     # compile mode for the GDN layers
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"
+    VLLM_USE_NAIVE_MAMBA_CACHE_SHARING: "1"
+    VLLM_COMPACT_GDN: "1"                     # stock default without prefix caching: per-request GDN state slots
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_HPU_MOE_GATHER: "1"                  # upstream gathered-expert FP8 MoE (in v0.30)
+    VLLM_HPU_MOE_GATHER_RATIO: "0.2"          # gather only for a single decode token (tokens x 10 <= 64 local experts x 0.2)
+    VLLM_HPU_MOE_GATHER_VERIFY: "0"
+    VLLM_LONG_PREFILL_SHARE: "0.5"            # read by vllm-long-prefill-share
+    VLLM_LONG_PREFILL_SHARE_ASYNC: "1"
+    VLLM_LONG_PREFILL_MIN_TOKENS: "32768"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "7200"
+    VLLM_RPC_TIMEOUT: "7200000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "3600"
+  buckets: null
+  required_fixes:
+    - sampling-rows-refresh    # device sampling rows stale after batch reorders
+    - structured-output-rows   # structured-output steps sample rows with the wrong params
+    - bad-words-index          # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows         # logit_bias, min_p, min_tokens silently ignored
+    - async-inputs             # stale decode input ids under async scheduling (repeated tokens)
+    - hybrid-decode-pad        # decode padding can land inside a live KV block when the hybrid KV block is split into kernel blocks
+    - gather-logprobs-int32    # the int64 cat + cast is still in v0.30
+    - prompt-logprobs          # prompt_logprobs request kills the engine (flat hidden states)
+    - logprobs-decode-guard    # a bad logprob id no longer kills the API server
+    - moe-explicit-overload    # the FP8 MoE op called through the overload packet forces a host sync per layer
+    - rank-exception-fatal     # an exception on a non-zero TP rank stops the engine instead of serving garbage
+    - vllm-long-prefill-share  # a 250K prefill no longer stalls every other stream
+  verified:
+    - "16 contexts of about 130K tokens resident at once (prompts 129,575-129,670 tokens, 1,024 decoded each): 16/16 correct, 0 preemptions (prefix caching on)"
+    - "16 x 128K fired cold at once: 16/16, 0 errors, 0 preemptions (prefix caching on)"
+    - "Needles at 128K, 200K and 250K, three depths, cold requests: 9/9 (prefix caching on)"
+    - "Greedy parity vs the v0.26.0 build, 16 prompts x 192 tokens: 16/16 identical, top-5 logprobs identical (prefix caching on)"
+    - "GSM8K first 50, thinking off, greedy: 50/50, same answers as the v0.26.0 build (prefix caching on)"
+    - "Tools (auto with thinking on and off, required, named, streaming, multi-turn), json_schema 9/9, reasoning separation: all pass (prefix caching on)"
+    - "Minimum free HBM on any card across all gates: 4.95 GiB, 0 allocation failures (prefix caching on)"
+  notes:
+    - >-
+      Prefix caching is off: on this release, prefix-cache hits on Gated DeltaNet layers resume from the wrong state. Upstream vllm-gaudi main has
+      merged prefix caching for the non-compact layout; use a release that includes it before turning prefix caching on.
+    - >-
+      Not re-run as written: every check ran on an earlier form of this recipe with prefix caching on, a GDN prefix-cache patch that is not in this
+      cookbook, and a pool of 3,392 blocks of 640 tokens. With prefix caching off the KV layout differs, so that block count no longer means 16 x 128K
+      and the HBM headroom has to be measured again.
+    - >-
+      Pin the pool with --num-gpu-blocks-override: pick N so that the start-up line "KV cache size ... Maximum concurrency for 262,144 tokens per
+      request" reports about 8.1x (16 sequences x 128K plus a small margin). With the full pool the cards had 0.07-0.25 GiB free under 250K
+      prompts, and one rank failed a 2 GiB attention allocation on the v0.26.0 build.
+    - "Do not raise --max-num-batched-tokens: a 4096-token chunk against a 256K context already needs a 2 GiB attention buffer per card."

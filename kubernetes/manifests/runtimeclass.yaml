@@ -1,0 +1,20 @@
+# RuntimeClass for Gaudi pods.
+#
+# The Habana container runtime sets up the Gaudi devices that the device plugin allocates to
+# a container. Pods select it with `runtimeClassName: habana`. The handler must match the
+# runtime name in each Gaudi node's containerd configuration (the Habana container runtime
+# install registers it as "habana"). If the Habana runtime is already the default runtime on
+# every Gaudi node, the RuntimeClass is optional, but keeping it makes the requirement
+# explicit in every pod spec.
+#
+# The scheduling block keeps pods that ask for this runtime off nodes that do not have it.
+# Label Gaudi nodes accordingly (the label below is the one the Gaudi device plugin
+# DaemonSet commonly selects on); remove the block if you do not label nodes.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: habana
+handler: habana
+scheduling:
+  nodeSelector:
+    habana.ai/gaudi: present

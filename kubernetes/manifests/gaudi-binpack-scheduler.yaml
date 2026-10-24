@@ -1,0 +1,292 @@
+# Second scheduler for Gaudi pods: "gaudi-binpack".
+#
+# What: a stock kube-scheduler running as an ordinary Deployment with a bin-packing profile.
+# It schedules only pods whose spec says `schedulerName: gaudi-binpack`. Every other pod
+# keeps using the cluster's default scheduler, which is not changed (no control-plane
+# restart, no node access).
+#
+# Why: the default scoring sends each pod to the node with the most free CPU and memory and
+# ignores habana.ai/gaudi. 1-, 2- and 4-card pods then spread over empty nodes, and an 8-card
+# model can stay Pending while hundreds of cards are free in fragments. This profile scores
+# the node whose cards are already most used highest, so partly used nodes fill first and
+# whole nodes stay free.
+#
+# How the score is built (final score = sum of weight x normalized 0-100 plugin score):
+#   tier 1, weight 50: TaintToleration, NodeAffinity, InterPodAffinity. Explicit wishes in a
+#     pod spec (for example preferred anti-affinity that spreads one model's replicas) win.
+#   tier 2, weight 25: NodeResourcesFit with MostAllocated on habana.ai/gaudi (+ hugepages).
+#     One card on an 8-card node moves this score by 12.5 points, about 300 after weighting.
+#   tier 3, weight 1: ImageLocality and PodTopologySpread, tie-breakers only (together they
+#     stay under 200, so they never outweigh one card).
+#   removed: NodeResourcesBalancedAllocation, which favours empty nodes.
+#   cpu and memory are deliberately not in the MostAllocated list: only cards decide.
+#   percentageOfNodesToScore 100: by default large clusters stop after a sample of feasible
+#     nodes and can miss the fullest one. Scoring every node is cheap.
+#
+# Safety:
+#   - Preemption is disabled and the RBAC has no pod delete, so it never evicts anything.
+#   - Two replicas with their own leader-election lease. If both are down, only opted-in
+#     pods wait in Pending; running pods are unaffected.
+#   - Two schedulers that place Gaudi pods can pick the same last free cards at the same
+#     moment. The kubelet admits one; the other fails with UnexpectedAdmissionError and its
+#     ReplicaSet makes a new one. Move every Gaudi workload to this scheduler to avoid it.
+#
+# Apply:    kubectl apply -f kubernetes/manifests/gaudi-binpack-scheduler.yaml
+# Opt in:   set `schedulerName: gaudi-binpack` in a Deployment's pod template (one roll).
+# Check:    kubectl -n gaudi-binpack logs deploy/gaudi-binpack | tail
+# Remove:   take schedulerName out of every pod template first, then delete this file's objects.
+#
+# The image tag should match your control plane's Kubernetes minor version.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gaudi-binpack
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gaudi-binpack
+  namespace: gaudi-binpack
+---
+# system:kube-scheduler minus pod delete (no preemption) and minus writes to volumes and
+# claims; leases only in its own namespace (Role below).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gaudi-binpack
+rules:
+  - apiGroups: ["", "events.k8s.io"]
+    resources: [events]
+    verbs: [create, patch, update]
+  - apiGroups: [""]
+    resources: [nodes, namespaces, pods, services, replicationcontrollers, persistentvolumes, persistentvolumeclaims]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [bindings, pods/binding]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [pods/status]
+    verbs: [patch, update]
+  - apiGroups: [apps]
+    resources: [replicasets, statefulsets]
+    verbs: [get, list, watch]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [csinodes, csidrivers, csistoragecapacities, storageclasses, volumeattachments]
+    verbs: [get, list, watch]
+  - apiGroups: [resource.k8s.io]
+    resources: [deviceclasses, resourceclaims, resourceslices]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gaudi-binpack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gaudi-binpack
+subjects:
+  - kind: ServiceAccount
+    name: gaudi-binpack
+    namespace: gaudi-binpack
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gaudi-binpack-leader
+  namespace: gaudi-binpack
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gaudi-binpack-leader
+  namespace: gaudi-binpack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gaudi-binpack-leader
+subjects:
+  - kind: ServiceAccount
+    name: gaudi-binpack
+    namespace: gaudi-binpack
+---
+# Read access to the client CA for its own HTTPS endpoint. Without it the log repeats
+# "forbidden" watch errors; scheduling works either way.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gaudi-binpack-auth-reader
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+  - kind: ServiceAccount
+    name: gaudi-binpack
+    namespace: gaudi-binpack
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gaudi-binpack-config
+  namespace: gaudi-binpack
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    clientConnection:
+      kubeconfig: /etc/sched/kubeconfig
+    enableProfiling: false
+    percentageOfNodesToScore: 100
+    leaderElection:
+      leaderElect: true
+      resourceLock: leases
+      resourceName: gaudi-binpack
+      resourceNamespace: gaudi-binpack
+    profiles:
+      - schedulerName: gaudi-binpack
+        plugins:
+          multiPoint:
+            disabled:
+              - name: NodeResourcesBalancedAllocation
+          postFilter:
+            disabled:
+              - name: DefaultPreemption
+          score:
+            enabled:
+              - name: TaintToleration
+                weight: 50
+              - name: NodeAffinity
+                weight: 50
+              - name: InterPodAffinity
+                weight: 50
+              - name: NodeResourcesFit
+                weight: 25
+              - name: PodTopologySpread
+                weight: 1
+              - name: ImageLocality
+                weight: 1
+        pluginConfig:
+          - name: NodeResourcesFit
+            args:
+              scoringStrategy:
+                type: MostAllocated
+                resources:
+                  - name: habana.ai/gaudi
+                    weight: 100
+                  - name: hugepages-2Mi
+                    weight: 5
+  kubeconfig: |
+    apiVersion: v1
+    kind: Config
+    clusters:
+      - name: in-cluster
+        cluster:
+          server: https://kubernetes.default.svc
+          certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    users:
+      - name: sa
+        user:
+          tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    contexts:
+      - name: sa@in-cluster
+        context:
+          cluster: in-cluster
+          user: sa
+    current-context: sa@in-cluster
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gaudi-binpack
+  namespace: gaudi-binpack
+  labels:
+    app: gaudi-binpack
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gaudi-binpack
+  template:
+    metadata:
+      labels:
+        app: gaudi-binpack
+    spec:
+      serviceAccountName: gaudi-binpack
+      priorityClassName: system-cluster-critical
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: gaudi-binpack
+              topologyKey: kubernetes.io/hostname
+        # Prefer nodes without Gaudi cards, if you have any.
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: habana.ai/gaudi
+                    operator: DoesNotExist
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+      containers:
+        - name: kube-scheduler
+          image: registry.k8s.io/kube-scheduler:v1.34.4
+          command:
+            - kube-scheduler
+            - --config=/etc/sched/config.yaml
+            - --authentication-kubeconfig=/etc/sched/kubeconfig
+            - --authorization-kubeconfig=/etc/sched/kubeconfig
+            - --bind-address=0.0.0.0
+            - --secure-port=10259
+            - --cert-dir=/tmp
+          ports:
+            - name: https
+              containerPort: 10259
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 10259
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 10259
+              scheme: HTTPS
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: cfg
+              mountPath: /etc/sched
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: cfg
+          configMap:
+            name: gaudi-binpack-config
+        - name: tmp
+          emptyDir: {}

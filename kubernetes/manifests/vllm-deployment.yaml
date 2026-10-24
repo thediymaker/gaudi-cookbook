@@ -1,0 +1,272 @@
+# vLLM on Gaudi: Deployment and Service template (one model, one Deployment).
+#
+# Example: Qwen/Qwen3-8B on one Gaudi 2 card. Take the vllm serve flags, environment and
+# card count for your model from its recipe; the Kubernetes parts below stay the same.
+#
+# Replace before applying:
+#   <registry>/<image>:<tag>   a vllm-gaudi image built as in docs/getting-started.md
+#   llm                        the namespace for model servers
+#   RECIPE_KEY                 see the comment on PT_HPU_RECIPE_CACHE_CONFIG
+#
+# Needs, in the same namespace:
+#   - the PVC "hf-models" with the model already in it (model-store.yaml)
+#   - the ConfigMap "vllm-stall-probe":
+#       kubectl -n llm create configmap vllm-stall-probe --from-file=kubernetes/tools/vllm_stall_probe.py
+#   - the RuntimeClass "habana" (runtimeclass.yaml)
+#   - the bin-pack scheduler (gaudi-binpack-scheduler.yaml), or delete schedulerName below
+#
+# Why each setting is there: docs/kubernetes/pod-spec.md. Drain: docs/kubernetes/rollouts-and-scaling.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-qwen3-8b
+  namespace: llm
+  labels:
+    app.kubernetes.io/name: vllm-qwen3-8b
+    app.kubernetes.io/component: model-server
+spec:
+  # No `replicas` field on purpose: an autoscaler (hpa.yaml) owns the count. A manifest that
+  # sets replicas resets the autoscaler's choice on every apply. Without an autoscaler, add
+  # `replicas: 2` here.
+  revisionHistoryLimit: 3
+  # A cold start (weight load plus first graph compile) can take a long time on big models.
+  # Keep this above the slowest start so a healthy rollout is not marked failed mid-load.
+  progressDeadlineSeconds: 7200
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # One pod at a time. maxSurge 0 / maxUnavailable 1 needs no spare cards.
+      # With spare cards, or with a single replica, use maxSurge 1 / maxUnavailable 0
+      # instead so the model never drops to zero serving pods.
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vllm-qwen3-8b
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vllm-qwen3-8b
+        app.kubernetes.io/component: model-server
+        model: qwen3-8b
+    spec:
+      # Fill partly used nodes first so whole nodes stay free for 8-card models.
+      schedulerName: gaudi-binpack
+      runtimeClassName: habana
+      # Habana's documented container setup uses the host IPC namespace; multi-card starts
+      # can fail at device acquire without it.
+      hostIPC: true
+      # The pause container becomes PID 1, so the preStop hook can stop a pod that is still
+      # starting (a SIGTERM sent to PID 1 with no handler is ignored by the kernel).
+      shareProcessNamespace: true
+      # 20 s preStop + 120 s --shutdown-timeout + 30 s for process exit.
+      terminationGracePeriodSeconds: 170
+      # A Service named "vllm" in the namespace would inject VLLM_PORT=tcp://..., which
+      # vLLM reads as its own setting. Service links are not needed here.
+      enableServiceLinks: false
+      tolerations:
+        - key: habana
+          operator: Exists
+          effect: NoSchedule
+      affinity:
+        # Spread replicas of this model over nodes when possible. Preferred, never required:
+        # a hard rule can leave replicas Pending on a fragmented fleet.
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 50
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: vllm-qwen3-8b
+                topologyKey: kubernetes.io/hostname
+      # No nodeName, hostname nodeSelector or required node affinity: pins go stale as nodes
+      # fail and stop the autoscaler from placing new pods. See docs/kubernetes/scheduling.md.
+      containers:
+        - name: vllm
+          image: <registry>/<image>:<tag>
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # Fail fast with a clear message if the model is missing or incomplete in the
+              # shared store, instead of downloading it inside a serving pod.
+              if ! python3 -c "from huggingface_hub import snapshot_download as s; s('${MODEL}', local_files_only=True)"; then
+                echo "model ${MODEL} is missing or incomplete under ${HF_HUB_CACHE}; run the prefetch Job" >&2
+                exit 1
+              fi
+              exec vllm serve "${MODEL}" \
+                --served-model-name "${SERVED_NAME}" \
+                --host 0.0.0.0 \
+                --port 8000 \
+                --tensor-parallel-size 1 \
+                --max-model-len 32768 \
+                --max-num-seqs 16 \
+                --enable-prefix-caching \
+                --shutdown-timeout 120
+          env:
+            - name: MODEL
+              value: Qwen/Qwen3-8B
+            - name: SERVED_NAME
+              value: qwen3-8b
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Weights come from the shared store, read-only and offline: a serving pod never
+            # waits on, or gets rate limited by, the model hub.
+            - name: HF_HOME
+              value: /models
+            - name: HF_HUB_CACHE
+              value: /models/hub
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            # Lazy mode with HPU graphs. Never PT_HPU_LAZY_MODE=0 or --enforce-eager in serving.
+            - name: PT_HPU_LAZY_MODE
+              value: "1"
+            - name: PT_HPU_ENABLE_LAZY_COLLECTIVES
+              value: "true"
+            # Compiled graph (recipe) cache on node-local disk: <dir>,<delete_on_start>,<max_MB>.
+            # Recipes depend on the image, TP size, max-model-len, max-num-seqs, block size and
+            # bucket settings. Stale recipes from a different configuration can load as valid
+            # and crash the engine, so change RECIPE_KEY whenever any of those change. With a
+            # correctly keyed directory, delete_on_start can stay False and later starts on the
+            # same node reuse the compiled graphs.
+            - name: RECIPE_KEY
+              value: qwen3-8b-<tag>-tp1-len32768-seqs16
+            - name: PT_HPU_RECIPE_CACHE_CONFIG
+              value: /recipe-cache/$(RECIPE_KEY),False,16384
+            # Warm-up compiles the bucket shapes before the server reports healthy. Skipping
+            # it starts faster, but every new shape then compiles on live traffic and stalls
+            # the other streams on that pod. See docs/kubernetes/startup-and-warmup.md.
+            - name: VLLM_SKIP_WARMUP
+              value: "false"
+            # A first-time compile of a new shape inside one step can take minutes on large
+            # models; the multi-card executor's default deadline can declare the engine dead.
+            - name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+              value: "1800"
+            # Habana runtime logs go to files under HABANA_LOGS (mounted from the node below so
+            # they outlive the container). Do not set HABANA_VISIBLE_DEVICES: the device
+            # plugin sets it to the cards this pod was given.
+            - name: HABANA_LOGS
+              value: /var/log/habana_logs
+            - name: STALL_PROBE_SECONDS
+              value: "180"
+          resources:
+            # Requests per card at or below the node's per-card share, so any mix of pods
+            # packs (kubernetes/tools/hpu-resource-audit.py checks this). hugepages and cards
+            # must have requests equal to limits. No CPU limit: weight loading and graph
+            # compile are CPU heavy, and CFS throttling shows up as very slow starts.
+            requests:
+              habana.ai/gaudi: "1"
+              hugepages-2Mi: 4Gi
+              cpu: "8"
+              memory: 48Gi
+            limits:
+              habana.ai/gaudi: "1"
+              hugepages-2Mi: 4Gi
+              memory: 96Gi
+          ports:
+            - name: http
+              containerPort: 8000
+          startupProbe:
+            # Covers weight load and warm-up. 240 x 30 s = 2 h; size it to the slowest cold
+            # start you have measured for this model, with margin.
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 240
+          readinessProbe:
+            # /health plus "requests in flight but no engine step for STALL_PROBE_SECONDS".
+            # Readiness only: a stalled pod leaves routing and comes back when steps resume.
+            exec:
+              command: ["python3", "-I", "/opt/stall-probe/vllm_stall_probe.py"]
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            # Restart only when the server itself is gone.
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/bash
+                  - -c
+                  - |
+                    # Serving (port 8000 = 0x1F40 in LISTEN state): wait 20 s so routers and
+                    # the Service drop this pod, then the SIGTERM that follows starts vLLM's
+                    # drain (--shutdown-timeout): in-flight requests finish, new ones are refused.
+                    # Still starting: there is nothing to drain, and a SIGTERM during start-up
+                    # can be ignored or lost, which would hold the cards for the whole grace
+                    # period. Kill everything in the pod now instead.
+                    if grep -qE '^ *[0-9]+: [0-9A-F]+:1F40 [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+                      sleep 20
+                    else
+                      kill -KILL -1
+                    fi
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+            - name: recipe-cache
+              mountPath: /recipe-cache
+            - name: shm
+              mountPath: /dev/shm
+            - name: stall-probe
+              mountPath: /opt/stall-probe
+              readOnly: true
+            - name: habana-logs
+              mountPath: /var/log/habana_logs
+              subPathExpr: $(POD_NAME)
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: hf-models
+            readOnly: true
+        # Node-local: compiled graphs are specific to the node's software and the config.
+        - name: recipe-cache
+          hostPath:
+            path: /var/cache/habana-recipes
+            type: DirectoryOrCreate
+        # Memory-backed /dev/shm for PyTorch shared memory between processes. Counts
+        # toward the container's memory limit.
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: stall-probe
+          configMap:
+            name: vllm-stall-probe
+        # One directory per pod on the node, so device fault dumps survive the container.
+        # Prune old directories on the nodes (for example with a tmpfiles.d age rule).
+        - name: habana-logs
+          hostPath:
+            path: /var/log/habana_logs/pods
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen3-8b
+  namespace: llm
+  labels:
+    app.kubernetes.io/name: vllm-qwen3-8b
+    model: qwen3-8b
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: vllm-qwen3-8b
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Gaudi Cookbook">
+  <rect x="4" y="4" width="56" height="56" rx="12" fill="#3f51b5"/>
+  <g fill="none" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="18" y="18" width="28" height="28" rx="4"/>
+    <path d="M24 12v6M32 12v6M40 12v6M24 46v6M32 46v6M40 46v6M12 24h6M12 32h6M12 40h6M46 24h6M46 32h6M46 40h6"/>
+  </g>
+  <path d="M26 36c0-5 2.7-9 6-9s6 4 6 9" fill="none" stroke="#4db6ac" stroke-width="3.2" stroke-linecap="round"/>
+  <path d="M24 37h16" stroke="#4db6ac" stroke-width="3.2" stroke-linecap="round"/>
+</svg>

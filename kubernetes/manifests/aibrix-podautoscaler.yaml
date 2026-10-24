@@ -1,0 +1,51 @@
+# Optional: an AIBrix PodAutoscaler (APA strategy) instead of an HPA.
+#
+# Use this only if AIBrix already runs in the cluster. Do not point an HPA and a
+# PodAutoscaler at the same Deployment.
+#
+# Read the controller source of the AIBrix release you run before tuning. Behaviour seen in
+# the v0.6 and v0.7 controllers, and what it means for Gaudi:
+#   - Defaults cut on any 10% dip (scale-down tolerance 0.1) and can halve replicas per
+#     cycle (max scale-down rate 2). With cold starts of many minutes that thrashes. The
+#     annotations below cut only when clearly idle, and gradually.
+#   - On the scale-down path the cooldown window takes the minimum recommendation in the
+#     window (an HPA takes the maximum). A longer window therefore cuts deeper, not later;
+#     "0s" is the conservative value there.
+#   - Only annotation keys under autoscaling.aibrix.ai/ are read; other keys are ignored
+#     without a warning.
+#   - The webhook accepts exactly one metric source.
+#   - Pods that are still loading have no /metrics yet. In those releases a failed scrape
+#     could count as a zero, so a scale-up under load could read as idle and delete the
+#     pods it had just started. Check how your release treats unready pods, or raise the
+#     floor while scaling up under load.
+#
+# Placeholders: <namespace>, <model-name>, <deployment-name>.
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: <deployment-name>
+  namespace: <namespace>
+  labels:
+    model.aibrix.ai/name: <model-name>
+  annotations:
+    # Scale down only when use/target < 0.5.
+    autoscaling.aibrix.ai/scale-down-tolerance: "0.5"
+    # At most floor(replicas / 1.5) per cycle.
+    autoscaling.aibrix.ai/max-scale-down-rate: "1.5"
+    autoscaling.aibrix.ai/scale-down-cooldown-window: "0s"
+spec:
+  scalingStrategy: APA
+  minReplicas: 2
+  maxReplicas: 8
+  metricsSources:
+    - metricSourceType: pod
+      protocolType: http
+      port: "8000"
+      path: metrics
+      targetMetric: num_requests_running
+      # About 0.6 x --max-num-seqs; keep it below max-num-seqs.
+      targetValue: "9.6"
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: <deployment-name>

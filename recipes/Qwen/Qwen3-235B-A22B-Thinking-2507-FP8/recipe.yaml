@@ -1,0 +1,122 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/qwen3-235b-a22b-2507-fp8.md
+meta:
+  title: "Qwen3-235B-A22B-Thinking-2507-FP8"
+  slug: "qwen3-235b-a22b-thinking-2507-fp8"
+  provider: "Qwen"
+  description: "235B MoE (22B active) reasoning model, FP8 block-quantized checkpoint, 128K context on four Gaudi 2 cards."
+  date_added: 2026-10-23
+  date_updated: 2026-10-23
+  tasks:
+    - text
+  related_recipes:
+    - "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8"
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8"
+  architecture: moe
+  parameter_count: "235B"
+  active_parameters: "22B"
+  context_length: 262144
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the hermes tool-call parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"]
+  reasoning:
+    description: "Split the reasoning trace from the answer. deepseek_r1 handles the missing opening <think> (the chat template opens it)."
+    args: ["--reasoning-parser", "deepseek_r1"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: fp8
+    vram_minimum_gb: 284
+    description: "The official FP8 checkpoint (236 GB), four Gaudi 2 cards."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 4, tp: 4, ep: false }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "4"
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "8"
+    - "--gpu-memory-utilization"
+    - "0.45"
+    - "--block-size"
+    - "128"
+    - "--max-num-batched-tokens"
+    - "32768"
+    - "--max-cudagraph-capture-size"
+    - "2048"
+    - "--enable-prompt-tokens-details"
+    - "--reasoning-parser"
+    - "deepseek_r1"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "hermes"
+    - "--trust-remote-code"
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"    # required for TP > 1 in lazy mode
+    VLLM_HPU_MOE_GATHER: "1"                  # gathered-expert FP8 MoE (fix fp8-moe-gather)
+    VLLM_HPU_MOE_GATHER_RATIO: "0.25"         # tokens x top_k (8) <= 128 experts x 0.25 = 32: up to 4 decode tokens; it loses above that
+    VLLM_HPU_MOE_GATHER_VERIFY: "0"
+    VLLM_HPU_FORCE_CHANNEL_FP8: "1"           # per-channel FP8 path on Gaudi 2
+    VLLM_HPU_CONVERT_TO_FP8UZ: "1"            # Gaudi 2 FP8 weight format
+    PT_HPU_WEIGHT_SHARING: "0"
+    RUNTIME_SCALE_PATCHING: "1"
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_GRAPH_RESERVED_MEM: "0.2"
+    VLLM_GRAPH_PROMPT_RATIO: "0.15"
+    VLLM_GRAPH_PROMPT_STRATEGY: "max_bs"
+    VLLM_GRAPH_DECODE_STRATEGY: "max_bs"
+    VLLM_EXPONENTIAL_BUCKETING: "True"
+    VLLM_PROMPT_BS_BUCKET_MIN: "1"
+    VLLM_PROMPT_BS_BUCKET_STEP: "1"
+    VLLM_PROMPT_BS_BUCKET_MAX: "4"
+    VLLM_DECODE_BS_BUCKET_MIN: "1"
+    VLLM_DECODE_BS_BUCKET_STEP: "1"
+    VLLM_DECODE_BS_BUCKET_MAX: "8"
+    VLLM_PROMPT_SEQ_BUCKET_MIN: "128"
+    VLLM_PROMPT_SEQ_BUCKET_STEP: "4096"
+    VLLM_PROMPT_SEQ_BUCKET_MAX: "131072"
+    VLLM_DECODE_BLOCK_BUCKET_MIN: "128"
+    VLLM_DECODE_BLOCK_BUCKET_STEP: "1024"
+    VLLM_DECODE_BLOCK_BUCKET_MAX: "8192"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"  # on-demand graph compiles exceed the 300 s default
+  buckets: null
+  required_fixes:
+    - prompt-order            # prefix-cache read-before-write across requests
+    - sampling-rows-refresh   # device sampling rows stale after batch reorders
+    - structured-output-rows  # structured-output steps sample rows with the wrong params
+    - bad-words-index         # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows        # logit_bias, min_p, min_tokens silently ignored
+    - async-discard-counter   # AttributeError on the first preemption under async scheduling
+    - resumed-prefill-logits  # a request resumed after preemption with prefix-cache hits re-samples its generated tail
+    - gather-logprobs-int32   # top_logprobs ids corrupted in lazy mode
+    - prompt-logprobs         # prompt_logprobs request kills the engine (flat hidden states)
+    - logprobs-decode-guard   # a bad logprob id no longer kills the API server
+    - seeded-sampling         # requests with seed can segfault a TP worker in lazy mode
+    - fp8-moe-gather          # gathered-expert FP8 MoE combine (vllm-gaudi PR #1731, in v0.30)
+    - rank-exception-fatal    # an exception on a non-zero TP rank stops the engine instead of serving garbage
+  verified:
+    - "Reasoning split clean (no <think> in content); non-streamed replies carry the reasoning field; streamed tool calls parse"
+    - "90-minute soak at 12 in flight (prompts p50 1.2K, p99 35K, shared prefixes): 888 done, 0 errors, 0 restarts, HBM peak 90.1 GB per card"
+    - "--max-num-batched-tokens 32768 vs 16384 at 8 seqs (A/B on an earlier image): equal throughput, 4 x 20K-token prompts TTFT 3.5-5.5 s vs 6.4 s, no OOM"
+  notes:
+    - "The soak left 8.2 GB of HBM headroom per card; if this recipe ever OOMs, lower --max-num-batched-tokens to 16384 first."
+    - "Without --max-cudagraph-capture-size every prefill shape captures an HPU graph and HBM grows until PT_DEVMEM allocation failures."
+    - "Loading is CPU-bound (FP8 rescale per tensor on Gaudi 2); a restart takes about 26 minutes."

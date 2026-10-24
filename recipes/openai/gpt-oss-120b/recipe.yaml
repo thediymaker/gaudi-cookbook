@@ -1,0 +1,118 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/gpt-oss-120b.md
+meta:
+  title: "gpt-oss-120b"
+  slug: "gpt-oss-120b"
+  provider: "OpenAI"
+  description: "117B MoE (5.1B active) reasoning model in native MXFP4, harmony format, 128K context on four Gaudi 2 cards."
+  date_added: 2026-10-23
+  date_updated: 2026-10-23
+  tasks:
+    - text
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "openai/gpt-oss-120b"
+  architecture: moe
+  parameter_count: "117B"
+  active_parameters: "5.1B"
+  context_length: 131072
+
+features:
+  tool_calling:
+    description: "Harmony tool calls with the openai parser. Use it together with the reasoning parser, or the analysis channel leaks into tool arguments."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "openai"]
+  reasoning:
+    description: "Split the harmony analysis channel from the final answer. Effort is set per request with reasoning_effort low, medium or high."
+    args: ["--reasoning-parser", "openai_gptoss"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: mxfp4
+    vram_minimum_gb: 79
+    description: "The original MXFP4 MoE checkpoint (65 GB), kept packed on the device; four Gaudi 2 cards with expert parallelism."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 4, tp: 4, ep: true }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "4"
+    - "--enable-expert-parallel"
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "16"
+    - "--gpu-memory-utilization"
+    - "0.9"
+    - "--block-size"
+    - "128"
+    - "--max-num-batched-tokens"
+    - "2048"
+    - "--enable-chunked-prefill"
+    - "--enable-prompt-tokens-details"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "openai"
+    - "--reasoning-parser"
+    - "openai_gptoss"
+    - "--trust-remote-code"
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"    # required for TP > 1 in lazy mode
+    HPU_MXFP4_NATIVE: "1"                     # keep MXFP4 packed: selects the bias_mxfp4_fused_weights MoE op
+    HPU_FUSED_MOE: "1"
+    PT_HPU_QKV_SLICE_SEQ_LEN_THLD: "128"      # as verified; not separately A/B tested
+    TIKTOKEN_RS_CACHE_DIR: "/data/tiktoken-rs-cache"  # persistent dir; create it before start (see notes)
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_EXPONENTIAL_BUCKETING: "True"
+    VLLM_PROMPT_BS_BUCKET_MIN: "1"
+    VLLM_PROMPT_BS_BUCKET_STEP: "1"
+    VLLM_PROMPT_BS_BUCKET_MAX: "16"
+    VLLM_DECODE_BS_BUCKET_MIN: "1"
+    VLLM_DECODE_BS_BUCKET_STEP: "1"
+    VLLM_DECODE_BS_BUCKET_MAX: "16"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "7200"
+    VLLM_RPC_TIMEOUT: "7200000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
+  buckets: null
+  required_fixes:
+    - prompt-order                   # prefix-cache read-before-write across requests
+    - sampling-rows-refresh          # device sampling rows stale after batch reorders
+    - structured-output-rows         # structured-output steps sample rows with the wrong params
+    - bad-words-index                # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows               # logit_bias, min_p, min_tokens silently ignored
+    - async-discard-counter          # AttributeError on the first preemption under async scheduling
+    - resumed-prefill-logits         # a request resumed after preemption with prefix-cache hits re-samples its generated tail
+    - gather-logprobs-int32          # top_logprobs ids corrupted in lazy mode
+    - prompt-logprobs                # prompt_logprobs request kills the engine
+    - logprobs-decode-guard          # a bad logprob id no longer kills the API server
+    - seeded-sampling                # requests with seed can segfault a TP worker in lazy mode
+    - sink-once                      # attention sinks: ignored in prefill, counted once per KV block in decode
+    - swa-decode-window              # sliding layers saw 129-256 tokens in decode instead of 128
+    - rank-exception-fatal           # an exception on a non-zero TP rank stops the engine instead of serving garbage
+    - gptoss-harmony-parse-recovery  # a malformed tool-call header was an HTTP 500 for the whole request
+  verified:
+    - "16 in flight, about 4.1K-token prompts and 1.7K-token outputs: 96/96; two about 107K-token prompts 2/2 (TTFT 78-99 s)"
+    - "Request options: structured output, named and required tool calls through harmony, min_tokens, min_p, logit_bias all take effect"
+    - "Exact sinks and sliding window: long-context needles 9/9 with sink-once and swa-decode-window, 5/9 without"
+    - "Model test suite with the sink fixes 17/17 twice (14/17 and 15/17 without); coding-agent tier 5/5 twice (2/5 and 3/5 without)"
+    - "Gates at 32 seqs: harmony tools 8/8 per case, json_schema 6/6, two about 112K-token needles found, GSM8K 49/50"
+  notes:
+    - >-
+      openai_harmony downloads its vocab at start and does not create its cache directory: mkdir -p "$TIKTOKEN_RS_CACHE_DIR" first, on storage that
+      survives restarts.
+    - "HPU_MXFP4_NATIVE=0 dequantizes to BF16 and lands on a fused MoE kernel larger than the Gaudi 2 TPC instruction cache (device fault)."
+    - >-
+      The cookbook MXFP4 MoE decode kernel (kernels/mxfp4-moe) is 2-3x faster per stream at 4-16 in flight and makes two cards practical; this recipe
+      is the stock path.

@@ -1,0 +1,126 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/gemma-4-31b-it.md
+meta:
+  title: "Gemma 4 31B IT"
+  slug: "gemma-4-31b-it"
+  provider: "Google"
+  description: "31B dense multimodal (image + text) instruct model, BF16, 128K context on four Gaudi 2 cards."
+  date_added: 2026-10-23
+  date_updated: 2026-10-23
+  tasks:
+    - multimodal
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "google/gemma-4-31B-it"
+  architecture: dense
+  parameter_count: "31B"
+  active_parameters: "31B"
+  context_length: 262144
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the gemma4 parser; needs the gemma4-required-tool-grammar and gemma4-buffered-tool-args fixes on v0.26.0."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "gemma4"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: bf16
+    vram_minimum_gb: 75
+    description: "BF16 weights (62.5 GB), four Gaudi 2 cards for KV and graph headroom at 128K and 16 sequences."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 4, tp: 4, ep: false }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "4"
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "16"
+    - "--gpu-memory-utilization"
+    - "0.78"
+    - "--block-size"
+    - "128"
+    - "--max-num-batched-tokens"
+    - "8192"
+    - "--enable-chunked-prefill"
+    - "--enable-prompt-tokens-details"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "gemma4"
+    - "--limit-mm-per-prompt"
+    - '{"image":64,"video":0}'
+    - "--trust-remote-code"
+    - "--tokenizer"
+    - "/tmp/gemma4-bos-tokenizer"             # written by the gemma4-bos-tokenizer fix
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"    # required for TP > 1 in lazy mode
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_MULTIMODAL_BUCKETS: "None"           # no fixed vision buckets; images cost a fixed 280 tokens each
+    VLLM_GRAPH_RESERVED_MEM: "0.3"
+    VLLM_GRAPH_PROMPT_RATIO: "0.15"
+    VLLM_GRAPH_PROMPT_STRATEGY: "max_bs"
+    VLLM_GRAPH_DECODE_STRATEGY: "max_bs"
+    VLLM_EXPONENTIAL_BUCKETING: "True"
+    VLLM_PROMPT_BS_BUCKET_MIN: "1"
+    VLLM_PROMPT_BS_BUCKET_STEP: "1"
+    VLLM_PROMPT_BS_BUCKET_MAX: "8"
+    VLLM_DECODE_BS_BUCKET_MIN: "1"
+    VLLM_DECODE_BS_BUCKET_STEP: "1"
+    VLLM_DECODE_BS_BUCKET_MAX: "16"
+    VLLM_PROMPT_SEQ_BUCKET_MIN: "128"
+    VLLM_PROMPT_SEQ_BUCKET_STEP: "4096"
+    VLLM_PROMPT_SEQ_BUCKET_MAX: "131072"
+    VLLM_DECODE_BLOCK_BUCKET_MIN: "128"
+    VLLM_DECODE_BLOCK_BUCKET_STEP: "1024"
+    VLLM_DECODE_BLOCK_BUCKET_MAX: "4096"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "3600000"
+  buckets: null
+  required_fixes:
+    - prompt-order                  # prefix-cache read-before-write across requests
+    - sampling-rows-refresh         # device sampling rows stale after batch reorders
+    - structured-output-rows        # structured-output steps sample rows with the wrong params
+    - bad-words-index               # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows              # logit_bias, min_p, min_tokens silently ignored
+    - async-discard-counter         # AttributeError on the first preemption under async scheduling
+    - resumed-prefill-logits        # a request resumed after preemption with prefix-cache hits re-samples its generated tail
+    - gather-logprobs-int32         # top_logprobs ids corrupted in lazy mode (26-50% of prefill replies before)
+    - prompt-logprobs               # prompt_logprobs request kills the engine
+    - logprobs-decode-guard         # a bad logprob id no longer kills the API server
+    - seeded-sampling               # requests with seed can segfault a TP worker in lazy mode
+    - mm-merge-idxcopy              # broadcast masked_scatter_ fails to graph-compile on concurrent multi-image steps
+    - rank-exception-fatal          # an exception on a non-zero TP rank stops the engine instead of serving garbage
+    - gemma4-required-tool-grammar  # tool_choice required/named came back as prose
+    - gemma4-buffered-tool-args     # repairs over-escaped strings in tool arguments
+    - gemma4-bos-tokenizer          # raw /v1/completions prompts reached the model without <bos>
+  verified:
+    - "Tool reliability, 3 cases x 40 sampled: 120/120; streaming tool_choice required, named and auto all correct"
+    - "Streamed tool-argument replay (escaped quotes, regex backslashes): 10/10 with gemma4-buffered-tool-args, 5/10 stock"
+    - "Multi-image requests with top_logprobs=20, 16 concurrent x 3 rounds: 96/96, 0 restarts"
+    - "Teacher-forced top-1 agreement with a reference run, 24 prompts, 11,754 tokens: 0.9924, mean NLL 0.05"
+    - "top_logprobs soak (unique single-token prompts, 4/8/16 concurrent): 0/1000 corrupt with the fix, 52/200 and 75/200 stock"
+    - "Raw completions with the BOS tokenizer match explicit-<bos> prompts byte for byte; chat prompt tokens unchanged (5/5, image prompt 298 tokens)"
+    - >-
+      Seeded traffic at saturation with client aborts, three replicas: 8,650 requests, 0 errors, 0 restarts with seeded-sampling; sequential same-seed
+      repeats 12/12
+  notes:
+    - "The top_logprobs checks ran with one more logprobs patch (an extra host sync) that is not part of the fixes pack."
+    - "Thinking is off by default; send chat_template_kwargs {\"enable_thinking\": true} to turn it on."
+    - >-
+      Penalties (repetition, presence, frequency, including a --override-generation-config repetition_penalty) are not applied under async scheduling
+      on v0.26.0.
+    - "Rare PT_DEVMEM allocation failures in graph replay under heavy load are not root-caused; vLLM exits 0 after them, so read the previous container log."

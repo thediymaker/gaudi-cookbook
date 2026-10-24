@@ -1,0 +1,9 @@
+# build outputs and test results: never commit compiled kernels or recipe caches
+dist/
+*.so
+*.o
+*.s
+mxk_lib_gate
+parity_out/
+*.pt
+__pycache__/

@@ -1,0 +1,137 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/qwen3-6-35b-a3b-fp8.md
+meta:
+  title: "Qwen3.6-35B-A3B-FP8"
+  slug: "qwen3-6-35b-a3b-fp8"
+  provider: "Qwen"
+  description: "35B MoE (3B active) hybrid (Gated DeltaNet + attention) reasoning model with vision, FP8, native 256K context on one Gaudi 2 card."
+  date_added: 2026-10-23
+  date_updated: 2026-10-23
+  tasks:
+    - multimodal
+  related_recipes:
+    - "Qwen/Qwen3.6-27B-FP8"
+  hardware:
+    gaudi2: supported                       # not re-run end to end with prefix caching off
+
+model:
+  model_id: "Qwen/Qwen3.6-35B-A3B-FP8"
+  architecture: moe
+  parameter_count: "35B"
+  active_parameters: "3B"
+  context_length: 262144
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the qwen3_coder parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
+  reasoning:
+    description: "Split <think> reasoning from the answer. Thinking is on by default; chat_template_kwargs enable_thinking false turns it off."
+    args: ["--reasoning-parser", "qwen3"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: fp8
+    vram_minimum_gb: 57
+    description: "The official FP8 checkpoint (block 128 x 128, dynamic activations), one Gaudi 2 card."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 1, tp: 1, ep: false }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  max_model_len: 262144
+  serve_args:
+    - "--tensor-parallel-size"
+    - "1"
+    - "--max-model-len"
+    - "262144"
+    - "--max-num-seqs"
+    - "8"
+    - "--gpu-memory-utilization"
+    - "0.75"
+    - "--block-size"
+    - "128"
+    - "--max-num-batched-tokens"
+    - "1280"
+    - "--enable-chunked-prefill"
+    - "--no-enable-prefix-caching"            # see notes: no GDN prefix caching on this release
+    - "--enable-prompt-tokens-details"
+    - "--reasoning-parser"
+    - "qwen3"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "qwen3_coder"
+    - "--limit-mm-per-prompt"
+    - '{"image":16,"video":0}'
+  env:
+    PT_HPU_LAZY_MODE: "0"                     # compile mode: lazy mode loses the GDN state cache at first decode
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"
+    VLLM_HPU_MOE_GATHER: "1"                  # gathered-expert FP8 MoE (fix fp8-moe-gather)
+    VLLM_HPU_MOE_GATHER_RATIO: "0.25"         # gather while tokens x top_k (8) <= 256 experts x 0.25 = 64: up to 8 decode tokens
+    VLLM_HPU_MOE_GATHER_VERIFY: "0"
+    VLLM_USE_NAIVE_MAMBA_CACHE_SHARING: "1"
+    VLLM_COMPACT_GDN: "1"                     # stock default without prefix caching: per-request GDN state slots
+    VLLM_QWEN3_STRICT_THINK_END: "1"          # read by qwen3-strict-think-end: only </think> ends reasoning
+    PT_HPUGRAPH_DISABLE_TENSOR_CACHE: "false"
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_GRAPH_RESERVED_MEM: "0.3"
+    VLLM_EXPONENTIAL_BUCKETING: "True"
+    VLLM_PROMPT_BS_BUCKET_MIN: "1"
+    VLLM_PROMPT_BS_BUCKET_STEP: "1"
+    VLLM_PROMPT_BS_BUCKET_MAX: "8"
+    VLLM_DECODE_BS_BUCKET_MIN: "1"
+    VLLM_DECODE_BS_BUCKET_STEP: "1"
+    VLLM_DECODE_BS_BUCKET_MAX: "8"
+    VLLM_PROMPT_SEQ_BUCKET_MIN: "128"
+    VLLM_PROMPT_SEQ_BUCKET_STEP: "4096"
+    VLLM_PROMPT_SEQ_BUCKET_MAX: "262144"
+    VLLM_DECODE_BLOCK_BUCKET_MIN: "128"
+    VLLM_DECODE_BLOCK_BUCKET_STEP: "1024"
+    VLLM_DECODE_BLOCK_BUCKET_MAX: "16384"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "3600000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
+  buckets: null
+  required_fixes:
+    - sampling-rows-refresh   # device sampling rows stale after batch reorders
+    - structured-output-rows  # structured-output steps sample rows with the wrong params
+    - bad-words-index         # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows        # logit_bias, min_p, min_tokens silently ignored
+    - async-discard-counter   # AttributeError on the first preemption under async scheduling
+    - hybrid-decode-pad       # decode padding can land inside a live KV block when the hybrid KV block is split into kernel blocks
+    - gather-logprobs-int32   # recommended on every image; the corruption itself is lazy-mode only
+    - prompt-logprobs         # prompt_logprobs request kills the engine (flat hidden states)
+    - logprobs-decode-guard   # a bad logprob id no longer kills the API server
+    - fp8-moe-gather          # gathered-expert FP8 MoE combine (vllm-gaudi PR #1731, in v0.30)
+    - rope-cpu-cache          # RoPE tables built on the HPU are wrong from position about 196K
+    - qwen3-strict-think-end  # a <tool_call> drafted while thinking was returned as a real call
+  verified:
+    - "Functional set (arithmetic, factual, code, multi-turn, streaming, tool calls): 10/10 (prefix caching off)"
+    - "Decode 74.5 tokens/s single stream, 204.8 tokens/s per card at 8 in flight, with fp8-moe-gather (prefix caching off)"
+    - "Gathered-expert MoE vs the stock op: no element beyond 2 FP8 ULPs"
+    - "Needles 9/9 to 250K tokens on cold requests (prefix caching on)"
+    - "Preemption and resume: 18/18 checks, the preempted request finished its full 10,000 tokens (prefix caching on)"
+    - "Request options (logit_bias, min_p, min_tokens, structured output) all take effect; forced-tool whitespace runaway 0/32 (prefix caching on)"
+    - "Tool reliability: 240/240 over two runs with strict think-end, 115/120 without"
+  notes:
+    - >-
+      Prefix caching is off: on this release, prefix-cache hits on Gated DeltaNet layers resume from the wrong state. Upstream vllm-gaudi main has
+      merged prefix caching for the non-compact layout; use a release that includes it before turning prefix caching on.
+    - >-
+      The checks marked "prefix caching on" ran on an earlier form of this recipe with a GDN prefix-cache patch that is not in this cookbook. Checks
+      of cache hits are left out; the cold-path results have not been re-run with prefix caching off.
+    - >-
+      --max-num-batched-tokens 1280 is the value the checks ran with; earlier deployments with prefix caching off used 1024. Without prefix caching
+      the chunks do not have to line up with the hybrid KV block.
+    - >-
+      --max-num-seqs and VLLM_HPU_MOE_GATHER_RATIO move together: 9+ decode tokens fall back to the stock MoE op at about 19 tok/s per stream (16
+      sequences would need a ratio of 0.5, not measured).
+    - >-
+      Loading under a CPU quota can take 78 minutes: vllm-gaudi sizes its load thread pool from the host's core count, and the per-tensor FP8 rescale
+      is then CPU-throttled. Run without a CPU limit, or cap the pool at the quota.

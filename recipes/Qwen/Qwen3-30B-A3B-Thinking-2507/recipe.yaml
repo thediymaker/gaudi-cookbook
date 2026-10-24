@@ -1,0 +1,118 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/qwen3-30b-a3b-2507.md
+meta:
+  title: "Qwen3-30B-A3B-Thinking-2507"
+  slug: "qwen3-30b-a3b-thinking-2507"
+  provider: "Qwen"
+  description: "30B MoE (3B active) reasoning model, always thinks, served at 128K context on one Gaudi 2 card in BF16."
+  date_added: 2026-10-23
+  date_updated: 2026-10-23
+  tasks:
+    - text
+  related_recipes:
+    - "Qwen/Qwen3-30B-A3B-Instruct-2507"
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "Qwen/Qwen3-30B-A3B-Thinking-2507"
+  architecture: moe
+  parameter_count: "30.5B"
+  active_parameters: "3.3B"
+  context_length: 262144
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the hermes tool-call parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"]
+  reasoning:
+    description: "Split the reasoning trace from the answer. deepseek_r1 handles the missing opening <think> (the chat template opens it)."
+    args: ["--reasoning-parser", "deepseek_r1"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: bf16
+    vram_minimum_gb: 74
+    description: "BF16 weights (61 GB), one Gaudi 2 card."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 1, tp: 1, ep: false }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "1"
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "8"
+    - "--gpu-memory-utilization"
+    - "0.9"
+    - "--block-size"
+    - "128"
+    - "--max-num-batched-tokens"
+    - "2048"
+    - "--enable-chunked-prefill"
+    - "--async-scheduling"
+    - "--enable-prompt-tokens-details"
+    - "--reasoning-parser"
+    - "deepseek_r1"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "hermes"
+    - "--trust-remote-code"
+  env:
+    PT_HPU_LAZY_MODE: "1"                     # lazy (graph) mode; eager is far slower
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"
+    VLLM_SKIP_WARMUP: "true"                  # graphs compile on first use; see the timeouts below
+    VLLM_GRAPH_RESERVED_MEM: "0.4"            # graph memory, not KV, capped concurrency at 2 before this
+    VLLM_GRAPH_PROMPT_RATIO: "0.5"
+    VLLM_GRAPH_PROMPT_STRATEGY: "max_bs"
+    VLLM_GRAPH_DECODE_STRATEGY: "max_bs"
+    VLLM_EXPONENTIAL_BUCKETING: "True"
+    VLLM_PROMPT_BS_BUCKET_MIN: "1"            # batch buckets 1..8, matching --max-num-seqs 8
+    VLLM_PROMPT_BS_BUCKET_STEP: "1"
+    VLLM_PROMPT_BS_BUCKET_MAX: "8"
+    VLLM_DECODE_BS_BUCKET_MIN: "1"
+    VLLM_DECODE_BS_BUCKET_STEP: "1"
+    VLLM_DECODE_BS_BUCKET_MAX: "8"
+    VLLM_PROMPT_SEQ_BUCKET_MIN: "128"
+    VLLM_PROMPT_SEQ_BUCKET_STEP: "4096"
+    VLLM_PROMPT_SEQ_BUCKET_MAX: "131072"
+    VLLM_DECODE_BLOCK_BUCKET_MIN: "128"
+    VLLM_DECODE_BLOCK_BUCKET_STEP: "1024"
+    VLLM_DECODE_BLOCK_BUCKET_MAX: "32768"
+    OMP_NUM_THREADS: "1"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"   # first long prompt on a fresh node compiles its buckets
+    VLLM_RPC_TIMEOUT: "3600000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
+  buckets: null
+  required_fixes:
+    - prompt-order            # prefix-cache read-before-write across requests
+    - sampling-rows-refresh   # device sampling rows stale after batch reorders
+    - structured-output-rows  # structured-output steps sample rows with the wrong params
+    - bad-words-index         # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows        # logit_bias, min_p, min_tokens silently ignored
+    - async-discard-counter   # AttributeError on the first preemption under async scheduling
+    - resumed-prefill-logits  # a request resumed after preemption with prefix-cache hits re-samples its generated tail
+    - gather-logprobs-int32   # top_logprobs ids corrupted in lazy mode
+    - prompt-logprobs         # prompt_logprobs request kills the engine (flat hidden states)
+    - logprobs-decode-guard   # a bad logprob id no longer kills the API server
+    - seeded-sampling         # requests with seed can segfault the worker in lazy mode
+  verified:
+    - "Production-shaped load (about 19K-token prompts, natural reasoning output): 12/12 at 2, 16/16 at 4, 24/24 at 8 in flight, 0 failures"
+    - "Long-context arm (1 in 8 prompts at about 105K tokens) at 8 in flight: 32/32 with 5 preemptions, 0 restarts"
+    - "Without async-discard-counter the same arm killed the engine on the first preemption"
+  notes:
+    - "Give test requests a real max_tokens: a short budget is spent inside the reasoning and content comes back empty."
+    - "KV pool is 221,312 tokens at these settings (1.69 x 128K)."
+    - >-
+      Keep --max-num-batched-tokens at 2048: on this architecture a padded prefill tile near 2^29 elements (8192-token chunk at 32K+ context) returns
+      garbage or kills the engine.

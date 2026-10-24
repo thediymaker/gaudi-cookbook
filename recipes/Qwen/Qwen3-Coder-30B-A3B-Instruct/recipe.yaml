@@ -1,0 +1,116 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/qwen3-coder-30b-a3b-instruct.md
+meta:
+  title: "Qwen3-Coder-30B-A3B-Instruct"
+  slug: "qwen3-coder-30b-a3b-instruct"
+  provider: "Qwen"
+  description: "30B MoE (3B active) coding model with tool calling, served at 128K context on one Gaudi 2 card in BF16."
+  date_added: 2026-10-23
+  date_updated: 2026-10-23
+  tasks:
+    - text
+  related_recipes:
+    - "Qwen/Qwen3-30B-A3B-Instruct-2507"
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+  architecture: moe
+  parameter_count: "30.5B"
+  active_parameters: "3.3B"
+  context_length: 262144
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the qwen3_coder parser (XML function calls, with a fallback for a missing <tool_call>)."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: bf16
+    vram_minimum_gb: 74
+    description: "BF16 weights (61 GB), one Gaudi 2 card."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 1, tp: 1, ep: false }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "1"
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "8"
+    - "--gpu-memory-utilization"
+    - "0.9"
+    - "--block-size"
+    - "128"
+    - "--max-num-batched-tokens"
+    - "2048"
+    - "--max-cudagraph-capture-size"
+    - "2048"
+    - "--enable-chunked-prefill"
+    - "--async-scheduling"
+    - "--enable-prefix-caching"
+    - "--enable-prompt-tokens-details"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "qwen3_coder"
+  env:
+    PT_HPU_LAZY_MODE: "1"                     # lazy (graph) mode; eager is far slower
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"
+    VLLM_SKIP_WARMUP: "true"                  # graphs compile on first use; see the timeouts below
+    VLLM_GRAPH_RESERVED_MEM: "0.4"            # graph memory is what limits concurrency on one card
+    VLLM_GRAPH_PROMPT_RATIO: "0.5"
+    VLLM_GRAPH_PROMPT_STRATEGY: "max_bs"
+    VLLM_GRAPH_DECODE_STRATEGY: "max_bs"
+    VLLM_EXPONENTIAL_BUCKETING: "True"
+    VLLM_PROMPT_BS_BUCKET_MIN: "1"            # batch buckets 1..8, matching --max-num-seqs 8
+    VLLM_PROMPT_BS_BUCKET_STEP: "1"
+    VLLM_PROMPT_BS_BUCKET_MAX: "8"
+    VLLM_DECODE_BS_BUCKET_MIN: "1"
+    VLLM_DECODE_BS_BUCKET_STEP: "1"
+    VLLM_DECODE_BS_BUCKET_MAX: "8"
+    VLLM_PROMPT_SEQ_BUCKET_MIN: "128"
+    VLLM_PROMPT_SEQ_BUCKET_STEP: "4096"
+    VLLM_PROMPT_SEQ_BUCKET_MAX: "131072"
+    VLLM_DECODE_BLOCK_BUCKET_MIN: "128"
+    VLLM_DECODE_BLOCK_BUCKET_STEP: "1024"
+    VLLM_DECODE_BLOCK_BUCKET_MAX: "32768"
+    OMP_NUM_THREADS: "1"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"   # first long prompt on a fresh node compiles its buckets
+    VLLM_RPC_TIMEOUT: "3600000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
+  buckets: null
+  required_fixes:
+    - prompt-order            # prefix-cache read-before-write across requests
+    - sampling-rows-refresh   # device sampling rows stale after batch reorders
+    - structured-output-rows  # structured-output steps sample rows with the wrong params
+    - bad-words-index         # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows        # logit_bias, min_p, min_tokens silently ignored
+    - async-discard-counter   # AttributeError on the first preemption under async scheduling
+    - resumed-prefill-logits  # a request resumed after preemption with prefix-cache hits re-samples its generated tail
+    - gather-logprobs-int32   # top_logprobs ids corrupted in lazy mode
+    - prompt-logprobs         # prompt_logprobs request kills the engine (flat hidden states)
+    - logprobs-decode-guard   # a bad logprob id no longer kills the API server
+    - seeded-sampling         # requests with seed can segfault the worker in lazy mode
+  verified:
+    - "Long-prompt ladder 38,656 to 130,900 tokens, greedy and default sampling with tools: all needles found"
+    - "38-minute soak, 8 coding/tool workers plus a 2K-131K ladder: 90 requests, needles 37/37, tool calls 22/22 with valid arguments, 0 markup leaks"
+    - "Streamed tool calls 15/15 clean; bare <function=...> output (no <tool_call>) parsed correctly by qwen3_coder"
+    - "Against the previous image at temperature 0: 6/6 coding answers and 6/6 tool calls byte-identical"
+    - "top_logprobs=20 under load: 20/20 well-formed"
+    - "75 minutes, 303 requests: 0 restarts, 0 errors, 0 preemptions; HBM 88-91 GiB of 96"
+  notes:
+    - "--max-num-batched-tokens 2048 is load-bearing: at 8192 a prompt of 38,657+ tokens returns '!' (greedy) or kills the engine (sampling)."
+    - "Do not try 4096 without re-testing the top of the window: 4096 x 131,072 is exactly 2^29 elements."
+    - "Penalties (repetition, presence, frequency) are not applied under async scheduling on v0.26.0."

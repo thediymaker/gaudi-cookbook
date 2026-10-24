@@ -1,0 +1,134 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/laguna-s-2-1.md
+meta:
+  title: "Laguna-S-2.1"
+  slug: "laguna-s-2-1"
+  provider: "poolside"
+  description: "118B MoE (8B active) coding and agent model with reasoning, BF16, 128K context on four Gaudi 2 cards."
+  date_added: 2026-10-23
+  date_updated: 2026-10-23
+  tasks:
+    - text
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "poolside/Laguna-S-2.1"
+  architecture: moe
+  parameter_count: "118B"
+  active_parameters: "8B"
+  context_length: 1048576
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the bundled poolside_v1 parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "poolside_v1"]
+  reasoning:
+    description: >-
+      Split reasoning with poolside_v1. The parser defaults thinking off while the template defaults it on, so enable_thinking must be set
+      server-side.
+    args: ["--reasoning-parser", "poolside_v1", "--default-chat-template-kwargs", '{"enable_thinking": true}']
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: bf16
+    vram_minimum_gb: 283
+    description: "BF16 weights (235 GB), four Gaudi 2 cards."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 4, tp: 4, ep: false }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "4"
+    - "--dtype"
+    - "bfloat16"
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "16"
+    - "--block-size"
+    - "128"
+    - "--max-num-batched-tokens"
+    - "2048"
+    - "--enable-chunked-prefill"
+    - "--enable-prefix-caching"
+    - "--enable-prompt-tokens-details"
+    - "--gpu-memory-utilization"
+    - "0.90"
+    - "--trust-remote-code"
+    - "--no-async-scheduling"
+    - "--reasoning-parser"
+    - "poolside_v1"
+    - "--tool-call-parser"
+    - "poolside_v1"
+    - "--enable-auto-tool-choice"
+    - "--default-chat-template-kwargs"
+    - '{"enable_thinking": true}'
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"    # required for TP > 1 in lazy mode
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_EXPONENTIAL_BUCKETING: "False"       # coarse linear buckets: a small shape set that fills once
+    VLLM_PROMPT_BS_BUCKET_MIN: "1"
+    VLLM_PROMPT_BS_BUCKET_STEP: "1"
+    VLLM_PROMPT_BS_BUCKET_MAX: "4"
+    VLLM_PROMPT_SEQ_BUCKET_MIN: "128"
+    VLLM_PROMPT_SEQ_BUCKET_STEP: "1024"
+    VLLM_PROMPT_SEQ_BUCKET_MAX: "2048"
+    VLLM_PROMPT_CTX_BUCKET_MIN: "0"
+    VLLM_PROMPT_CTX_BUCKET_STEP: "16"         # context buckets in KV blocks: 16 x 128 = 2K tokens per step
+    VLLM_PROMPT_CTX_BUCKET_MAX: "1008"
+    VLLM_DECODE_BS_BUCKET_MIN: "1"
+    VLLM_DECODE_BS_BUCKET_STEP: "4"
+    VLLM_DECODE_BS_BUCKET_MAX: "16"
+    VLLM_DECODE_BLOCK_BUCKET_MIN: "128"
+    VLLM_DECODE_BLOCK_BUCKET_STEP: "1024"
+    VLLM_DECODE_BLOCK_BUCKET_MAX: "5120"
+    VLLM_GRAPH_RESERVED_MEM: "0.2"
+    OMP_NUM_THREADS: "1"
+    VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "7200"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "3600"
+    VLLM_RPC_TIMEOUT: "7200000"
+  buckets: null
+  required_fixes:
+    - prompt-order                # prefix-cache read-before-write across requests
+    - sampling-rows-refresh       # device sampling rows stale after batch reorders
+    - structured-output-rows      # structured-output steps sample rows with the wrong params
+    - so-row-owners               # grammar masks and params landed on the wrong row next to a partial prompt chunk
+    - bad-words-index             # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows            # logit_bias, min_p, min_tokens silently ignored
+    - logits-empty-guard          # TP > 1 with sync scheduling: a partial prompt chunk has no logits rows, and the empty all-gather is fatal
+    - gather-logprobs-int32       # the gather fix is still needed on v0.30 in lazy mode
+    - logprobs-decode-guard       # a bad logprob id no longer kills the API server
+    - seeded-sampling             # requests with seed can segfault a TP worker in lazy mode
+    - laguna-moe-sigmoid-routing  # stock HPU MoE routes with softmax and drops the selection bias: wrong experts
+    - rank-exception-fatal        # an exception on a non-zero TP rank stops the engine instead of serving garbage
+  verified:
+    - >-
+      Exact-tracking probes (17x20, 23x17, primes 50-70, sum of squares, letter count) x3: all correct with the routing fix; prose stays fluent but
+      these collapse without it
+    - "Tool calls 4/4 non-streaming and 4/4 streaming; reasoning separated"
+    - "Needle at 128K tokens: found (117 s cold)"
+    - >-
+      LiveBench coding at temperature 1.0, 32K budget: LCB generation 85.9; coding completion 52.0 / 56.0 / 50.0 over three runs (the previous image
+      scored 56.0 the same day)
+    - "Sampler check at temperature 1.0 (400 first-token draws x 4 prompts): sampled frequency within 0.01-0.02 of the model's probability"
+  notes:
+    - "TP4, not TP8: at TP8 (one KV head per rank) the output was corrupt in lazy and compile mode."
+    - "Stay at 128K with 2048-token chunks: chunk x context beyond about 2048 x 130K trips the Synapse device watchdog ('No progress'), which kills the engine."
+    - "Sync scheduling (--no-async-scheduling) with TP 4 needs logits-empty-guard; async-inputs (in the profile) then has nothing to do."
+    - "rope-cpu-cache is not needed: the RoPE fix is upstream in v0.30.0, and the v0.30.0 profile leaves it out."
+    - >-
+      Do not use step-1 decode block buckets with VLLM_SKIP_WARMUP: every new context size compiles a graph (seconds to 40 s) and real sessions keep
+      hitting new ones.

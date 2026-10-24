@@ -1,0 +1,101 @@
+# Shared model store: one copy of each model for the whole fleet, plus a prefetch Job.
+#
+# Why: a per-node cache downloads every model again on every node a pod lands on. With pods
+# that move (autoscaling, bin-packing, node failures) that multiplies storage use, refetches
+# hundreds of GB on a reschedule, and puts the model hub's rate limits on the start-up path
+# of every pod. A ReadWriteMany volume in the standard Hugging Face cache layout serves all
+# nodes; serving pods mount it read-only and run offline.
+#
+# Check the storage before relying on it: read throughput per node and with many pods
+# loading at once. Measure a cold load (per-process read bytes and rate, CPU throttling,
+# a direct read of one shard) before concluding that storage is the bottleneck. See
+# docs/kubernetes/startup-and-warmup.md.
+#
+# Placeholders: <storage-class> (an RWX class: NFS, CephFS, a parallel file system),
+# <registry>/<image>:<tag> (any image with huggingface_hub; the vllm-gaudi image works).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hf-models
+  namespace: llm
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: <storage-class>
+  resources:
+    requests:
+      storage: 4Ti
+---
+# Prefetch one model into the store before deploying it. Running the download as its own
+# Job separates "the download failed" from "the engine failed", instead of hiding a long
+# fetch inside a serving pod's startup probe.
+#
+#   kubectl -n llm create secret generic hf-token --from-literal=HF_TOKEN=<token>   # gated models
+#   kubectl -n llm apply -f kubernetes/manifests/model-store.yaml
+#   kubectl -n llm logs -f job/prefetch-qwen3-8b
+#
+# The second snapshot_download call runs offline and fails if any file of the snapshot is
+# missing. An interrupted download can leave *.incomplete or empty files behind; copying a
+# node-local cache into the store can copy a partial snapshot (a pod that ran online only
+# fetched what it needed). Newer huggingface_hub releases refuse such snapshots offline, so
+# a partial copy that looks fine today fails on the next image bump.
+#
+# Pin a revision for any model that must not change under you: completing a snapshot can
+# move refs/main to a newer commit.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: prefetch-qwen3-8b
+  namespace: llm
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: OnFailure
+      # Downloads need no cards; keep the Job off Gaudi nodes if you have CPU nodes.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: habana.ai/gaudi
+                    operator: DoesNotExist
+      containers:
+        - name: fetch
+          image: <registry>/<image>:<tag>
+          command: ["python3", "-c"]
+          args:
+            - |
+              import os
+              from huggingface_hub import snapshot_download
+              repo, rev = os.environ["MODEL"], os.environ.get("REVISION") or None
+              path = snapshot_download(repo, revision=rev)
+              snapshot_download(repo, revision=rev, local_files_only=True)
+              print("ready:", path)
+          env:
+            - name: MODEL
+              value: Qwen/Qwen3-8B
+            - name: REVISION
+              value: ""
+            - name: HF_HOME
+              value: /models
+            - name: HF_HUB_CACHE
+              value: /models/hub
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+                  optional: true
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+          volumeMounts:
+            - name: models
+              mountPath: /models
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: hf-models

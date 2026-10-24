@@ -1,0 +1,129 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/llama-4-scout-17b-16e-instruct.md
+meta:
+  title: "Llama 4 Scout 17B-16E Instruct"
+  slug: "llama-4-scout-17b-16e-instruct"
+  provider: "Meta"
+  description: "109B MoE (17B active, 16 experts, top-1) multimodal instruct model, BF16, 128K context on four Gaudi 2 cards."
+  date_added: 2026-10-23
+  date_updated: 2026-10-23
+  tasks:
+    - multimodal
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "meta-llama/Llama-4-Scout-17B-16E-Instruct"
+  architecture: moe
+  parameter_count: "109B"
+  active_parameters: "17B"
+  context_length: 10485760
+
+features:
+  tool_calling:
+    description: >-
+      Meta's <function=name>{json} tool format through the llama4-tools-lenient parser plugin and chat template; the stock llama4_pythonic parser and
+      template fail coding-agent tasks.
+    args:
+      - "--enable-auto-tool-choice"
+      - "--chat-template"
+      - "fixes/llama4-tools-lenient/llama4-tools.jinja"
+      - "--default-chat-template-kwargs"
+      - '{"fmt": "tag", "sys_mode": "meta", "defs": "meta"}'
+      - "--tool-parser-plugin"
+      - "fixes/llama4-tools-lenient/llama4_tools_lenient.py"
+      - "--tool-call-parser"
+      - "llama4_lenient"
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: bf16
+    vram_minimum_gb: 261
+    description: "BF16 weights (217 GB), four Gaudi 2 cards."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 4, tp: 4, ep: false }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "4"
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "16"
+    - "--gpu-memory-utilization"
+    - "0.9"
+    - "--max-num-batched-tokens"
+    - "2048"
+    - "--max-cudagraph-capture-size"
+    - "2048"
+    - "--enable-chunked-prefill"
+    - "--enable-prefix-caching"
+    - "--enable-prompt-tokens-details"
+    - "--enable-auto-tool-choice"
+    - "--chat-template"
+    - "fixes/llama4-tools-lenient/llama4-tools.jinja"
+    - "--default-chat-template-kwargs"
+    - '{"fmt": "tag", "sys_mode": "meta", "defs": "meta"}'
+    - "--tool-parser-plugin"
+    - "fixes/llama4-tools-lenient/llama4_tools_lenient.py"
+    - "--tool-call-parser"
+    - "llama4_lenient"
+    - "--limit-mm-per-prompt"
+    - '{"image":4,"video":0}'
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"    # required for TP > 1 in lazy mode
+    PT_HPUGRAPH_DISABLE_TENSOR_CACHE: "1"     # only the string "1" keeps the cache off; "false" turns it ON and leaks HBM
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_MULTIMODAL_BUCKETS: "None"
+    VLLM_GRAPH_RESERVED_MEM: "0.4"
+    VLLM_GRAPH_PROMPT_RATIO: "0.5"
+    VLLM_EXPONENTIAL_BUCKETING: "True"
+    VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"        # kept from the verified configuration
+    VLLM_HPU_MOE_WEIGHT_ON_INPUT: "1"         # read by moe-router-weight-on-input
+    LLAMA4_TOOL_CALL_POLICY: "independent"    # read by llama4-tools-lenient: drop calls that need an earlier call's result
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "3600000"
+  buckets: null
+  required_fixes:
+    - prompt-order                # prefix-cache read-before-write across requests
+    - sampling-rows-refresh       # device sampling rows stale after batch reorders
+    - structured-output-rows      # structured-output steps sample rows with the wrong params
+    - bad-words-index             # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows            # logit_bias, min_p, min_tokens silently ignored
+    - async-discard-counter       # AttributeError on the first preemption under async scheduling
+    - resumed-prefill-logits      # a request resumed after preemption with prefix-cache hits re-samples its generated tail
+    - gather-logprobs-int32       # top_logprobs ids corrupted in lazy mode; an out-of-range id killed a replica
+    - prompt-logprobs             # prompt_logprobs request kills the engine
+    - logprobs-decode-guard       # a bad logprob id no longer kills the API server
+    - seeded-sampling             # requests with seed can segfault a TP worker in lazy mode
+    - moe-router-weight-on-input  # the router weight was applied to the expert output, not its input
+    - rank-exception-fatal        # an exception on a non-zero TP rank stops the engine instead of serving garbage
+    - llama4-tools-lenient        # tool parser plugin + chat template in Meta's documented tool format
+  verified:
+    - >-
+      Next-token KL against a float32 CPU reference (59 positions, prompts of 37, 7.6K and 9.7K tokens): 0.003 / 0.006 / 0.007 with the router fix,
+      0.029 / 0.354 / 0.098 without
+    - >-
+      Coding-agent tool scenarios straight at the server: 23/24 with the tools template, parser and router fix; 0/16 with the stock template and
+      parser and no router fix
+    - "Tool reliability 120/120 sampled at 0.6; with seeded requests 120/120"
+    - "Prefix-cache hits vs cold: 29/32, equal to the noise floor of shifting the chunk boundary by one token (29/32 with no cache)"
+    - "Image prefix-cache gate (same image new text, new image same text, swapped order, 4 images, bursts): 114 checks, 0 wrong reuse, 0 wrong answers"
+    - "Needles at 43K, 65K and 129.5K tokens: 9/9 cold, 9/9 from cache"
+    - "Greedy top-1 agreement with the previous image 0.9964 over 11,188 tokens; 24/24 greedy texts identical to 512 tokens; vision 6/6"
+    - "15-minute seeded storm (48 clients, 75% seeded, streaming, aborts): 1,991 requests, 0 errors, 0 restarts"
+  notes:
+    - "Fix paths in serve_args are relative to a checkout of this repository; point them at wherever the fixes pack lives in the container."
+    - "With prefix caching on, vllm-gaudi turns off contiguous PA: single-stream decode is 6-11% slower than with caching off; 4+ streams are equal or faster."
+    - "Penalties (repetition, presence, frequency) are not applied under async scheduling on v0.26.0."

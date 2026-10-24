@@ -1,0 +1,110 @@
+# Scrape and alert rules for vLLM on Gaudi (Prometheus Operator CRDs).
+#
+# PodMonitor: scrape every model pod directly. Scraping through a Service samples one
+# endpoint per scrape, so per-pod questions (which pod is stalled, which one queues) cannot
+# be answered from it.
+#
+# Rules: what has caught real problems on a large fleet. Metric names are those of vLLM's V1
+# engine; older releases call the KV gauge vllm:gpu_cache_usage_perc. Node and pod rules
+# need kube-state-metrics, which turns the resource name habana.ai/gaudi into the label
+# value habana_ai_gaudi. Tune thresholds and durations to your traffic.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: vllm
+  namespace: llm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: model-server
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: vllm-gaudi
+  namespace: llm
+spec:
+  groups:
+    - name: vllm-engine
+      rules:
+        # Requests in flight but no engine step: a hung engine with /health still 200.
+        - alert: VLLMEngineStalled
+          expr: |
+            (
+              sum by (namespace, pod) (vllm:num_requests_running)
+              + sum by (namespace, pod) (vllm:num_requests_waiting)
+            ) > 0
+            and
+            sum by (namespace, pod) (increase(vllm:iteration_tokens_total_count[5m])) == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.pod }} has requests in flight and has not run an engine step for 5+ minutes"
+        # Sustained queueing. An autoscaler at its ceiling looks "stable"; this does not.
+        - alert: VLLMQueueing
+          expr: |
+            histogram_quantile(0.9,
+              sum by (model_name, le) (rate(vllm:request_queue_time_seconds_bucket[10m]))
+            ) > 30
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.model_name }}: 90th percentile queue time above 30 s for 15 minutes"
+        # KV cache near full: long prompts get preempted and wait to resume.
+        - alert: VLLMKVCacheFull
+          expr: max by (namespace, pod) (vllm:kv_cache_usage_perc) > 0.95
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pod }}: KV cache above 95% for 10 minutes"
+        - alert: VLLMPreempting
+          expr: sum by (model_name) (rate(vllm:num_preemptions_total[10m])) > 0
+          for: 15m
+          labels:
+            severity: info
+          annotations:
+            summary: "{{ $labels.model_name }} is preempting requests (KV cache pressure)"
+    - name: gaudi-fleet
+      rules:
+        # Cards the device plugin withholds as unhealthy.
+        - alert: GaudiCardsWithheld
+          expr: |
+            kube_node_status_capacity{resource="habana_ai_gaudi"}
+            - kube_node_status_allocatable{resource="habana_ai_gaudi"} > 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.node }}: {{ $value }} Gaudi card(s) withheld by the device plugin"
+        # Pods waiting for cards. With free cards in the fleet this is fragmentation.
+        - alert: GaudiPodsPending
+          expr: |
+            sum by (namespace, pod) (kube_pod_container_resource_requests{resource="habana_ai_gaudi"})
+            * on (namespace, pod) group_left ()
+            (kube_pod_status_phase{phase="Pending"} == 1) > 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} has waited 30+ minutes for Gaudi cards"
+        - alert: VLLMRestarting
+          expr: increase(kube_pod_container_status_restarts_total{namespace="llm", container="vllm"}[1h]) > 2
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pod }} restarted more than twice in an hour"
+        # An autoscaler that flaps creates thousands of pods a day, each a new metric series
+        # in every per-pod exporter; that alone can exhaust Prometheus memory.
+        - alert: VLLMReplicaFlapping
+          expr: changes(kube_deployment_spec_replicas{namespace="llm"}[2h]) > 10
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.deployment }} changed its replica count more than 10 times in 2 hours"

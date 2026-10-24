@@ -1,0 +1,11 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Linker version script for libmxk_tpc.so: export the kernel library entry points and the version string only. */
+{
+  global:
+    GetClangGitVersion; GetKernelGuids; GetKernelISAs; GetKernelNames; GetKernelSupportingDynamicShapeNames;
+    GetLibVersion; GetShapeInference; GetShapeInferenceFunction; GetShapeInferenceLibVersion;
+    GetShapeInferenceUniqueId; GetSuggestedManipulation; GetSuggestedTensorManipulation;
+    GetSuggestedTensorManipulationV2; GetSupportedDataLayouts; GetSupportedLayouts; GetSupportedLayoutsV2;
+    GetVersion; HabanaKernel; HabanaKernelV2; InstantiateTpcKernel; mxk_tpc_version;
+  local: *;
+};

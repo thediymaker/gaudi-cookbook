@@ -1,0 +1,23 @@
+# PodDisruptionBudget for a vLLM Deployment.
+#
+# A PDB limits voluntary evictions through the Eviction API: node drains, the descheduler,
+# cluster tooling. It does not limit rolling updates (the Deployment strategy does that) or
+# autoscaler scale-down.
+#
+# maxUnavailable 1 lets one replica go at a time, and none while any replica is not Ready.
+# Prefer it to minAvailable: with a single replica, minAvailable 1 allows zero disruptions
+# and blocks every node drain until someone deletes the pod by hand. For a single-replica
+# model either accept that a drain takes it down, or run two replicas.
+#
+# The pod's drain (preStop + --shutdown-timeout) still runs on eviction, so each evicted pod
+# can take up to its terminationGracePeriodSeconds to leave.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vllm-qwen3-8b
+  namespace: llm
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vllm-qwen3-8b
