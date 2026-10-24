@@ -1,0 +1,154 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/deepseek-v4-1-flash-1017.md
+meta:
+  title: "DeepSeek-V4.1-Flash-1017"
+  slug: "deepseek-v4-1-flash-1017"
+  provider: "DeepSeek"
+  description: >-
+    40-layer MoE (384 routed experts, top-6) with compressed sparse attention, hyper-connections and Engram tables,
+    served at 128K context on one 8-card Gaudi 2 node through the deepseek-v4-1-flash port, from a lossless
+    re-layout of the public checkpoint.
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - text
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+  architecture: moe
+  parameter_count: "749B"
+  active_parameters: "17B"
+  context_length: 1048576
+
+features:
+  tool_calling:
+    description: "Tool calls with the deepseek_v41 parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "deepseek_v41"]
+  reasoning:
+    description: "Split the thinking from the answer; chat_template_kwargs thinking turns it off."
+    args: ["--reasoning-parser", "deepseek_v41"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: mxfp4
+    vram_minimum_gb: 622
+    description: >-
+      The converted checkpoint (517.68 GB): routed experts in DeepSeek's own MXFP4 bytes with gate and up rows
+      interleaved, FP8 linears dequantized exactly to bf16, Engram tables split into hash buckets.
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 8, tp: 8, ep: true }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  port: deepseek-v4-1-flash
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "8"
+    - "--enable-expert-parallel"              # attention TP 8, 48 experts per card
+    - "--dtype"
+    - "bfloat16"
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "8"
+    - "--max-num-batched-tokens"
+    - "4096"
+    - "--num-gpu-blocks-override"
+    - "2304"                                  # 294,912 tokens of KV; what fits next to 61 GiB of weights per card
+    - "--gpu-memory-utilization"
+    - "0.90"
+    - "--block-size"
+    - "128"
+    - "--enable-prefix-caching"
+    - "--no-async-scheduling"                 # Engram hashing needs every sampled token on the host
+    - "--enforce-eager"                       # prefill runs as lazy graphs; decode replays the port's HPU graphs
+    - "--tokenizer-mode"
+    - "deepseek_v41"
+    - "--reasoning-parser"
+    - "deepseek_v41"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "deepseek_v41"
+    - "--exclude-tools-when-tool-choice-none"
+    - "--language-model-only"                 # text only
+  env:
+    DSV41_CHECKPOINT: "/models/DeepSeek-V4.1-Flash-1017-hpu"   # output of ports/deepseek-v4-1-flash/convert/
+    HF_HUB_OFFLINE: "1"                       # everything is read from the converted checkpoint
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"    # TP collectives inside the decode HPU graphs
+    PT_HPU_RECIPE_CACHE_CONFIG: "/data/dsv41-recipe-cache,False,32768"   # compiled graphs survive restarts
+    VLLM_CONTIGUOUS_PA: "false"
+    VLLM_SKIP_WARMUP: "true"                  # vllm-gaudi's warm-up does nothing under --enforce-eager
+    VLLM_ENGINE_READY_TIMEOUT_S: "7200"       # loading 61 GiB per card from network storage can take 30 minutes
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "3600" # first prefills of a shape compile inline
+    VLLM_MOE_CHUNK: "256"                     # stock MoE op chunking (prefill)
+    VLLM_MOE_TOKEN_BOUNDARY: "65536"
+    DSV41_LAYER_GRAPHS: "1"                   # decode replays HPU graphs of layer groups
+    DSV41_LAYER_GROUP: "10"                   # 10 layers per graph (a whole-model graph never finishes compiling)
+    DSV41_DET_TOPK: "1"                       # indexer top-k with a stable order on ties
+    DSV41_TOPK_SELECT: "thresh"               # prefill: sort-free threshold top-k, same sets
+    DSV41_PREFILL_ATTN: "1"                   # prefill: banded window attention + compressed part, one softmax
+    DSV41_INDEX_BF16_DOT: "1"                 # prefill: index dot as a bf16 GEMM (bit-identical, fake-FP4 inputs)
+    DSV41_REPLAY_KEEP: "140"                  # decoder replay: layers 21-39 run on the last 140 tokens of a chunk
+    DSV41_PREFILL_HEADROOM_GIB: "6"           # bound the host's run-ahead in long prefills
+    DSV41_MHC_SLICED: "1"                     # decode: Sinkhorn on slices, no full-matrix copies
+    DSV41_HC_SINKHORN: "kernel"               # the Sinkhorn loop as one TPC kernel (needs DSV41_MXK=1)
+    DSV41_MHC_TPC_DOT: "1"                    # the fp32 mHC mix as a TPC multiply and sum instead of an MME GEMM
+    DSV41_FQ_FASTBITS: "1"                    # power-of-two helpers as bit masks
+    DSV41_LEAN_OPS: "1"                       # fewer temporaries in cache addressing
+    DSV41_DECODE_HOIST: "1"                   # per-step addressing once per graph, not once per layer
+    DSV41_ROPE_FUSED: "1"                     # RoPE tables gathered once
+    DSV41_INDEX_DECODE: "1"                   # decode: index scores for the new token only
+    DSV41_WOA_LINEAR: "1"                     # decode: grouped output projection as one batched linear
+    DSV41_MXK: "1"                            # MXFP4 decode kernels and the Sinkhorn kernel; 0 = stock ops
+    DSV41_WARMUP: "1"                         # serving/warmup.py compiles every shape before taking traffic
+    DSV41_WARMUP_MAX_SEQS: "8"                # = --max-num-seqs
+    DSV41_WARMUP_MAX_S: "2400"
+  setup:
+    - 'python3 "$COOKBOOK/ports/deepseek-v4-1-flash/serving/check_checkpoint.py" "$DSV41_CHECKPOINT" || exit 1'
+    - 'mkdir -p "${PT_HPU_RECIPE_CACHE_CONFIG%%,*}"'
+    - 'python3 "$COOKBOOK/ports/deepseek-v4-1-flash/serving/warmup.py" > /tmp/dsv41-warmup.log 2>&1 &'
+  serve_model: "$DSV41_CHECKPOINT"
+  buckets: null
+  required_fixes:
+    - prompt-order             # a prefix-cache reader can run before its writer in the same step
+    - sampling-rows-refresh    # every request sampled with its own parameters after rows reorder
+    - structured-output-rows   # grammar rows keep their own sampling parameters
+    - so-row-owners            # grammar masks on the right rows when a long prompt is chunked
+    - bad-words-index          # one request's bad_words can neither stop the engine nor ban tokens elsewhere
+    - logitsprocs-rows         # min_p, logit_bias and min_tokens take effect
+    - resumed-prefill-logits   # a request resumed after preemption must not repeat its output
+    - gather-logprobs-int32    # top_logprobs ids read back corrupted otherwise
+    - prompt-logprobs          # prompt_logprobs over a 4096-token chunk runs out of memory otherwise
+    - logprobs-decode-guard    # a bad logprob id no longer kills the API server
+    - rank-exception-fatal     # a failed rank stops the engine instead of serving garbage
+  verified:
+    - "install.sh on the stock releases/v0.30.0 image: commits, plugin, kernel-env patch, kernel build and image gate PASS"
+    - "converter re-run on one MoE layer and all dense tensors: sha256 equal to the served checkpoint, 1266/1266"
+    - "perplexity vs the fp32 CPU oracle (1536 tokens): 1.6180 vs 1.6239"
+    - "decode vs prefill teacher-forced: mean |dlogprob| 0.016, 10/756 off argmax, max gap 0.69 nats"
+    - "needles at 13.4K and 45.3K tokens: 2/2"
+    - "isolation, shared cached prefix, repeats and aborts: own code 48/48, 0 foreign hits"
+    - "structured output and tool calls (required and auto) under load: 60/60"
+    - "decode, kernels on, idle server: 37.6 tok/s at 1 stream, 108.1 tok/s aggregate at 4"
+    - "every gate also passes with DSV41_MXK=0; kernels off vs on, same pod: 20.7 vs 37.6 tok/s at 1 stream"
+    - "kernel parity, one card (run_parity.sh --variant dsv41): PARITY PASS, SIG_DEVICE PASS"
+  notes:
+    - >-
+      Needs the deepseek-v4-1-flash port image (docker build -f ports/deepseek-v4-1-flash/Dockerfile from the stock
+      releases/v0.30.0 image) and the converted checkpoint: run ports/deepseek-v4-1-flash/convert/ on the public
+      deepseek-ai/DeepSeek-V4.1-Flash-1017 (MIT). The original deepseek-ai/DeepSeek-V4.1-Flash converts with the same
+      script.
+    - "The plugin refuses to start unless prompt-order, resumed-prefill-logits, gather-logprobs-int32 and prompt-logprobs are applied."
+    - "Text only. Async scheduling must stay off (Engram hashing reads every sampled token on the host)."
+    - "Run ports/deepseek-v4-1-flash/tests/hpu/run_gates.sh after the warm-up (/tmp/dsv41-warmup.done) before serving users."

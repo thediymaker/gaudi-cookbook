@@ -10,7 +10,7 @@ for Gaudi 2. It serves production traffic at 128K context, one 8-card node per r
     - **Checkpoint:** [deepseek-ai/DeepSeek-V4.1-Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash), MIT;
       production serves the weights-only update
       [deepseek-ai/DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017), MIT, as a
-      lossless re-layout that is not published but is reproducible from the public checkpoint.
+      lossless re-layout made by the port's conversion script (the original release converts the same way).
     - **Hardware:** 8 Gaudi 2 cards per replica (TP 8 attention, EP 8 experts), 61 GiB of weights per card,
       131,072-token context. Gaudi software 1.24.1, lazy mode, vllm-gaudi `releases/v0.30.0` with vLLM v0.30.0.
     - **Status:** serving production traffic. The DSpark draft model is built and gated, not in production.
@@ -99,6 +99,7 @@ One stream unless stated. The rows are separate measurements, not a chain.
 | --- | --- | --- | --- |
 | Per-layer decode HPU graphs vs eager | 1.5 tok/s | 15.1 tok/s | same-pod A/B |
 | MXFP4 decode kernel | 16.7 tok/s | 23.3 tok/s | same-node A/B, flag off and on |
+| Both custom kernels (`DSV41_MXK` off and on), the published recipe on a cookbook-built image | 20.7 tok/s | 37.6 tok/s | same-pod A/B; all decode-step and prefill changes on in both arms |
 | Decode-step work | 23.6 tok/s | 35.0 tok/s | same-node A/B on one test pod; the "after" image also has the prefill changes, which decode never takes |
 | Decode-step work, 4 streams aggregate | 67.2 tok/s | 93.7 tok/s | same pod, both with tag counters on |
 | Prefill TTFT, 16K / 33K / 64K / 120K | 9.93 / 21.59 / 48.70 / 117.61 s | 7.35 / 14.97 / 32.56 / 75.89 s | same-node A/B, warm shapes, fresh prompts; the "after" image also has the decode changes |
@@ -130,11 +131,22 @@ server (same node, restarted without speculation), essays run 1.28x / 1.17x / 1.
   every warmed graph in serving, and memory grew until a long request failed to allocate.
 - **vllm-gaudi's `all_gather` calls `mark_step`;** inside a captured HPU graph that gave stale values for batches
   above 1. An all-reduce replaced it.
-- Two fleet-wide runner bugs were found here and are now in the fixes pack:
+- Two runner bugs that affect every model with prefix caching or preemption were found here and are now in the fixes
+  pack:
   [resumed-prefill-logits](../fixes/resumed-prefill-logits.md) and [prompt-order](../fixes/prompt-order.md). More in
   [platform findings](../results/platform-findings.md).
 
 ## Availability
 
-The integration code is not published in this repository yet. It depends on model code outside vllm-gaudi: a model
-plugin, a runner patch and a DeepSeek-specific build of the MXFP4 kernel library.
+The port is published as working code in [`ports/deepseek-v4-1-flash/`](https://github.com/thediymaker/gaudi-cookbook/tree/main/ports/deepseek-v4-1-flash),
+with the served configuration as the recipe [DeepSeek-V4.1-Flash-1017](../recipes/deepseek-v4-1-flash-1017.md):
+
+- the model plugin (`dsv41_hpu`), with every speed-up behind a switch that is off by default;
+- the conversion script and an independent validator: re-run as published on one MoE layer and on all dense
+  tensors, it reproduced the served checkpoint's sha256 for every tensor (1,266 of 1,266);
+- one source patch (the kernel-library hook in `vllm_gaudi/__init__.py`) and the Sinkhorn TPC kernel, built into the
+  [MXFP4 kernel library](../kernels/mxfp4-moe.md) as variant `dsv41`;
+- the startup warm-up, a fail-closed checkpoint check, CPU tests and the device gates.
+
+The generic runner bugs it depends on are fixes from the [fixes pack](../fixes/index.md), applied with the v0.30.0
+profile. The DSpark draft model is not included; it is not served.

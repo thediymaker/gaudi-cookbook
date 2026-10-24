@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dsv41-hpu"
+version = "1.0.0"
+description = "DeepSeek-V4.1-Flash on Intel Gaudi 2 for vllm-gaudi v0.30.0"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+dsv41_hpu = "dsv41_hpu:register"
+
+[tool.setuptools]
+packages = ["dsv41_hpu"]
