@@ -49,6 +49,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Use with an agent: agents.md
   - Recipes:
       - recipes/index.md
       - Qwen3-30B-A3B-2507: recipes/qwen3-30b-a3b-2507.md

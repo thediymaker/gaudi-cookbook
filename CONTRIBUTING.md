@@ -31,6 +31,8 @@ should run on public images and public checkpoints.
 | [`kernels/`](kernels/) | Custom TPC kernels, their build and their Python glue |
 | [`kubernetes/`](kubernetes/) | Manifests and tools for running Gaudi at fleet scale |
 | [`docs/`](docs/) | The documentation site (MkDocs Material) |
+| [`AGENTS.md`](AGENTS.md) | Guide for coding agents that read this repository; keep it in step with the layout |
+| [`scripts/`](scripts/) | `gen_llms_txt.py` writes `docs/llms.txt`; run it after adding or renaming a recipe, fix or page |
 
 ## Style
 

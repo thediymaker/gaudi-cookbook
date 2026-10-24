@@ -20,6 +20,7 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: yamllint -c .yamllint.yaml recipes kubernetes .github
+      - run: python3 scripts/gen_llms_txt.py --check
 
   docs:
     runs-on: ubuntu-latest

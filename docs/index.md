@@ -41,6 +41,13 @@ public images and public checkpoints.
     Running Gaudi at fleet scale: pod spec, bin-pack scheduling, warm-up, health,
     rollouts, autoscaling and routing.
 
+-   :material-robot-outline: **[Use with an agent](agents.md)**
+
+    ---
+
+    Point Claude Code, Codex, Cursor or another coding agent at this repository.
+    `AGENTS.md` tells it where everything is and what it must not do.
+
 </div>
 
 ## Start here
@@ -48,6 +55,7 @@ public images and public checkpoints.
 1. Check the [software baseline](getting-started.md) and build or pull a matching image.
 2. Pick a [recipe](recipes/index.md) and apply its required [fixes](fixes/index.md).
 3. Moving to Kubernetes? Read the [pod spec](kubernetes/index.md) page before anything else.
+4. Working with a coding agent? Point it at this repository; see [Use with an agent](agents.md).
 
 ## Status
 

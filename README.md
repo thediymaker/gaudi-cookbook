@@ -18,6 +18,9 @@
 Everything here was run on a large Gaudi 2 fleet serving real traffic. Everything uses public
 container images and public checkpoints. Nothing depends on a private build.
 
+> **Using a coding agent?** Point it at this repository and have it read [`AGENTS.md`](AGENTS.md)
+> first. See [Use it with your coding agent](#use-it-with-your-coding-agent).
+
 ## What is inside
 
 | Section | What you get |
@@ -39,6 +42,52 @@ container images and public checkpoints. Nothing depends on a private build.
    python3 fixes/apply_all.py --profile v0.30.0 || exit 1 # apply; exits 2 on source drift
    exec vllm serve <model> <recipe flags>
    ```
+
+## Use it with your coding agent
+
+This repository is written to be read by coding agents as much as by people. Point Claude Code,
+Codex, Cursor, Copilot, Gemini CLI or a similar agent at it, and the agent can answer Gaudi
+questions from tested configurations instead of guessing. [`AGENTS.md`](AGENTS.md) tells the agent
+where everything is and what it must not do. `CLAUDE.md` loads the same file for Claude Code.
+
+**How to point your agent at it**
+
+- **Next to your work.** Clone it beside your project or deployment repo, and tell the agent:
+  "Use `../gaudi-cookbook` as the reference for vLLM on Gaudi. Read its AGENTS.md first."
+- **As the workspace.** Open the agent inside the clone. Most agents read `AGENTS.md` on start.
+- **By URL.** Agents that browse can start from
+  `https://github.com/thediymaker/gaudi-cookbook/blob/main/AGENTS.md`. The docs site serves an
+  [`llms.txt`](docs/llms.txt) index.
+
+**What the agent gets**
+
+- **Recipes as data.** Each `recipe.yaml` holds the full verified `vllm serve` command,
+  environment, card layout, required fixes, the checks that passed, and the settings that break it.
+- **Symptom lookup.** Every fix has a `## Symptom` section with the error text it causes, so the
+  agent can match a log line or a wrong output to a cause, the affected releases, and the upstream
+  pull request.
+- **Safe patches.** `apply_all.py --check` reports first, and the fixes refuse to apply to an
+  image they do not match, so the agent cannot half-patch a server.
+- **Fleet knowledge.** Kubernetes pages and manifests for scheduling, warm-up, health, autoscaling
+  and routing, plus read-only diagnostic tools for nodes and cards.
+- **Ground rules.** It must check the image before patching, keep verified and untested apart, and
+  ask before touching shared hardware.
+
+**Things to ask**
+
+- "Serve Qwen3-235B-A22B-Instruct-2507-FP8 on four Gaudi 2 cards with the v0.26.0 image. Give me
+  the container command."
+- "My engine died with `tensor_data is empty` in `hccl::allgather_out`. What is it, and how do I
+  fix it?"
+- "Which fixes does my v0.30.0 image need for a Gemma 4 deployment with tool calling?"
+- "Turn the gpt-oss-120b recipe into a Kubernetes Deployment for our cluster."
+- "Some nodes show 8 allocatable cards but every multi-card start fails with `Device acquire
+  failed`. Help me find out why."
+
+Agents make mistakes. Review what they propose, especially anything that changes a running
+deployment.
+
+## Documentation site
 
 The documentation site is built from [`docs/`](docs/) with MkDocs Material:
 
