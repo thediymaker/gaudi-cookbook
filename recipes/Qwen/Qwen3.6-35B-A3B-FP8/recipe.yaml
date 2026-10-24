@@ -5,13 +5,13 @@ meta:
   provider: "Qwen"
   description: "35B MoE (3B active) hybrid (Gated DeltaNet + attention) reasoning model with vision, FP8, native 256K context on one Gaudi 2 card."
   date_added: 2026-10-23
-  date_updated: 2026-10-23
+  date_updated: 2026-10-24
   tasks:
     - multimodal
   related_recipes:
     - "Qwen/Qwen3.6-27B-FP8"
   hardware:
-    gaudi2: supported                       # not re-run end to end with prefix caching off
+    gaudi2: verified
 
 model:
   model_id: "Qwen/Qwen3.6-35B-A3B-FP8"
@@ -60,7 +60,7 @@ gaudi:
     - "--max-num-batched-tokens"
     - "1280"
     - "--enable-chunked-prefill"
-    - "--no-enable-prefix-caching"            # see notes: no GDN prefix caching on this release
+    - "--enable-prefix-caching"               # correct on GDN layers with gdn-prefix-cache
     - "--enable-prompt-tokens-details"
     - "--reasoning-parser"
     - "qwen3"
@@ -76,7 +76,7 @@ gaudi:
     VLLM_HPU_MOE_GATHER_RATIO: "0.25"         # gather while tokens x top_k (8) <= 256 experts x 0.25 = 64: up to 8 decode tokens
     VLLM_HPU_MOE_GATHER_VERIFY: "0"
     VLLM_USE_NAIVE_MAMBA_CACHE_SHARING: "1"
-    VLLM_COMPACT_GDN: "1"                     # stock default without prefix caching: per-request GDN state slots
+    VLLM_COMPACT_GDN: "1"                     # compact GDN state slots; gdn-prefix-cache keeps checkpoints in the KV pages
     VLLM_QWEN3_STRICT_THINK_END: "1"          # read by qwen3-strict-think-end: only </think> ends reasoning
     PT_HPUGRAPH_DISABLE_TENSOR_CACHE: "false"
     VLLM_SKIP_WARMUP: "true"
@@ -99,12 +99,15 @@ gaudi:
     VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
   buckets: null
   required_fixes:
+    - prompt-order            # a same-step prefix-cache hit read a block before its writer computed it
     - sampling-rows-refresh   # device sampling rows stale after batch reorders
     - structured-output-rows  # structured-output steps sample rows with the wrong params
     - bad-words-index         # bad_words IndexError kills the EngineCore
     - logitsprocs-rows        # logit_bias, min_p, min_tokens silently ignored
     - async-discard-counter   # AttributeError on the first preemption under async scheduling
+    - resumed-prefill-logits  # a request resumed after preemption with prefix-cache hits re-sampled its tail
     - hybrid-decode-pad       # decode padding can land inside a live KV block when the hybrid KV block is split into kernel blocks
+    - gdn-prefix-cache        # prefix-cache hits on GDN layers resumed from a wrong state
     - gather-logprobs-int32   # recommended on every image; the corruption itself is lazy-mode only
     - prompt-logprobs         # prompt_logprobs request kills the engine (flat hidden states)
     - logprobs-decode-guard   # a bad logprob id no longer kills the API server
@@ -112,23 +115,29 @@ gaudi:
     - rope-cpu-cache          # RoPE tables built on the HPU are wrong from position about 196K
     - qwen3-strict-think-end  # a <tool_call> drafted while thinking was returned as a real call
   verified:
-    - "Functional set (arithmetic, factual, code, multi-turn, streaming, tool calls): 10/10 (prefix caching off)"
-    - "Decode 74.5 tokens/s single stream, 204.8 tokens/s per card at 8 in flight, with fp8-moe-gather (prefix caching off)"
+    - "Greedy parity, 32 prompts of 5K to 31K tokens, cache hit vs cold: 32/32 identical with bit-identical logprobs; cold vs cold 32/32"
+    - "Cross-request isolation, 24 rounds: 0 leaks; images served from the cache, 8 cases: hit equals cold 8/8"
+    - "Needles at 65K, 130K and 250K, three depths: 9/9 cold, 9/9 from the cache, hit equals cold 9/9"
+    - "16 images per prompt: 16/16 colours named in order (thinking off), a 17th rejected with a clean 400"
+    - >-
+      Requests sharing a prefix in the same step, 24: 24/24 correct; 11/24 worded differently from sequential runs, including 2 requests that had no
+      cache hit. With prefix caching off the same test words 16/24 differently: batch composition on this MoE, not the cache
+    - "Forced tool calls (tool_choice required): whitespace runaway 0/32"
+    - "Tool reliability, 3 cases x 40 sampled: 120/120 with strict think-end"
+    - "prompt_logprobs: aligned, in vocabulary and consistent with decode logprobs (plp check PASS)"
+    - >-
+      Agent replay, 4 sessions 8K to 64K: wall 130.5 s vs 607.5 s with caching off, later-turn TTFT p50 3.7 vs 18.3 s, 78% of prompt tokens
+      served from the cache; 0 preemptions
+    - "Functional set (arithmetic, factual, code, multi-turn, streaming, tool calls): 10/10 (earlier run, prefix caching off)"
+    - "Decode 74.5 tokens/s single stream, 204.8 tokens/s per card at 8 in flight, with fp8-moe-gather (earlier run, prefix caching off)"
     - "Gathered-expert MoE vs the stock op: no element beyond 2 FP8 ULPs"
-    - "Needles 9/9 to 250K tokens on cold requests (prefix caching on)"
-    - "Preemption and resume: 18/18 checks, the preempted request finished its full 10,000 tokens (prefix caching on)"
-    - "Request options (logit_bias, min_p, min_tokens, structured output) all take effect; forced-tool whitespace runaway 0/32 (prefix caching on)"
-    - "Tool reliability: 240/240 over two runs with strict think-end, 115/120 without"
   notes:
     - >-
-      Prefix caching is off: on this release, prefix-cache hits on Gated DeltaNet layers resume from the wrong state. Upstream vllm-gaudi main has
-      merged prefix caching for the non-compact layout; use a release that includes it before turning prefix caching on.
+      Prefix caching needs gdn-prefix-cache: on the stock release, prefix-cache hits on Gated DeltaNet layers resume from the wrong state. The fix
+      stores GDN state checkpoints in the KV pages of the cache and keeps the compact GDN slots (VLLM_COMPACT_GDN=1).
     - >-
-      The checks marked "prefix caching on" ran on an earlier form of this recipe with a GDN prefix-cache patch that is not in this cookbook. Checks
-      of cache hits are left out; the cold-path results have not been re-run with prefix caching off.
-    - >-
-      --max-num-batched-tokens 1280 is the value the checks ran with; earlier deployments with prefix caching off used 1024. Without prefix caching
-      the chunks do not have to line up with the hybrid KV block.
+      With prefix caching on, the hybrid KV block is 1,152 tokens and prefill chunks end on block boundaries, so a 1,280-token batch carries one block
+      of prompt. Prompts shorter than one block never hit.
     - >-
       --max-num-seqs and VLLM_HPU_MOE_GATHER_RATIO move together: 9+ decode tokens fall back to the stock MoE op at about 19 tok/s per stream (16
       sequences would need a ratio of 0.5, not measured).

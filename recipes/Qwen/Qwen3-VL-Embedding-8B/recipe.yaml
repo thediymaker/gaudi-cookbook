@@ -1,0 +1,83 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/qwen3-vl-embedding-8b.md
+meta:
+  title: "Qwen3-VL-Embedding-8B"
+  slug: "qwen3-vl-embedding-8b"
+  provider: "Qwen"
+  description: "8B multimodal embedding model (text, images, screenshots; 4096 dimensions, Matryoshka truncation) on one Gaudi 2 card in BF16."
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - embedding
+    - multimodal
+  related_recipes:
+    - qwen3-embedding-8b
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "Qwen/Qwen3-VL-Embedding-8B"
+  architecture: dense
+  parameter_count: "8B"
+  active_parameters: "8B"
+  context_length: 262144
+
+features: {}
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: bf16
+    vram_minimum_gb: 20
+    description: "BF16 weights (16.3 GB), one Gaudi 2 card."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 1, tp: 1, ep: false }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  max_model_len: 32768
+  serve_args:
+    - "--tensor-parallel-size"
+    - "1"
+    - "--runner"
+    - "pooling"
+    - "--max-model-len"
+    - "32768"
+    - "--max-num-seqs"
+    - "8"
+    - "--gpu-memory-utilization"
+    - "0.80"
+    - "--no-enable-prefix-caching"
+    - "--no-enable-chunked-prefill"           # pooling models cannot chunk
+    - "--chat-template"
+    - "$COOKBOOK/recipes/Qwen/Qwen3-VL-Embedding-8B/embed.jinja"  # ends every prompt with the token the model card pools
+    - "--limit-mm-per-prompt"
+    - '{"image":32,"video":0}'
+    - "--hf-overrides"
+    - '{"is_matryoshka": true, "matryoshka_dimensions": [64, 128, 256, 512, 1024, 1536, 2048, 3072, 4096]}'
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPUGRAPH_DISABLE_TENSOR_CACHE: "false"  # vllm-gaudi's guidance for Qwen vision models
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_MULTIMODAL_BUCKETS: "None"           # no fixed vision buckets; image sizes vary
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "3600000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"  # the 300 s default can be overrun by first-use graph compiles
+  buckets: null
+  required_fixes:
+    - mm-merge-idxcopy              # image embeddings merged by row index (concurrent images)
+    - mm-pooling-inputs             # the pooling runner skipped the vision encoder and M-RoPE, and crashed on the first request
+  verified:
+    - "Stock image without mm-pooling-inputs: EngineDeadError on the first request"
+    - "Served vectors vs a CPU FP32 transformers reference: text 0.9961 / 0.9935, image 0.9885 / 0.9915 cosine"
+    - "COCO val2017 39769 vs captions: matching 0.69, unrelated 0.13; four different images mean pairwise cosine 0.169"
+    - "Flickr30k 1k test, first 300 images: caption to image R@1 81.5, image to caption R@1 96.0"
+    - "SciFact nDCG@10 with the instruction as the system message: 78.9"
+  notes:
+    - "Send inputs as chat messages: system = the instruction (queries) or \"Represent the user's input.\" (documents), user = text and/or images."
+    - "Plain-string input gets no chat wrapping and a different last token; do not mix it with messages in one index."

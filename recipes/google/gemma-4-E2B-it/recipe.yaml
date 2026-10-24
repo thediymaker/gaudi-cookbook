@@ -1,0 +1,96 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/gemma-4-e2b-it.md
+meta:
+  title: "Gemma 4 E2B IT"
+  slug: "gemma-4-e2b-it"
+  provider: "Google"
+  description: "Small Gemma 4 instruct model (2.3B effective, 20 KV-shared layers) with KV-sharing fast prefill, BF16, text only, on one Gaudi 2 card."
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - text
+  related_recipes:
+    - "google/gemma-4-31B-it"
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "google/gemma-4-E2B-it"
+  architecture: dense
+  parameter_count: "5.1B"
+  active_parameters: "2.3B"
+  context_length: 131072
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the gemma4 parser; needs the gemma4-required-tool-grammar and gemma4-buffered-tool-args fixes."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "gemma4"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: bf16
+    vram_minimum_gb: 13
+    description: "BF16 weights (10.2 GB including the per-layer embeddings and the vision and audio encoders), one Gaudi 2 card."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 1, tp: 1, ep: false }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  max_model_len: 32768
+  serve_args:
+    - "--max-model-len"
+    - "32768"
+    - "--max-num-seqs"
+    - "64"
+    - "--gpu-memory-utilization"
+    - "0.9"
+    - "--max-num-batched-tokens"
+    - "8192"
+    - "--no-enable-prefix-caching"            # a cache hit takes the full path; see notes
+    - "--kv-sharing-fast-prefill"             # read by gemma4-fast-prefill
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "gemma4"
+    - "--limit-mm-per-prompt"
+    - '{"image":0,"audio":0,"video":0}'       # text only: the image and audio paths were not checked with fast prefill
+    - "--tokenizer"
+    - "/tmp/gemma4-bos-tokenizer"             # written by the gemma4-bos-tokenizer fix
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "3600000"
+  setup:
+    - "unset VLLM_SKIP_WARMUP"                # warm-up must run; vllm-gaudi reads any non-empty value as true
+  buckets: null
+  required_fixes:
+    - sampling-rows-refresh         # device sampling rows stale after batch reorders
+    - structured-output-rows        # structured-output steps sample rows with the wrong params
+    - so-row-owners                 # grammar masks and params landed on the wrong row next to a partial prompt chunk
+    - bad-words-index               # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows              # logit_bias, min_p, min_tokens silently ignored
+    - gather-logprobs-int32         # top_logprobs ids corrupted in lazy mode
+    - logprobs-decode-guard         # a bad logprob id no longer kills the API server
+    - seeded-sampling               # requests with seed can segfault the worker in lazy mode
+    - gemma4-required-tool-grammar  # tool_choice required/named came back as prose
+    - gemma4-buffered-tool-args     # repairs over-escaped strings in tool arguments
+    - gemma4-fast-prefill           # --kv-sharing-fast-prefill on HPU: only the last prompt token runs the 20 KV-shared layers
+    - gemma4-bos-tokenizer          # raw /v1/completions prompts reached the model without <bos>
+  verified:
+    - >-
+      Fast prefill vs stock, offline, 64 wikitext prompts x 1,024 tokens, greedy: first token 64/64, 32-token continuations identical 64/64 (stock vs
+      stock bit-identical)
+    - >-
+      Served, 64 concurrent code-generation prompts (about 600 tokens in, 640 out), two rounds per mode: every output starts the same in both modes;
+      whole outputs 58-61/64 identical between modes, 60/64 between two stock rounds
+    - "Tool reliability, 3 cases x 40 sampled: 120/120"
+    - "Served first-token median 0.76-0.77 s with fast prefill, 1.00-1.01 s without (same card, 64 concurrent, warmed)"
+  notes:
+    - "Prompt batch cap (VLLM_PROMPT_BS_BUCKET_MAX) stays at the default 1: several prompts per prefill forward change the bf16 rounding of the prompt K/V."
+    - "Prefix caching is off: a hit takes the full 35-layer path, and the checks ran without it."
+    - "vLLM rejects prompt_logprobs while --kv-sharing-fast-prefill is on."

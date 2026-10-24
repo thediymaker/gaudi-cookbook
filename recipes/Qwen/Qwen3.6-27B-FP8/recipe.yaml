@@ -5,13 +5,13 @@ meta:
   provider: "Qwen"
   description: "27B dense hybrid (Gated DeltaNet + attention) reasoning model with vision, FP8, native 256K context on one Gaudi 2 card."
   date_added: 2026-10-23
-  date_updated: 2026-10-23
+  date_updated: 2026-10-24
   tasks:
     - multimodal
   related_recipes:
     - "Qwen/Qwen3.6-35B-A3B-FP8"
   hardware:
-    gaudi2: supported                       # not re-run end to end with prefix caching off
+    gaudi2: verified
 
 model:
   model_id: "Qwen/Qwen3.6-27B-FP8"
@@ -60,7 +60,7 @@ gaudi:
     - "--max-num-batched-tokens"
     - "1792"
     - "--enable-chunked-prefill"
-    - "--no-enable-prefix-caching"            # see notes: no GDN prefix caching on this release
+    - "--enable-prefix-caching"               # correct on GDN layers with gdn-prefix-cache
     - "--structured-outputs-config"
     - '{"disable_any_whitespace": true}'
     - "--enable-prompt-tokens-details"
@@ -75,7 +75,7 @@ gaudi:
     PT_HPU_LAZY_MODE: "0"                     # compile mode: lazy mode loses the GDN state cache at first decode
     PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"
     VLLM_USE_NAIVE_MAMBA_CACHE_SHARING: "1"
-    VLLM_COMPACT_GDN: "1"                     # stock default without prefix caching: per-request GDN state slots
+    VLLM_COMPACT_GDN: "1"                     # compact GDN state slots; gdn-prefix-cache keeps checkpoints in the KV pages
     VLLM_QWEN3_STRICT_THINK_END: "1"          # read by qwen3-strict-think-end: only </think> ends reasoning
     PT_HPUGRAPH_DISABLE_TENSOR_CACHE: "false"
     VLLM_SKIP_WARMUP: "true"
@@ -98,12 +98,15 @@ gaudi:
     VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
   buckets: null
   required_fixes:
+    - prompt-order                        # a same-step prefix-cache hit read a block before its writer computed it
     - sampling-rows-refresh               # device sampling rows stale after batch reorders
     - structured-output-rows              # structured-output steps sample rows with the wrong params
     - bad-words-index                     # bad_words IndexError kills the EngineCore
     - logitsprocs-rows                    # logit_bias, min_p, min_tokens silently ignored
     - async-discard-counter               # AttributeError on the first preemption under async scheduling
+    - resumed-prefill-logits              # a request resumed after preemption with prefix-cache hits re-sampled its tail
     - hybrid-decode-pad                   # decode padding can land inside a live KV block when the hybrid KV block is split into kernel blocks
+    - gdn-prefix-cache                    # prefix-cache hits on GDN layers resumed from a wrong state
     - gather-logprobs-int32               # recommended on every image; the corruption itself is lazy-mode only
     - prompt-logprobs                     # prompt_logprobs request kills the engine (flat hidden states)
     - logprobs-decode-guard               # a bad logprob id no longer kills the API server
@@ -111,16 +114,27 @@ gaudi:
     - structured-outputs-auto-whitespace  # lets disable_any_whitespace work with the default (auto) backend
     - qwen3-strict-think-end              # a <tool_call> quoted while thinking was returned as a real call
   verified:
-    - "Needles 9/9 to 250K tokens on cold requests (prefix caching on)"
-    - "16 images per prompt: 16/16 colours named in order, a 17th rejected with a clean 400 (earlier image, prefix caching off)"
-    - "Forced tool calls (tool_choice required): whitespace runaway 0/32 with disable_any_whitespace (prefix caching on); 7/32 without (earlier image)"
-    - "Tool reliability, 3 cases x 40 sampled at 0.6: 117/120 and 120/120 with strict think-end (prefix caching on); 110/120 without, caching on or off"
-    - "prompt_logprobs: 68/68 sizes x values 0/1/5/20; greedy parity 10/10 bit-identical (prefix caching on)"
+    - >-
+      Greedy parity, 32 prompts of 5K to 31K tokens, cache hit vs cold: 31/32 identical, the other forked at an exact tie (both top-2 logprobs
+      -0.6932); cold vs cold 32/32
+    - >-
+      Cold greedy outputs, caching on vs off: 27/32 identical, inside the noise floor of changing the prefill chunk (caching off at 1,792 vs 896
+      batched tokens: 20/32)
+    - "Cross-request isolation, 24 rounds: 0 leaks; images served from the cache, 8 cases: hit equals cold 8/8"
+    - >-
+      Requests sharing a prefix in the same step, 24: 24/24 correct; 22/24 word for word as when sent one at a time (batch-composition wording, one
+      of them without a hit)
+    - "Needles at 65K, 130K and 250K, three depths: 9/9 cold, 9/9 from the cache, hit equals cold 9/9"
+    - "16 images per prompt: 16/16 colours named in order (thinking off), a 17th rejected with a clean 400"
+    - "Forced tool calls (tool_choice required): whitespace runaway 0/32 with disable_any_whitespace"
+    - "Tool reliability, 3 cases x 40 sampled at 0.6: 119/120 with strict think-end"
+    - "prompt_logprobs: aligned, in vocabulary and consistent with decode logprobs (plp check PASS)"
+    - "Agent replay, 4 sessions 8K to 64K: wall 171 s vs 513 s with caching off, later-turn TTFT p50 6.7 vs 24.2 s; 0 preemptions, 0 restarts"
   notes:
     - >-
-      Prefix caching is off: on this release, prefix-cache hits on Gated DeltaNet layers resume from the wrong state. Upstream vllm-gaudi main has
-      merged prefix caching for the non-compact layout; use a release that includes it before turning prefix caching on.
+      Prefix caching needs gdn-prefix-cache: on the stock release, prefix-cache hits on Gated DeltaNet layers resume from the wrong state. The fix
+      stores GDN state checkpoints in the KV pages of the cache and keeps the compact GDN slots (VLLM_COMPACT_GDN=1).
     - >-
-      The checks marked "prefix caching on" ran on an earlier form of this recipe with a GDN prefix-cache patch that is not in this cookbook. Checks
-      of cache hits are left out; the cold-path results have not been re-run with prefix caching off.
+      With prefix caching on, the hybrid KV block is 896 tokens and prefill chunks end on block boundaries, so a 1,792-token batch is two blocks.
+      Prompts shorter than one block never hit.
     - "Qwen3.5-27B-FP8 has the same geometry and runs this recipe unchanged (drop VLLM_QWEN3_STRICT_THINK_END and its fix: it scores 120/120 without)."

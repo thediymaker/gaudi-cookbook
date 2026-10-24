@@ -1,0 +1,88 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/glm-4-5v-fp8.md
+meta:
+  title: "GLM-4.5V (FP8)"
+  slug: "glm-4-5v-fp8"
+  provider: "Z.ai"
+  description: "106B MoE vision-language model (12B active) in FP8, 32K context on two Gaudi 2 cards."
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - multimodal
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "zai-org/GLM-4.5V-FP8"
+  architecture: moe
+  parameter_count: "106B"
+  active_parameters: "12B"
+  context_length: 65536
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the glm45 parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "glm45"]
+  reasoning:
+    description: "Thinking split into reasoning_content by the glm45 parser; needs the glm45v-box-tokens fix."
+    args: ["--reasoning-parser", "glm45"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: fp8
+    vram_minimum_gb: 132
+    description: "FP8 compressed-tensors checkpoint (110 GB: per-channel weights, dynamic per-token activations), two Gaudi 2 cards."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 2, tp: 2, ep: false }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  max_model_len: 32768
+  serve_args:
+    - "--tensor-parallel-size"
+    - "2"
+    - "--max-model-len"
+    - "32768"                                 # a 64K prefill hung the device on an older release; not re-tested
+    - "--max-num-seqs"
+    - "8"
+    - "--gpu-memory-utilization"
+    - "0.9"
+    - "--max-num-batched-tokens"
+    - "4096"
+    - "--enable-chunked-prefill"
+    - "--no-enable-prefix-caching"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "glm45"
+    - "--reasoning-parser"
+    - "glm45"
+    - "--limit-mm-per-prompt"
+    - '{"image":4,"video":0}'
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"    # required for TP > 1 in lazy mode
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_MULTIMODAL_BUCKETS: "None"           # no fixed vision buckets; image sizes vary
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "3600000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"  # the 300 s default can be overrun by first-use graph compiles
+  buckets: null
+  required_fixes:
+    - mm-merge-idxcopy              # image embeddings merged by row index (concurrent images)
+    - glm4-moe-3d-input             # Glm4MoE.forward unpacked 3-D hidden states and stopped the engine on the first token
+    - glm45v-box-tokens             # <|begin_of_box|> / <|end_of_box|> reached the client in content
+  verified:
+    - "Stock profile only: ValueError in Glm4MoE.forward on the first request"
+    - "Box markers in short answers: 4/4 with glm4-moe-3d-input only, 0/4 with both fixes, streamed and not"
+    - "Text, reasoning split, OCR of an arbitrary number, three shapes, text-only after image 3/3, 4 x 2048 px images, 16 mixed requests at 8 concurrent"
+    - "glm45 tool call, top_logprobs and prompt_logprobs, needle at about 28K tokens"
+  notes:
+    - "32K served: a 64K prefill hung the device on an older release and was not re-tested on this image."
+    - "Thinking is on by default; chat_template_kwargs {\"enable_thinking\": false} turns it off."

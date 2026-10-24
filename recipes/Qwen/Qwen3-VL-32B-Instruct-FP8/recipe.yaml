@@ -1,0 +1,87 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/qwen3-vl-32b-instruct-fp8.md
+meta:
+  title: "Qwen3-VL-32B-Instruct-FP8"
+  slug: "qwen3-vl-32b-instruct-fp8"
+  provider: "Qwen"
+  description: "32B dense vision-language model (images and video) in FP8, 128K context on two Gaudi 2 cards."
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - multimodal
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "Qwen/Qwen3-VL-32B-Instruct-FP8"
+  architecture: dense
+  parameter_count: "32B"
+  active_parameters: "32B"
+  context_length: 262144
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the hermes parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: fp8
+    vram_minimum_gb: 43
+    description: "FP8 checkpoint with 128x128 weight blocks (35.5 GB; vision tower and lm_head in BF16), two Gaudi 2 cards for KV and encoder headroom at 128K."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 2, tp: 2, ep: false }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "2"
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "8"
+    - "--gpu-memory-utilization"
+    - "0.55"                                  # leaves room for vision-encoder and long-prefill transients outside the KV budget
+    - "--max-num-batched-tokens"
+    - "1024"
+    - "--max-cudagraph-capture-size"
+    - "128"                                   # captured prefill graphs keep their activations; capture only the smallest
+    - "--enable-chunked-prefill"
+    - "--no-enable-prefix-caching"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "hermes"
+    - "--limit-mm-per-prompt"
+    - '{"image":16,"video":2}'
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"    # required for TP > 1 in lazy mode
+    PT_HPUGRAPH_DISABLE_TENSOR_CACHE: "false"  # with the cache off, image requests crash on a freed graph input
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_MULTIMODAL_BUCKETS: "None"           # no fixed vision buckets; image sizes vary
+    VLLM_GRAPH_RESERVED_MEM: "0.4"
+    VLLM_GRAPH_PROMPT_RATIO: "0.5"
+    VLLM_HPU_MM_ENCODER_MAX_PATCHES: "65536"  # mm-encoder-budget: at most one 16,384-token image per encoder call
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "3600000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"  # the 300 s default can be overrun by first-use graph compiles
+  buckets: null
+  required_fixes:
+    - mm-merge-idxcopy              # image embeddings merged by row index (concurrent images)
+    - mm-encoder-budget             # every pending image went through the vision tower in one call (PT_DEVMEM)
+  verified:
+    - "Text, OCR of an arbitrary number, three shapes, text-only after image 3/3, 16 x 2048 px images in one request, 16 mixed requests at 8 concurrent"
+    - "7 x 4096 px images (114,719 tokens) in one request: peak 87,580 / 91,345 MiB with mm-encoder-budget (two pods), 95,055 MiB without (one run)"
+    - "Ten novel prompt lengths: device memory flat at capture size 128; 44,619 to 90,637 MiB at the default (same pod)"
+    - "hermes tool call, top_logprobs and prompt_logprobs, needle at about 120K tokens"
+  notes:
+    - "Video is enabled (two per prompt) but was not part of the checks."

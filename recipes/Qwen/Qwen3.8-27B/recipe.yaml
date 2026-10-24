@@ -1,0 +1,129 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/qwen3-8-27b.md
+meta:
+  title: "Qwen3.8-27B"
+  slug: "qwen3-8-27b"
+  provider: "Qwen"
+  description: "27B dense hybrid (Gated DeltaNet + attention) reasoning model with vision, BF16, native 256K context on one Gaudi 2 card, 4 sequences."
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - multimodal
+  related_recipes:
+    - "Qwen/Qwen3.5-27B-FP8"
+    - "Qwen/Qwen3.6-27B-FP8"
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "Qwen/Qwen3.8-27B"
+  architecture: dense
+  parameter_count: "27B"
+  active_parameters: "27B"
+  context_length: 262144
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the qwen3_coder parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
+  reasoning:
+    description: "Split <think> reasoning from the answer. Reasoning effort (xhigh, medium, low) goes in chat_template_kwargs; medium by default."
+    args: ["--reasoning-parser", "qwen3", "--default-chat-template-kwargs", '{"reasoning_effort": "medium"}']
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: bf16
+    vram_minimum_gb: 67
+    description: "BF16 weights (56 GB), one Gaudi 2 card."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 1, tp: 1, ep: false }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  max_model_len: 262144
+  serve_args:
+    - "--tensor-parallel-size"
+    - "1"
+    - "--max-model-len"
+    - "262144"
+    - "--max-num-seqs"
+    - "4"                                     # a fifth sequence stops the engine (GDN prefill scratch, see notes)
+    - "--gpu-memory-utilization"
+    - "0.60"                                  # lower on purpose: the GDN prefill scratch lives outside this budget
+    - "--block-size"
+    - "128"
+    - "--max-num-batched-tokens"
+    - "1024"
+    - "--enable-chunked-prefill"
+    - "--enable-prefix-caching"               # correct on GDN layers with gdn-prefix-cache
+    - "--enable-prompt-tokens-details"
+    - "--reasoning-parser"
+    - "qwen3"
+    - "--default-chat-template-kwargs"
+    - '{"reasoning_effort": "medium"}'        # the template default (xhigh) can reason past max_tokens and return empty content
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "qwen3_coder"
+    - "--limit-mm-per-prompt"
+    - '{"image":16,"video":0}'
+  env:
+    PT_HPU_LAZY_MODE: "0"                     # compile mode: lazy mode loses the GDN state cache at first decode
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"
+    VLLM_USE_NAIVE_MAMBA_CACHE_SHARING: "1"
+    VLLM_COMPACT_GDN: "1"                     # compact GDN state slots; gdn-prefix-cache keeps checkpoints in the KV pages
+    PT_HPUGRAPH_DISABLE_TENSOR_CACHE: "false"
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_GRAPH_RESERVED_MEM: "0.3"            # at 0.1 the pod dies compiling its batch-4 decode graph
+    VLLM_EXPONENTIAL_BUCKETING: "True"
+    VLLM_PROMPT_BS_BUCKET_MIN: "1"
+    VLLM_PROMPT_BS_BUCKET_STEP: "1"
+    VLLM_PROMPT_BS_BUCKET_MAX: "4"
+    VLLM_DECODE_BS_BUCKET_MIN: "1"
+    VLLM_DECODE_BS_BUCKET_STEP: "1"
+    VLLM_DECODE_BS_BUCKET_MAX: "4"
+    VLLM_PROMPT_SEQ_BUCKET_MIN: "128"
+    VLLM_PROMPT_SEQ_BUCKET_STEP: "4096"
+    VLLM_PROMPT_SEQ_BUCKET_MAX: "262144"
+    VLLM_DECODE_BLOCK_BUCKET_MIN: "128"
+    VLLM_DECODE_BLOCK_BUCKET_STEP: "1024"
+    VLLM_DECODE_BLOCK_BUCKET_MAX: "16384"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "3600000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
+  buckets: null
+  required_fixes:
+    - prompt-order            # a same-step prefix-cache hit read a block before its writer computed it
+    - sampling-rows-refresh   # device sampling rows stale after batch reorders
+    - structured-output-rows  # structured-output steps sample rows with the wrong params
+    - bad-words-index         # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows        # logit_bias, min_p, min_tokens silently ignored
+    - async-discard-counter   # AttributeError on the first preemption under async scheduling
+    - resumed-prefill-logits  # a request resumed after preemption with prefix-cache hits re-sampled its tail
+    - hybrid-decode-pad       # decode padding can land inside a live KV block when the hybrid KV block is split into kernel blocks
+    - gdn-prefix-cache        # prefix-cache hits on GDN layers resumed from a wrong state
+    - gather-logprobs-int32   # recommended on every image; the corruption itself is lazy-mode only
+    - prompt-logprobs         # prompt_logprobs request kills the engine (flat hidden states)
+    - logprobs-decode-guard   # a bad logprob id no longer kills the API server
+    - rope-cpu-cache          # RoPE tables built on the HPU are wrong from position about 196K
+  verified:
+    - "Known-answer prompts 8/8 at temperature 0 and 4/4 with 4 in flight"
+    - "Tool calls: 5/5 valid calls sampled at 0.6, streamed call assembled, tool result used in the answer"
+    - "top_logprobs 20, prompt_logprobs, JSON schema and logit_bias all take effect; server healthy after each"
+    - "Vision: 16 images in one prompt, 16/16 colours named in order"
+    - >-
+      Prefix-cache hit vs cold, 8 greedy prompts of 6K to 126K tokens: identical text and bit-identical logprobs 8/8; cached tokens a multiple of 896 on
+      every hit
+    - "Needles, 3 depths each, cold: 3/3 at 65K, 131K and 244K tokens"
+    - "Single stream 36.4 tokens/s, 4 streams 117.3 tokens/s aggregate (256 tokens, end to end)"
+  notes:
+    - >-
+      Prefix caching needs gdn-prefix-cache: on the stock release, prefix-cache hits on Gated DeltaNet layers resume from the wrong state. The fix
+      stores GDN state checkpoints in the KV pages (896-token blocks here) and keeps the compact GDN slots (VLLM_COMPACT_GDN=1).
+    - "TP 1 is deliberate: TP 2 and TP 4 stop the engine at 4 concurrent requests (the GDN chunked-prefill kernel, not memory). Scale with replicas."
+    - "Only xhigh, medium and low are legal reasoning_effort values for this template; high returns HTTP 400. The top-level reasoning_effort field is ignored."

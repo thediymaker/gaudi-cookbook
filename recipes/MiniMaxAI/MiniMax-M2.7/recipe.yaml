@@ -1,0 +1,114 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/minimax-m2-7.md
+meta:
+  title: "MiniMax-M2.7"
+  slug: "minimax-m2-7"
+  provider: "MiniMax"
+  description: "229B MoE (sigmoid routing, 256 experts) reasoning and agent model, official FP8 checkpoint, 128K context on four Gaudi 2 cards."
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - text
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "MiniMaxAI/MiniMax-M2.7"
+  architecture: moe
+  parameter_count: "229B"
+  active_parameters: "10B"
+  context_length: 204800
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the minimax_m2 parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "minimax_m2"]
+  reasoning:
+    description: "Split <think> reasoning from the answer."
+    args: ["--reasoning-parser", "minimax_m2"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: fp8
+    vram_minimum_gb: 277
+    description: "The official FP8 checkpoint (block 128 x 128, dynamic activations, 230 GB), four Gaudi 2 cards."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 4, tp: 4, ep: false }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  max_model_len: 131072
+  serve_args:
+    - "--dtype"
+    - "auto"
+    - "--trust-remote-code"
+    - "--tensor-parallel-size"
+    - "4"                                     # expert MLP shard 1536 / 4 = 384, a multiple of the 128 FP8 block
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "4"
+    - "--gpu-memory-utilization"
+    - "0.94"
+    - "--block-size"
+    - "128"
+    - "--max-num-batched-tokens"
+    - "1024"
+    - "--enable-chunked-prefill"
+    - "--enable-prefix-caching"
+    - "--enable-prompt-tokens-details"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "minimax_m2"
+    - "--reasoning-parser"
+    - "minimax_m2"
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"
+    PT_HPU_WEIGHT_SHARING: "0"
+    VLLM_SKIP_WARMUP: "true"                  # a full warm-up of this MoE takes far too long; graphs compile on first use
+    VLLM_GRAPH_RESERVED_MEM: "0.2"            # graph memory for batch-4 decode graphs
+    VLLM_GRAPH_PROMPT_RATIO: "0.30"
+    VLLM_GRAPH_PROMPT_STRATEGY: "max_bs"
+    VLLM_GRAPH_DECODE_STRATEGY: "max_bs"
+    VLLM_EXPONENTIAL_BUCKETING: "True"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "3600000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"  # the 300 s default can be overrun by first-use graph compiles
+  buckets: null
+  required_fixes:
+    - prompt-order                # prefix-cache read-before-write across requests
+    - sampling-rows-refresh       # device sampling rows stale after batch reorders
+    - structured-output-rows      # structured-output steps sample rows with the wrong params
+    - bad-words-index             # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows            # logit_bias, min_p, min_tokens silently ignored
+    - resumed-prefill-logits      # a request resumed after preemption with prefix-cache hits re-samples its generated tail
+    - gather-logprobs-int32       # top_logprobs ids corrupted in lazy mode
+    - prompt-logprobs             # prompt_logprobs crashes or returns wrong values
+    - logprobs-decode-guard       # a bad logprob id no longer kills the API server
+    - seeded-sampling             # requests with seed can segfault a TP worker in lazy mode
+    - laguna-moe-sigmoid-routing  # sigmoid scoring with a correction bias: the stock HPU MoE routing ignores both
+    - rank-exception-fatal        # an exception on a non-zero TP rank stops the engine instead of serving garbage
+  verified:
+    - "Known-answer prompts 7/8 at temperature 0 (one looped in its reasoning to max_tokens) and 4/4 with 4 in flight"
+    - "10 prompts with the checkpoint's sampling defaults (temperature 1.0, top_p 0.95, top_k 40): 10/10 finished; at temperature 0: 7/10"
+    - "Tool calls: 5/5 valid calls sampled at 0.6, streamed call assembled, tool result used in the answer"
+    - "top_logprobs 20, prompt_logprobs, JSON schema and logit_bias all take effect; server healthy after each"
+    - "Needles, 3 depths each, cold: 3/3 at 32K and 3/3 at 120K tokens"
+    - "Single stream 22.9 to 25.4 tokens/s, 4 streams 87.6 to 95.1 tokens/s aggregate (256 tokens, end to end)"
+  notes:
+    - >-
+      Leave VLLM_ROW_PARALLEL_CHUNKS unset: on v0.26.0 any value above 1 stops vLLM at startup (AttributeError in register_hpu_lora_layers), and
+      with 1024-token chunks a 16384-token chunking threshold would never be reached anyway.
+    - "Licence: non-commercial (MiniMax M2.7 licence); commercial use needs written authorization from MiniMax."
+    - "v0.26.0 cannot load this checkpoint: its minimax_m2 model calls FusedMoE.make_expert_params_mapping, which vLLM 568afb3a no longer has."
+    - >-
+      Loading is CPU-bound: every FP8 tensor is rescaled on the CPU, and vllm-gaudi sizes its load thread pool from the host's core count. Run
+      without a CPU limit, or cap the pool at the quota.

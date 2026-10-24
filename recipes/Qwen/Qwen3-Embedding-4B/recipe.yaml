@@ -1,0 +1,86 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/qwen3-embedding-4b.md
+meta:
+  title: "Qwen3-Embedding-4B"
+  slug: "qwen3-embedding-4b"
+  provider: "Qwen"
+  description: "4B instruction-aware text embedding model (2560 dimensions, Matryoshka truncation) on one Gaudi 2 card in BF16."
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - embedding
+  related_recipes:
+    - "Qwen/Qwen3-Embedding-8B"
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "Qwen/Qwen3-Embedding-4B"
+  architecture: dense
+  parameter_count: "4B"
+  active_parameters: "4B"
+  context_length: 40960
+
+features: {}
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: bf16
+    vram_minimum_gb: 10
+    description: "BF16 weights (8 GB), one Gaudi 2 card."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 1, tp: 1, ep: false }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  max_model_len: 32768
+  serve_args:
+    - "--tensor-parallel-size"
+    - "1"
+    - "--runner"
+    - "pooling"
+    - "--convert"
+    - "embed"                                 # last-token pooling + L2 normalize, as the model card asks
+    - "--max-model-len"
+    - "32768"
+    - "--max-num-seqs"
+    - "64"
+    - "--max-num-batched-tokens"
+    - "32768"
+    - "--gpu-memory-utilization"
+    - "0.80"
+    - "--no-enable-prefix-caching"
+    - "--no-enable-chunked-prefill"           # pooling models cannot chunk
+    - "--hf-overrides"
+    - '{"is_matryoshka": true}'               # accept any dimensions value up to 2560
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_EXPONENTIAL_BUCKETING: "True"        # prefill-only: the prompt buckets are the whole graph space, so bound them
+    VLLM_PROMPT_BS_BUCKET_MIN: "1"
+    VLLM_PROMPT_BS_BUCKET_STEP: "1"
+    VLLM_PROMPT_BS_BUCKET_MAX: "64"
+    VLLM_PROMPT_SEQ_BUCKET_MIN: "128"
+    VLLM_PROMPT_SEQ_BUCKET_STEP: "1024"
+    VLLM_PROMPT_SEQ_BUCKET_MAX: "32768"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "3600000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"  # the 300 s default can be overrun by first-use graph compiles
+  buckets: null
+  required_fixes: []
+  verified:
+    - "Retrieval nDCG@10 with the documented query instruction: SciFact 78.1, NFCorpus 40.9, ArguAna 73.5, CodeSearchNet python 95.9, QMSum 51.2"
+    - "Multilingual Wikipedia retrieval nDCG@10: de 89.7, hi 86.8, pt 87.5; STSBenchmark Spearman 93.6"
+    - "At 256 dimensions: SciFact 73.9, ArguAna 70.3, STSBenchmark 93.6"
+    - "Stock image, no fixes: the checkpoint is plain Qwen3ForCausalLM and is mapped to Qwen3ForEmbedding at load"
+  notes:
+    - "Queries need the prefix 'Instruct: <task>\\nQuery:<query>'; documents go in bare. vLLM does not apply sentence-transformers prompts."
+    - >-
+      Cost per input is flat at about 50 ms whether inputs are batched or concurrent: pooling prefill runs one sequence at a time on this image. Scale
+      out with replicas.

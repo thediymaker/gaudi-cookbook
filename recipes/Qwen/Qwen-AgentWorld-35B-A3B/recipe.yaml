@@ -1,0 +1,101 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/qwen-agentworld-35b-a3b.md
+meta:
+  title: "Qwen-AgentWorld-35B-A3B"
+  slug: "qwen-agentworld-35b-a3b"
+  provider: "Qwen"
+  description: "35B hybrid MoE (Gated DeltaNet + attention, 3B active) agent model, BF16, native 256K context on two Gaudi 2 cards."
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - text
+  related_recipes:
+    - "ornith-ai/Ornith-1.0-35B"
+    - "Qwen/Qwen3.6-35B-A3B-FP8"
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "Qwen/Qwen-AgentWorld-35B-A3B"
+  architecture: moe
+  parameter_count: "35B"
+  active_parameters: "3B"
+  context_length: 262144
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the qwen3_coder parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
+  reasoning:
+    description: "Split <think> reasoning from the answer."
+    args: ["--reasoning-parser", "qwen3"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: bf16
+    vram_minimum_gb: 84
+    description: "BF16 weights (69 GB), two Gaudi 2 cards."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 2, tp: 2, ep: false }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  max_model_len: 262144
+  serve_args:
+    - "--tensor-parallel-size"
+    - "2"
+    - "--max-model-len"
+    - "262144"
+    - "--max-num-seqs"
+    - "16"
+    - "--gpu-memory-utilization"
+    - "0.9"
+    - "--max-num-batched-tokens"
+    - "1024"
+    - "--enable-chunked-prefill"
+    - "--no-enable-prefix-caching"            # see notes: verified without prefix caching
+    - "--language-model-only"                 # required: config.json describes a vision tower the checkpoint does not ship
+    - "--reasoning-parser"
+    - "qwen3"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "qwen3_coder"
+  env:
+    PT_HPU_LAZY_MODE: "0"                     # compile mode: lazy mode fails at the first GDN decode at TP 2
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"
+    VLLM_USE_NAIVE_MAMBA_CACHE_SHARING: "1"
+    VLLM_COMPACT_GDN: "1"                     # stock default without prefix caching: per-request GDN state slots
+    VLLM_SKIP_WARMUP: "true"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "7200"
+    VLLM_RPC_TIMEOUT: "7200000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"  # the 300 s default can be overrun by first-use graph compiles
+  buckets: null
+  required_fixes:
+    - sampling-rows-refresh   # device sampling rows stale after batch reorders
+    - structured-output-rows  # structured-output steps sample rows with the wrong params
+    - bad-words-index         # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows        # logit_bias, min_p, min_tokens silently ignored
+    - async-discard-counter   # AttributeError on the first preemption under async scheduling
+    - hybrid-decode-pad       # decode padding can land inside a live KV block when the hybrid KV block is split into kernel blocks
+    - gather-logprobs-int32   # recommended on every image; the corruption itself is lazy-mode only
+    - prompt-logprobs         # prompt_logprobs request kills the engine (flat hidden states)
+    - logprobs-decode-guard   # a bad logprob id no longer kills the API server
+    - rope-cpu-cache          # RoPE tables built on the HPU are wrong from position about 196K
+    - rank-exception-fatal    # an exception on a non-zero TP rank stops the engine instead of serving garbage
+  verified:
+    - "Known-answer prompts 8/8 at temperature 0 and 16/16 with 16 in flight"
+    - "Tool calls: 5/5 valid calls sampled at 0.6, streamed call assembled, tool result used in the answer"
+    - "top_logprobs 20, prompt_logprobs, JSON schema and logit_bias all take effect; server healthy after each"
+    - "Needles, 3 depths each, cold: 3/3 at 65K, 131K and 244K tokens"
+    - "Single stream 26.3 tokens/s, 16 streams 321.4 tokens/s aggregate (256 tokens, end to end)"
+  notes:
+    - >-
+      Prefix caching is off, as verified. On the stock release prefix-cache hits on Gated DeltaNet layers resume from the wrong state; gdn-prefix-cache
+      makes them correct on other Qwen3.5-family recipes but has not been run on this model.
+    - "On easy arithmetic the model often answers itself instead of calling an offered calculator tool; this is model behaviour, not parsing."

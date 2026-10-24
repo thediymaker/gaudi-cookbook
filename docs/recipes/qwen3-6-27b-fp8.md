@@ -1,8 +1,8 @@
 # Qwen3.6-27B-FP8
 
 Qwen's 27B dense hybrid model (48 Gated DeltaNet layers and 16 attention layers) with vision and
-reasoning, from the official FP8 checkpoint, at its native 256K context on a single Gaudi 2 card.
-Prefix caching is off on this release (see [Prefix caching](#prefix-caching)).
+reasoning, from the official FP8 checkpoint, at its native 256K context on a single Gaudi 2 card,
+with prefix caching on through the [`gdn-prefix-cache`](../fixes/gdn-prefix-cache.md) fix.
 
 | | |
 | --- | --- |
@@ -21,15 +21,23 @@ reliability without it). Some measurements below come from it and are marked.
 
 ## Prefix caching
 
-Prefix caching is off: on this release, prefix-cache hits on Gated DeltaNet layers resume from the
-wrong state. Upstream vllm-gaudi main has merged prefix caching for the non-compact layout; use a
-release that includes it before turning prefix caching on.
+On the stock release, prefix-cache hits on the Gated DeltaNet layers resume from the wrong state,
+so prefix caching is only correct with [`gdn-prefix-cache`](../fixes/gdn-prefix-cache.md). The fix
+keeps the GDN layers in their compact per-request slots (`VLLM_COMPACT_GDN=1`) and stores a state
+checkpoint at the end of every full KV block in that block's own attention page, which a block
+owned by a GDN group does not otherwise use. A hit restores the checkpoint, bit for bit, before the
+next chunk. The full KV pool stays available: 623,359 tokens at the flags below.
 
-An earlier form of this recipe ran with prefix caching on, through a GDN prefix-cache patch that is
-not in this cookbook. Most of the checks below come from that configuration and are marked
-"prefix caching on". Checks of cache hits (hit-against-cold parity, needles and images served from
-the cache, agent replay hit rates and their TTFTs) do not apply and are left out. The cold-path
-results should carry over, but this exact command line has not been re-run end to end.
+With caching on, the hybrid KV block is 896 tokens (one page holds a whole GDN state) and prefill
+chunks end on block boundaries. The start-up log confirms both:
+
+```text
+[gaudi-fix:gdn-prefix-cache] active: GDN groups [0, 1, 2], block 896 tokens, 711 KV blocks, 16 layer positions; ...
+[gaudi-fix:gdn-prefix-cache] scheduler: GDN prefill chunks end on 896-token blocks
+```
+
+The design, the earlier measurements and the upstream status are in
+[Prefix caching on Gated DeltaNet hybrids](../results/gdn-prefix-caching.md).
 
 ## Launch
 
@@ -63,7 +71,8 @@ export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1800
 
 # Fixes: the v0.26.0 profile plus this recipe's opt-in fixes, in the pack's order.
 # Stops with a non-zero exit code if the image does not match.
-python3 "$COOKBOOK/fixes/apply_all.py" --profile v0.26.0 qwen3-strict-think-end || exit 1
+python3 "$COOKBOOK/fixes/apply_all.py" --profile v0.26.0 \
+    gdn-prefix-cache qwen3-strict-think-end || exit 1
 
 vllm serve Qwen/Qwen3.6-27B-FP8 \
   --tensor-parallel-size 1 \
@@ -73,7 +82,7 @@ vllm serve Qwen/Qwen3.6-27B-FP8 \
   --block-size 128 \
   --max-num-batched-tokens 1792 \
   --enable-chunked-prefill \
-  --no-enable-prefix-caching \
+  --enable-prefix-caching \
   --structured-outputs-config '{"disable_any_whitespace": true}' \
   --enable-prompt-tokens-details \
   --reasoning-parser qwen3 \
@@ -84,10 +93,10 @@ vllm serve Qwen/Qwen3.6-27B-FP8 \
 
 - Compile mode (`PT_HPU_LAZY_MODE=0`). The GDN layers lose their state cache at the first decode in
   lazy mode.
-- `--no-enable-prefix-caching`: see [Prefix caching](#prefix-caching).
-- `VLLM_COMPACT_GDN=1` is the stock default when prefix caching is off: the GDN layers keep their
-  state in compact per-request slots instead of in KV blocks. The recipe sets it so a different
-  image default cannot change it.
+- `--enable-prefix-caching` is correct here only with `gdn-prefix-cache`; see
+  [Prefix caching](#prefix-caching).
+- `VLLM_COMPACT_GDN=1`: the GDN layers keep their state in compact per-request slots, and
+  `gdn-prefix-cache` refuses to start without it.
 - `--structured-outputs-config '{"disable_any_whitespace": true}'` stops forced tool calls from
   emitting whitespace until `max_tokens`. With the default `auto` backend it is refused at start-up
   without `structured-outputs-auto-whitespace`.
@@ -104,18 +113,20 @@ No bucket file. Prompt batch buckets 1 to 8, decode batch buckets 1 to 32, promp
 
 All from [Fixes](../fixes/index.md). The ones marked opt-in are named in the launch command; the
 rest come from `--profile v0.26.0`, which also applies the release's other generic fixes (see
-[Using a recipe](index.md#using-a-recipe)). The profile also runs `seeded-sampling` and
-`prompt-order`; this recipe does not depend on them (the seed segfault is a lazy-mode bug, and
-prefix caching is off).
+[Using a recipe](index.md#using-a-recipe)). The profile also runs `seeded-sampling`; this recipe
+does not depend on it (the seed segfault is a lazy-mode bug).
 
 | Fix | Why this model needs it |
 | --- | --- |
+| [`prompt-order`](../fixes/prompt-order.md) | with prefix caching, a request that hits a block another request writes in the same step read it before it was written |
 | [`sampling-rows-refresh`](../fixes/sampling-rows-refresh.md) | stale device sampling rows after a batch reorder |
 | [`structured-output-rows`](../fixes/structured-output-rows.md) | structured-output steps sample each row with another request's parameters |
 | [`bad-words-index`](../fixes/bad-words-index.md) | `bad_words` raises `IndexError` in the engine core |
 | [`logitsprocs-rows`](../fixes/logitsprocs-rows.md) | `logit_bias`, `min_p` and `min_tokens` are silently ignored |
 | [`async-discard-counter`](../fixes/async-discard-counter.md) | `AttributeError` on the first preemption under async scheduling |
+| [`resumed-prefill-logits`](../fixes/resumed-prefill-logits.md) | a request resumed after preemption with prefix-cache hits samples again at every recomputed position, so the generated tail repeats |
 | [`hybrid-decode-pad`](../fixes/hybrid-decode-pad.md) | when the hybrid KV block is split into 128-token kernel blocks, decode padding writes into a live block of another request; the start-up log says whether the pad was moved |
+| [`gdn-prefix-cache`](../fixes/gdn-prefix-cache.md) (opt-in) | prefix-cache hits on the GDN layers resume from a wrong state on the stock release; the fix stores and restores GDN checkpoints in the KV pages and zeroes new blocks and slots. It needs `hybrid-decode-pad` first |
 | [`gather-logprobs-int32`](../fixes/gather-logprobs-int32.md) | the id corruption is lazy-mode only, but the fix is harmless here and keeps one fix set across recipes |
 | [`prompt-logprobs`](../fixes/prompt-logprobs.md) | multimodal model with one prompt in a prefill batch returns flat hidden states; the first `prompt_logprobs` request kills the engine |
 | [`logprobs-decode-guard`](../fixes/logprobs-decode-guard.md) | a bad logprob id from any source is replaced instead of stopping the API server |
@@ -125,39 +136,57 @@ prefix caching is off).
 
 ## Verified
 
-On vllm-gaudi v0.26.0, one Gaudi 2 card. "Prefix caching on" marks the earlier configuration
-described under [Prefix caching](#prefix-caching); the other flags were the same.
+On vllm-gaudi v0.26.0, one Gaudi 2 card, the launch above as written (prefix caching on with
+`gdn-prefix-cache`):
 
-- Needles to 250K tokens on cold requests: 9/9 (prefix caching on).
-- 16 images in one prompt: 16/16 colours named in order, a 17th image rejected with a clean 400
-  (earlier image, prefix caching off).
+- Greedy parity, 32 prompts of 5K to 31K tokens (single questions, multi-turn agent sessions with
+  tools, extensions, diverging prefixes; thinking on and off), the same request served from the
+  cache and cold: 31/32 identical, 27/32 with bit-identical logprobs. The other one forked at an exact
+  tie (the two top tokens both at logprob -0.6932). Two cold runs: 32/32 identical.
+- Cross-request isolation, 24 rounds with an unrelated request between fill and hit: 0 leaks.
+- Requests sharing a prefix in the same step, 24: 24/24 correct; 22/24 word for word as when sent
+  one at a time (the two differences are batch-composition wording, one of them on a request
+  without a cache hit).
+- Images served from the cache, 8 cases: hit equals cold 8/8.
+- Needles at 65K, 130K and 250K tokens, three depths each: 9/9 cold, 9/9 from the cache, hit
+  equals cold 9/9.
+- 16 images in one prompt: 16/16 colours named in order (thinking off), a 17th image rejected with
+  a clean 400.
 - Forced tool calls (`tool_choice: required`): whitespace runaway 0/32 with
-  `disable_any_whitespace` (prefix caching on), 7/32 without (earlier image).
-- Tool reliability, 3 cases x 40 sampled at 0.6: 117/120 and 120/120 with strict think-end (prefix
-  caching on); 110/120 without, with prefix caching on and off alike (calls to the template's
-  `example_function_name` and duplicates).
-- `prompt_logprobs`: 68/68 sizes x values 0, 1, 5 and 20; greedy parity 10/10 bit-identical (prefix
-  caching on).
-- Model test suite (health, smoke, tools, coding agent, vision): 29 passed (prefix caching on).
+  `disable_any_whitespace`.
+- Tool reliability, 3 cases x 40 sampled at 0.6: 119/120 with strict think-end (one wrong tool).
+- `prompt_logprobs`: ids aligned with the prompt and in vocabulary at every size checked, values
+  consistent with decode logprobs (median difference 0.001 to 0.007).
+- Agent replay, 4 sessions growing from 8K to 64K tokens: 0 preemptions, 0 engine restarts across
+  all of the above.
 
 ## Performance
 
-Single measurements on one card, vllm-gaudi v0.26.0, Qwen3.5-27B-FP8 (same geometry and settings),
-warm, with prefix caching on and requests that did not hit the cache. Cache-hit TTFTs from that
-configuration do not apply to this recipe and are not listed.
+Single runs on one card, vllm-gaudi v0.26.0, warm.
 
-| Test | Result |
-| --- | --- |
-| Single-stream decode at 2K / 8K / 32K context | 48.8 / 48.0 / 45.0 tokens/s |
-| Cold TTFT at 2K / 8K / 32K | 0.53 / 2.10 / 9.96 s |
-| Needle TTFT, cold, at 65K / 130K / 260K | 25 / 69 / 224 s |
-| 32 concurrent 12K-token documents, 1,000 tokens each | 32/32 correct, all 32 running at once, KV peak 80% |
+| Test | Prefix caching on (this recipe) | Prefix caching off | Measured as |
+| --- | --- | --- | --- |
+| Agent replay, 4 sessions 8K to 64K, 200 output tokens per turn: wall | 171 s | 513 s | same pod and card, the off arm launched with `--no-enable-prefix-caching` |
+| later-turn TTFT mean / p50 / p90 | 11.8 / 6.7 / 22.2 s | 32.4 / 24.2 / 81.2 s | same run |
+| first-turn TTFT mean | 14.4 s | 26.7 s | same run |
+| server prefix-cache hit rate | 78% | | same run |
+| Needle at 250K: TTFT cold / from the cache | 224 to 226 s / 1.1 to 1.7 s | | same pod, cold then hit |
+| Needle at 130K / 65K: TTFT cold | 69 / 25 to 26 s | | same pod |
+| KV pool | 623,359 tokens | | start-up log |
 
-Without prefix caching every turn of a multi-turn session is prefilled from the start, so TTFT
-grows with the conversation: plan for the cold TTFT of the whole prompt on every request.
+Earlier single measurements on Qwen3.5-27B-FP8 (same geometry and settings), requests that did not
+hit the cache: single-stream decode 48.8 / 48.0 / 45.0 tokens/s at 2K / 8K / 32K context; cold
+TTFT 0.53 / 2.10 / 9.96 s at the same lengths; 32 concurrent 12K-token documents with 1,000 output
+tokens each, all 32 running at once, 32/32 correct, KV peak 80%.
 
 ## Known issues
 
+- Prompts shorter than one 896-token block never hit the cache, and a hit resumes from the last
+  full block before the end of the shared prefix.
+- Cold outputs with prefix caching on and off are not bit-identical. On the 32 parity prompts,
+  greedy, the two launches agreed on 27/32 outputs; two launches with caching off that differ only
+  in `--max-num-batched-tokens` (1,792 against 896) agreed on 20/32. That is the noise floor of
+  changing the prefill chunking on this FP8 model, and the caching difference stays inside it.
 - Temperature 0 still varies with batch composition on HPU; expect two or three trajectory families
   across repeated runs under load.
 - Give test requests a real token budget: this model reasons at length, and a short `max_tokens`
@@ -165,6 +194,8 @@ grows with the conversation: plan for the cold TTFT of the whole prompt on every
 
 ## What not to do
 
+- Do not turn on prefix caching on this release without `gdn-prefix-cache`: hits then resume the
+  GDN layers from a wrong state.
 - Do not use lazy mode for this model.
 - Do not pass `{"backend": "xgrammar", "disable_any_whitespace": true}` to get past the start-up
   check: schemas xgrammar cannot compile (`multipleOf`, `uniqueItems`, `patternProperties`, ...)
