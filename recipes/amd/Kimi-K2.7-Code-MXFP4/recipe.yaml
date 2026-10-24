@@ -1,0 +1,126 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/kimi-k2-7-code.md
+meta:
+  title: "Kimi-K2.7-Code (MXFP4)"
+  slug: "kimi-k2-7-code"
+  provider: "Moonshot AI"
+  description: >-
+    1T-parameter MoE coding model (32B active, MLA, 384 experts) served text-only from AMD's MXFP4 release at 128K context on one 8-card Gaudi 2
+    node, through the kimi-k2-7 port, with the MXFP4 decode kernels behind one switch.
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - text
+  related_recipes:
+    - glm-5-3-mxfp4
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "amd/Kimi-K2.7-Code-MXFP4"
+  architecture: moe
+  parameter_count: "1T"
+  active_parameters: "32B"
+  context_length: 262144
+
+features:
+  tool_calling:
+    description: "Automatic tool choice with the kimi_k2 parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "kimi_k2"]
+  reasoning:
+    description: "kimi_k2 reasoning parser."
+    args: ["--reasoning-parser", "kimi_k2"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: mxfp4
+    vram_minimum_gb: 791
+    description: "Routed experts MXFP4, everything else BF16: 659 GB after ports/kimi-k2-7/convert/repack_quark_mxfp4.py."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 8, tp: 8, ep: true }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  port: kimi-k2-7
+  serve_model: "$KIMI_MXFP4_DIR"
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "8"
+    - "--enable-expert-parallel"              # required: each rank loads its block of 48 fused experts
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "8"
+    - "--enable-chunked-prefill"
+    - "--max-num-batched-tokens"
+    - "2048"
+    - "--block-size"
+    - "128"
+    - "--gpu-memory-utilization"
+    - "0.9"
+    - "--language-model-only"                 # text only: the vision tower is not built, image requests get a 400
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "kimi_k2"
+    - "--reasoning-parser"
+    - "kimi_k2"
+    - "--trust-remote-code"
+  env:
+    KIMI_MXFP4_DIR: "/models/Kimi-K2.7-Code-MXFP4"   # output of ports/kimi-k2-7/convert/repack_quark_mxfp4.py
+    KIMI_MXK: "1"                              # MXFP4 decode kernels (kernels/mxfp4-moe, variant kimi); 0 = stock op
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"
+    PT_HPUGRAPH_DISABLE_TENSOR_CACHE: "1"
+    VLLM_GRAPH_RESERVED_MEM: "0.3"
+    VLLM_SKIP_WARMUP: "true"                   # shapes compile at first use
+    VLLM_EXPONENTIAL_BUCKETING: "false"        # linear buckets: a small shape set
+    VLLM_PROMPT_BS_BUCKET_MIN: "1"
+    VLLM_PROMPT_BS_BUCKET_STEP: "1"
+    VLLM_PROMPT_BS_BUCKET_MAX: "1"
+    VLLM_PROMPT_QUERY_BUCKET_MIN: "512"
+    VLLM_PROMPT_QUERY_BUCKET_STEP: "512"
+    VLLM_PROMPT_QUERY_BUCKET_MAX: "2048"
+    VLLM_PROMPT_CTX_BUCKET_MIN: "0"
+    VLLM_PROMPT_CTX_BUCKET_STEP: "256"
+    VLLM_PROMPT_CTX_BUCKET_MAX: "1024"
+    VLLM_DECODE_BS_BUCKET_MIN: "1"
+    VLLM_DECODE_BS_BUCKET_STEP: "1"
+    VLLM_DECODE_BS_BUCKET_MAX: "8"
+    VLLM_DECODE_BLOCK_BUCKET_MIN: "256"
+    VLLM_DECODE_BLOCK_BUCKET_STEP: "512"
+    VLLM_DECODE_BLOCK_BUCKET_MAX: "8192"
+    VLLM_MOE_CHUNK: "256"                      # the stock MXFP4 op skips empty expert slots; output unchanged
+    VLLM_MOE_TOKEN_BOUNDARY: "2048"
+    PT_HPU_QKV_SLICE_SEQ_LEN_THLD: "128"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "7200"
+    VLLM_RPC_TIMEOUT: "7200000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "3600" # first long prefills compile inline; the 300 s default stops the engine
+  buckets: null
+  required_fixes:
+    - prompt-order             # prefix caching is on by default
+    - gather-logprobs-int32    # top_logprobs ids read back corrupted otherwise
+    - logprobs-decode-guard    # the tiktoken tokenizer raises KeyError on a bad id
+    - seeded-sampling          # a seeded request segfaults a TP worker otherwise
+    - rank-exception-fatal     # a failed rank stops the engine instead of serving garbage
+  verified:
+    - "kernel parity, kimi build on real layer-3 experts, T 1 to 16: PARITY PASS, SIG_DEVICE PASS"
+    - "golden answers 12/12, KIMI_MXK=0 and KIMI_MXK=1"
+    - "tool call through kimi_k2, streaming and non-streaming: pass"
+    - "needles 9/9 at 32K, 64K and 120K tokens"
+    - "top_logprobs=20 soak, 200 requests with CJK and emoji output: 200/200 clean"
+    - "teacher-forced NLL 1.2888 with the kernels vs 1.2878 stock, top-1 agreement 0.955 over 8,198 positions"
+    - "decode at a 16K cached prefix, per stream: 44.5 / 34.5 / 23.4 / 14.8 tok/s at 1 / 2 / 4 / 8 streams (stock op 17.9 / 12.9 / 9.8 / 7.5)"
+  notes:
+    - >-
+      Needs the kimi-k2-7 port image: docker build -f ports/kimi-k2-7/Dockerfile from the stock releases/v0.30.0 image, and AMD's checkpoint
+      repacked once with ports/kimi-k2-7/convert/repack_quark_mxfp4.py (CPU only, byte copies of the experts).
+    - >-
+      Modified MIT licence: a product or service with more than 100 million monthly active users or more than 20 million US dollars of monthly
+      revenue must display "Kimi K2.7 Code" prominently in its user interface.

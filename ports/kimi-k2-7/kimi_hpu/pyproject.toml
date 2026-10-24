@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kimi-hpu"
+version = "0.1.0"
+description = "Kimi-K2.7-Code on Intel Gaudi 2: MXFP4 MoE decode kernel hook for vllm-gaudi"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["kimi_hpu"]
