@@ -1,0 +1,213 @@
+# vLLM on Gaudi across two nodes: one LeaderWorkerSet group = one model replica.
+#
+# Pipeline parallel 2 x tensor parallel 8: each pod takes a whole 8-card node and runs one
+# pipeline stage. The leader (node rank 0) runs the API server and stage 0; the worker
+# (node rank 1) is headless. Only hidden states cross between the stages, over the pod network
+# (gloo), so the nodes need no RoCE scale-out links. Needs the pipeline-parallel fix
+# (fixes/pipeline-parallel) and the LeaderWorkerSet controller
+# (https://github.com/kubernetes-sigs/lws).
+#
+# Not applied as written: the launch commands below are the ones verified with two plain pods
+# (see fixes/pipeline-parallel/README.md); the LeaderWorkerSet wrapper around them is untested.
+#
+# Replace before applying:
+#   <registry>/<image>:<tag>   a vllm-gaudi v0.30.0 image with this repository copied to
+#                              /opt/gaudi-cookbook (as the ports' Dockerfiles do); for v0.26.0
+#                              change --profile below
+#   <model>                    the model directory or Hugging Face id, as in your recipe
+#   llm                        the namespace for model servers
+#   RECIPE_KEY                 see the comment in vllm-deployment.yaml
+#
+# Why each setting is there: docs/kubernetes/multi-node.md and docs/kubernetes/pod-spec.md.
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: vllm-pp2-example
+  namespace: llm
+  labels:
+    app.kubernetes.io/name: vllm-pp2-example
+    app.kubernetes.io/component: model-server
+spec:
+  replicas: 1
+  # A replica is the pair. If either pod fails, both are recreated: a stage cannot rejoin a
+  # running pipeline, and the survivor would hang on its next transfer.
+  startupPolicy: LeaderCreated
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      maxUnavailable: 1
+      maxSurge: 0
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/name: vllm-pp2-example
+          app.kubernetes.io/component: model-server
+          role: leader
+      spec:
+        runtimeClassName: habana
+        hostIPC: true
+        shareProcessNamespace: true
+        terminationGracePeriodSeconds: 170
+        enableServiceLinks: false
+        tolerations:
+          - key: habana
+            operator: Exists
+            effect: NoSchedule
+        containers:
+          - name: vllm
+            image: <registry>/<image>:<tag>
+            imagePullPolicy: IfNotPresent
+            command: ["/bin/bash", "-c"]
+            args:
+              - |
+                set -euo pipefail
+                python3 /opt/gaudi-cookbook/fixes/apply_all.py --profile v0.30.0 pipeline-parallel
+                exec vllm serve "${MODEL}" \
+                  --served-model-name "${SERVED_NAME}" \
+                  --host 0.0.0.0 --port 8000 \
+                  --tensor-parallel-size 8 --pipeline-parallel-size 2 \
+                  --no-async-scheduling \
+                  --distributed-executor-backend mp \
+                  --nnodes 2 --node-rank 0 \
+                  --master-addr "${LWS_LEADER_ADDRESS}" --master-port 29555 \
+                  --shutdown-timeout 120
+            env: &stage-env
+              - name: MODEL
+                value: <model>
+              - name: SERVED_NAME
+                value: <served-name>
+              - name: POD_IP
+                valueFrom:
+                  fieldRef:
+                    fieldPath: status.podIP
+              # Each stage announces the address it is reached at.
+              - name: VLLM_HOST_IP
+                value: $(POD_IP)
+              # The stage-to-stage link and the start-up checks use gloo on this interface.
+              - name: GLOO_SOCKET_IFNAME
+                value: eth0
+              - name: HCCL_SOCKET_IFNAME
+                value: eth0
+              - name: HF_HOME
+                value: /models
+              - name: HF_HUB_OFFLINE
+                value: "1"
+              - name: PYTHONUNBUFFERED
+                value: "1"
+              - name: PT_HPU_LAZY_MODE
+                value: "1"
+              - name: PT_HPU_ENABLE_LAZY_COLLECTIVES
+                value: "true"
+              - name: RECIPE_KEY
+                value: <model-key>-<tag>-pp2-tp8
+              - name: PT_HPU_RECIPE_CACHE_CONFIG
+                value: /recipe-cache/$(RECIPE_KEY),False,32768
+              # A step waits on the other node: give first-time compiles on either stage time.
+              - name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+                value: "3600"
+              - name: VLLM_ENGINE_ITERATION_TIMEOUT_S
+                value: "3600"
+            resources: &stage-resources
+              requests:
+                habana.ai/gaudi: "8"
+                hugepages-2Mi: 32Gi
+                cpu: "64"
+                memory: 400Gi
+              limits:
+                habana.ai/gaudi: "8"
+                hugepages-2Mi: 32Gi
+                memory: 480Gi
+            ports:
+              - name: http
+                containerPort: 8000
+            startupProbe:
+              httpGet:
+                path: /health
+                port: http
+              periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 240
+            readinessProbe:
+              httpGet:
+                path: /health
+                port: http
+              periodSeconds: 10
+              timeoutSeconds: 10
+              failureThreshold: 3
+            volumeMounts: &stage-mounts
+              - name: models
+                mountPath: /models
+                readOnly: true
+              - name: recipe-cache
+                mountPath: /recipe-cache
+              - name: shm
+                mountPath: /dev/shm
+        volumes: &stage-volumes
+          - name: models
+            persistentVolumeClaim:
+              claimName: hf-models
+              readOnly: true
+          - name: recipe-cache
+            hostPath:
+              path: /var/cache/habana-recipes
+              type: DirectoryOrCreate
+          - name: shm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 16Gi
+    workerTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/name: vllm-pp2-example
+          app.kubernetes.io/component: model-server
+          role: worker
+      spec:
+        runtimeClassName: habana
+        hostIPC: true
+        shareProcessNamespace: true
+        terminationGracePeriodSeconds: 170
+        enableServiceLinks: false
+        tolerations:
+          - key: habana
+            operator: Exists
+            effect: NoSchedule
+        containers:
+          - name: vllm
+            image: <registry>/<image>:<tag>
+            imagePullPolicy: IfNotPresent
+            command: ["/bin/bash", "-c"]
+            args:
+              - |
+                set -euo pipefail
+                python3 /opt/gaudi-cookbook/fixes/apply_all.py --profile v0.30.0 pipeline-parallel
+                # Same flags as the leader except the node rank and --headless (no API server).
+                exec vllm serve "${MODEL}" \
+                  --tensor-parallel-size 8 --pipeline-parallel-size 2 \
+                  --no-async-scheduling \
+                  --distributed-executor-backend mp \
+                  --nnodes 2 --node-rank 1 \
+                  --master-addr "${LWS_LEADER_ADDRESS}" --master-port 29555 \
+                  --headless
+            env: *stage-env
+            resources: *stage-resources
+            # No probes: the worker serves no HTTP. The group restart policy covers it.
+            volumeMounts: *stage-mounts
+        volumes: *stage-volumes
+---
+# Route to the leader only: the worker has no API server.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-pp2-example
+  namespace: llm
+spec:
+  selector:
+    app.kubernetes.io/name: vllm-pp2-example
+    role: leader
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
