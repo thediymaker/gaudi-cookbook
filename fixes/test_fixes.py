@@ -98,3 +98,45 @@ def test_profile_end_to_end(tmp_path):
     assert patched
     for path in patched:
         compile(path.read_text(), str(path), "exec")
+
+
+def _recipe_fix_sets(profile):
+    """(recipe, fix ids) for every recipe on this profile's release, parsed without a YAML library."""
+    release = {"v0.26.0": "v0.26.0", "v0.30.0": "releases/v0.30.0"}[profile]
+    out = []
+    for path in sorted((HERE.parent / "recipes").glob("*/*/recipe.yaml")):
+        text = path.read_text()
+        if f'vllm_gaudi: "{release}"' not in text:
+            continue
+        ids, inside = [], False
+        for line in text.splitlines():
+            if line.strip() == "required_fixes:":
+                inside = True
+                continue
+            if inside:
+                if not line.startswith("    - "):
+                    break
+                ids.append(line[6:].split("#", 1)[0].strip())
+        out.append((path.parent.relative_to(HERE.parent / "recipes").as_posix(), ids))
+    return out
+
+
+def test_recipe_fix_sets_end_to_end(tmp_path):
+    """Every recipe's launch fix set (its profile plus its opt-in fixes) applies to the release twice."""
+    root, profile = os.environ.get("GAUDI_FIXES_ROOT"), os.environ.get("GAUDI_FIXES_PROFILE")
+    if not root or not profile:
+        pytest.skip("set GAUDI_FIXES_ROOT and GAUDI_FIXES_PROFILE to run the recipes' fix sets")
+    sets = _recipe_fix_sets(profile)
+    assert sets, f"no recipe uses {profile}"
+    for recipe, ids in sets:
+        unknown = set(ids) - set(apply_all.ORDER) - set(apply_all.STANDALONE)
+        assert not unknown, f"{recipe}: unknown fix ids {sorted(unknown)}"
+        opt_in = [i for i in ids if i in apply_all.ORDER and i not in apply_all.PROFILES[profile]]
+        site = tmp_path / recipe.replace("/", "_")
+        for pkg in ("vllm", "vllm_gaudi"):
+            shutil.copytree(Path(root) / pkg, site / pkg, ignore=shutil.ignore_patterns("__pycache__"))
+        cmd = [sys.executable, str(HERE / "apply_all.py"), "--profile", profile, "--root", str(site), *opt_in]
+        for _ in range(2):
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            assert proc.returncode == 0, f"{recipe}: {proc.stdout}{proc.stderr}"
+        shutil.rmtree(site)

@@ -51,6 +51,7 @@ startup step run on its own (`apply.py MODEL OUT_DIR`, then `--tokenizer OUT_DIR
 | [async-discard-counter](async-discard-counter.md) | async scheduling with preemption | v0.26.0 | v0.26.0 | [vllm-gaudi#1794](https://github.com/vllm-project/vllm-gaudi/pull/1794), [#1803](https://github.com/vllm-project/vllm-gaudi/pull/1803) | merged (in v0.30.0) |
 | [resumed-prefill-logits](resumed-prefill-logits.md) | prefix caching with preemption | v0.26.0, v0.30.0 | both | [vllm-gaudi#1849](https://github.com/vllm-project/vllm-gaudi/pull/1849) | merged (main, after v0.30.0) |
 | [hybrid-decode-pad](hybrid-decode-pad.md) | hybrid GDN / Mamba / linear-attention models | v0.26.0, v0.30.0 | both | [vllm-gaudi#1912](https://github.com/vllm-project/vllm-gaudi/pull/1912) | open |
+| [gdn-prefix-cache](gdn-prefix-cache.md) | prefix caching on GDN hybrids (Qwen3.5 / Qwen3.6 class) | v0.26.0, v0.30.0 | opt-in | none (upstream has the non-compact path: [vllm-gaudi#1827](https://github.com/vllm-project/vllm-gaudi/pull/1827), [#1842](https://github.com/vllm-project/vllm-gaudi/pull/1842)) | not filed (design discussion) |
 | [penalty-shapes](penalty-shapes.md) | requests with penalties (performance) | v0.26.0, v0.30.0 | opt-in | none | not filed |
 | [logits-empty-guard](logits-empty-guard.md) | tensor parallel with sync scheduling | v0.26.0, v0.30.0 | both | none | not filed |
 | [gather-logprobs-int32](gather-logprobs-int32.md) | requests with `logprobs` / `top_logprobs` | v0.26.0, v0.30.0 | both | [vllm-gaudi#1823](https://github.com/vllm-project/vllm-gaudi/pull/1823) | open |
@@ -65,15 +66,21 @@ startup step run on its own (`apply.py MODEL OUT_DIR`, then `--tokenizer OUT_DIR
 | [fp8-moe-gather](fp8-moe-gather.md) | FP8 MoE decode at low batch (performance) | v0.26.0 | opt-in | [vllm-gaudi#1731](https://github.com/vllm-project/vllm-gaudi/pull/1731) | merged (in v0.30.0) |
 | [moe-router-weight-on-input](moe-router-weight-on-input.md) | Llama 4 MoE | v0.26.0, v0.30.0 | opt-in | none | not filed |
 | [mm-merge-idxcopy](mm-merge-idxcopy.md) | vision-language models | v0.26.0, v0.30.0 | both | none | not filed |
+| [mm-encoder-budget](mm-encoder-budget.md) | vision-language models with many large images (switch `VLLM_HPU_MM_ENCODER_MAX_PATCHES`) | v0.26.0, v0.30.0 | opt-in | none | not filed |
+| [mm-pooling-inputs](mm-pooling-inputs.md) | multimodal embedding models (`--runner pooling`) | v0.26.0, v0.30.0 | opt-in | none | not filed |
+| [glm4-moe-3d-input](glm4-moe-3d-input.md) | GLM-4.5 family MoE (`glm4_moe.py`), GLM-4.5V | v0.26.0, v0.30.0 | opt-in | none | not filed |
 | [rope-cpu-cache](rope-cpu-cache.md) | RoPE models at long context | v0.26.0 | v0.26.0 | [vllm-gaudi#1816](https://github.com/vllm-project/vllm-gaudi/pull/1816) | merged (in v0.30.0) |
 | [rank-exception-fatal](rank-exception-fatal.md) | tensor parallel with the multiprocessing executor | v0.26.0, v0.30.0 | both | none (vLLM) | not filed |
 | [vllm-long-prefill-share](vllm-long-prefill-share.md) | very long prompts next to other streams (scheduler feature) | v0.26.0, v0.30.0 | opt-in | none | not filed |
+| [pipeline-parallel](pipeline-parallel.md) | `--pipeline-parallel-size` > 1, stages on different nodes over the host network (feature) | v0.26.0, v0.30.0 | opt-in | none (vllm-gaudi has no pipeline path) | not filed |
 | [structured-outputs-auto-whitespace](structured-outputs-auto-whitespace.md) | `disable_any_whitespace` with the `auto` backend | v0.26.0, v0.30.0 | both | [vllm#63430](https://github.com/vllm-project/vllm/pull/63430) | open |
 | [xgrammar-generation-eos-stop](xgrammar-generation-eos-stop.md) | grammars on models whose turn ends with a non-tokenizer EOS | v0.26.0 | v0.26.0 | [vllm#49227](https://github.com/vllm-project/vllm/pull/49227) | merged (in the vLLM commit v0.30.0 tracks) |
 | [glm47-streaming-text-markers](glm47-streaming-text-markers.md) | GLM-4.7 / GLM-5 `glm47` tool parser, streaming | v0.26.0, v0.30.0 | opt-in | none | not filed |
+| [glm45v-box-tokens](glm45v-box-tokens.md) | GLM-4.5V with the `glm45` reasoning parser | v0.26.0, v0.30.0 | opt-in | none | not filed |
 | [gptoss-harmony-parse-recovery](gptoss-harmony-parse-recovery.md) | gpt-oss harmony parsing | v0.26.0, v0.30.0 | opt-in | [vllm#59387](https://github.com/vllm-project/vllm/pull/59387) | open (partial fix on vLLM main) |
 | [gemma4-required-tool-grammar](gemma4-required-tool-grammar.md) | Gemma 4 forced tool choice | v0.26.0, v0.30.0 | opt-in | issue [vllm#53363](https://github.com/vllm-project/vllm/issues/53363) | not filed |
 | [gemma4-buffered-tool-args](gemma4-buffered-tool-args.md) | Gemma 4 tool-call arguments | v0.26.0, v0.30.0 | opt-in | none | not filed |
+| [gemma4-fast-prefill](gemma4-fast-prefill.md) | Gemma 4 E2B / E4B prefill with `--kv-sharing-fast-prefill` (performance) | v0.30.0 | opt-in | [vllm#60445](https://github.com/vllm-project/vllm/pull/60445) (GPU path) | not filed |
 | [qwen3-strict-think-end](qwen3-strict-think-end.md) | Qwen3 reasoning parser with tools | v0.26.0, v0.30.0 | opt-in | [vllm#59821](https://github.com/vllm-project/vllm/pull/59821), issue [vllm#58147](https://github.com/vllm-project/vllm/issues/58147) | open |
 | [llama4-tools-lenient](llama4-tools-lenient.md) | Llama 4 tool calling (parser plugin) | v0.26.0, v0.30.0 | opt-in | none | not filed |
 | [gemma4-bos-tokenizer](gemma4-bos-tokenizer.md) | Gemma 4 instruct raw prompts (startup step) | v0.26.0, v0.30.0 | standalone | none (checkpoint tokenizer files) | not-upstreamable |
@@ -89,7 +96,8 @@ the order on its command line. If you run the scripts yourself, keep that order.
 
 | File | Fixes, in order |
 | --- | --- |
-| `vllm_gaudi/v1/worker/hpu_model_runner.py` | prompt-order, structured-output-rows, so-row-owners, async-inputs, hybrid-decode-pad, gather-logprobs-int32, prompt-logprobs, seeded-sampling, swa-decode-window |
+| `vllm_gaudi/v1/worker/hpu_model_runner.py` | prompt-order, structured-output-rows, so-row-owners, async-inputs, hybrid-decode-pad, gdn-prefix-cache, gather-logprobs-int32, prompt-logprobs, seeded-sampling, swa-decode-window, pipeline-parallel |
+| `vllm/v1/core/sched/scheduler.py` | gdn-prefix-cache, vllm-long-prefill-share, pipeline-parallel |
 | `vllm_gaudi/v1/worker/hpu_input_batch.py` | sampling-rows-refresh, bad-words-index, logitsprocs-rows, resumed-prefill-logits, penalty-shapes, topk-subset-sampler |
 | `vllm/v1/sample/ops/topk_topp_sampler.py` | seeded-sampling, topk-subset-sampler |
 | `vllm_gaudi/extension/ops.py` | sink-once, moe-explicit-overload |
@@ -97,16 +105,14 @@ the order on its command line. If you run the scripts yourself, keep that order.
 
 so-row-owners rewrites the call that structured-output-rows edits, so it must come after it.
 prompt-order adds row swaps, so apply sampling-rows-refresh with it.
+gdn-prefix-cache checks that hybrid-decode-pad ran before it.
 
 ## Not included
 
-- **GDN prefix caching (in-page checkpoints).** A large change for Qwen3.5-class hybrids that also
-  touches the scheduler, the KV cache layout and the async path, has release-specific details and
-  needs validation per model on hardware. Upstream now has a working path with compact GDN state
-  off. It is a design proposal, not a runtime fix.
 - **GDN state masking by multiplication.** The GDN layers clear a new request's state with
   `state * mask`, so a slot that ever holds NaN stays poisoned (`0 * NaN = NaN`). vllm-gaudi main
   uses `torch.where` at both sites; a backport is small but has not been validated on the releases.
+  With prefix caching on, [gdn-prefix-cache](gdn-prefix-cache.md) zeroes new slots instead.
 - **Interleaved sliding window gated on one model type.** On both releases, prefill with the full
   block list still applies the window bound in the attention bias, so the gate costs compute, not
   correctness. Widening it changes shapes and performance without a validated benefit.

@@ -28,7 +28,9 @@ HERE = Path(__file__).resolve().parent
 
 # Application order. Fixes that edit the same file must keep their relative order:
 #   hpu_model_runner.py: prompt-order, structured-output-rows, so-row-owners, async-inputs,
-#     hybrid-decode-pad, gather-logprobs-int32, prompt-logprobs, seeded-sampling, swa-decode-window
+#     hybrid-decode-pad, gdn-prefix-cache, gather-logprobs-int32, prompt-logprobs, seeded-sampling,
+#     swa-decode-window, pipeline-parallel (appends; it mirrors prompt-order on non-last stages)
+#   vllm scheduler.py: gdn-prefix-cache, vllm-long-prefill-share, pipeline-parallel
 #   hpu_input_batch.py: sampling-rows-refresh, bad-words-index, logitsprocs-rows,
 #     resumed-prefill-logits, penalty-shapes, topk-subset-sampler
 #   vllm topk_topp_sampler.py: seeded-sampling, topk-subset-sampler
@@ -36,6 +38,7 @@ HERE = Path(__file__).resolve().parent
 #   vllm_gaudi ops/hpu_fused_moe.py, hpu_compressed_tensors.py, hpu_fp8.py: laguna-moe-sigmoid-routing,
 #     fp8-moe-gather, moe-router-weight-on-input
 # so-row-owners also rewrites the call structured-output-rows edits, so it must come after it.
+# gdn-prefix-cache needs hybrid-decode-pad in the runner first (it checks for it).
 ORDER = (
     "prompt-order",
     "sampling-rows-refresh",
@@ -47,6 +50,7 @@ ORDER = (
     "async-discard-counter",
     "resumed-prefill-logits",
     "hybrid-decode-pad",
+    "gdn-prefix-cache",
     "penalty-shapes",
     "logits-empty-guard",
     "gather-logprobs-int32",
@@ -61,15 +65,21 @@ ORDER = (
     "fp8-moe-gather",
     "moe-router-weight-on-input",
     "mm-merge-idxcopy",
+    "mm-encoder-budget",
+    "mm-pooling-inputs",
+    "glm4-moe-3d-input",
     "rope-cpu-cache",
     "rank-exception-fatal",
     "vllm-long-prefill-share",
+    "pipeline-parallel",
     "structured-outputs-auto-whitespace",
     "xgrammar-generation-eos-stop",
     "glm47-streaming-text-markers",
+    "glm45v-box-tokens",
     "gptoss-harmony-parse-recovery",
     "gemma4-required-tool-grammar",
     "gemma4-buffered-tool-args",
+    "gemma4-fast-prefill",
     "qwen3-strict-think-end",
     "llama4-tools-lenient",
 )

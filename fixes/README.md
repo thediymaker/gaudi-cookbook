@@ -78,6 +78,7 @@ gemma4-bos-tokenizer is a startup step that takes `MODEL OUT_DIR` and is run on 
 | [async-discard-counter](async-discard-counter/README.md) | a request with stale async output stops the engine (`AttributeError`) | v0.26.0 |
 | [resumed-prefill-logits](resumed-prefill-logits/README.md) | a request resumed after preemption repeats its earlier output | v0.26.0, v0.30.0 |
 | [hybrid-decode-pad](hybrid-decode-pad/README.md) | decode padding writes into a live KV block on hybrid models | v0.26.0, v0.30.0 |
+| [gdn-prefix-cache](gdn-prefix-cache/README.md) | prefix caching on Gated DeltaNet hybrids reuses the wrong GDN state, or cannot be turned on (needs hybrid-decode-pad) | opt-in |
 | [penalty-shapes](penalty-shapes/README.md) | penalties recompile the sampler graph on nearly every step (performance) | opt-in |
 | [logits-empty-guard](logits-empty-guard/README.md) | tensor-parallel logits gather over an empty tensor stops the engine (sync scheduling) | v0.26.0, v0.30.0 |
 | [gather-logprobs-int32](gather-logprobs-int32/README.md) | `top_logprobs` token ids read back corrupted | v0.26.0, v0.30.0 |
@@ -92,15 +93,21 @@ gemma4-bos-tokenizer is a startup step that takes `MODEL OUT_DIR` and is run on 
 | [fp8-moe-gather](fp8-moe-gather/README.md) | FP8 MoE decode reads every expert's weights at low token counts (performance) | opt-in |
 | [moe-router-weight-on-input](moe-router-weight-on-input/README.md) | Llama 4 MoE applies the router weight to the expert output, not the input | opt-in |
 | [mm-merge-idxcopy](mm-merge-idxcopy/README.md) | multimodal embedding merge fails to compile under concurrent images | v0.26.0, v0.30.0 |
+| [mm-encoder-budget](mm-encoder-budget/README.md) | one request with many large images exhausts device memory in the vision encoder | opt-in |
+| [mm-pooling-inputs](mm-pooling-inputs/README.md) | multimodal embedding models crash, or embed images as text | opt-in |
+| [glm4-moe-3d-input](glm4-moe-3d-input/README.md) | GLM-4.5 family MoE stops the engine on the first token | opt-in |
 | [rope-cpu-cache](rope-cpu-cache/README.md) | RoPE tables built on the device are wrong at large positions | v0.26.0 |
 | [rank-exception-fatal](rank-exception-fatal/README.md) | a failed tensor-parallel worker leaves the engine serving garbage | v0.26.0, v0.30.0 |
 | [vllm-long-prefill-share](vllm-long-prefill-share/README.md) | a very long prefill stalls every other stream's decode (scheduler feature) | opt-in |
+| [pipeline-parallel](pipeline-parallel/README.md) | `--pipeline-parallel-size` above 1 does not run on the HPU runner (stages on separate nodes) | opt-in |
 | [structured-outputs-auto-whitespace](structured-outputs-auto-whitespace/README.md) | `disable_any_whitespace` rejected with the `auto` backend | v0.26.0, v0.30.0 |
 | [xgrammar-generation-eos-stop](xgrammar-generation-eos-stop/README.md) | grammar masks the model's real end-of-turn token | v0.26.0 |
 | [glm47-streaming-text-markers](glm47-streaming-text-markers/README.md) | `glm47` streaming misses tool calls written as plain text | opt-in |
+| [glm45v-box-tokens](glm45v-box-tokens/README.md) | GLM-4.5V answer box markers reach the client in `content` | opt-in |
 | [gptoss-harmony-parse-recovery](gptoss-harmony-parse-recovery/README.md) | a malformed gpt-oss message header fails the request with HTTP 500 | opt-in |
 | [gemma4-required-tool-grammar](gemma4-required-tool-grammar/README.md) | Gemma 4 forced tool choice returns prose with no tool call | opt-in |
 | [gemma4-buffered-tool-args](gemma4-buffered-tool-args/README.md) | Gemma 4 tool arguments reach the client with literal escapes | opt-in |
+| [gemma4-fast-prefill](gemma4-fast-prefill/README.md) | `--kv-sharing-fast-prefill` does not work on HPU for Gemma 4 E2B and E4B (performance) | opt-in |
 | [qwen3-strict-think-end](qwen3-strict-think-end/README.md) | a `<tool_call>` quoted inside Qwen3 reasoning becomes a real call | opt-in |
 | [llama4-tools-lenient](llama4-tools-lenient/README.md) | Llama 4 tool calls in Meta's formats are not parsed (parser plugin, writes nothing) | opt-in |
 | [gemma4-bos-tokenizer](gemma4-bos-tokenizer/README.md) | Gemma 4 instruct drops `<bos>` on raw prompts (startup step, run separately) | standalone |
@@ -113,27 +120,28 @@ order on its command line. If you run the scripts yourself, keep that order. The
 
 | File | Fixes, in order |
 | --- | --- |
-| `vllm_gaudi/v1/worker/hpu_model_runner.py` | prompt-order, structured-output-rows, so-row-owners, async-inputs, hybrid-decode-pad, gather-logprobs-int32, prompt-logprobs, seeded-sampling, swa-decode-window |
+| `vllm_gaudi/v1/worker/hpu_model_runner.py` | prompt-order, structured-output-rows, so-row-owners, async-inputs, hybrid-decode-pad, gdn-prefix-cache, gather-logprobs-int32, prompt-logprobs, seeded-sampling, swa-decode-window, mm-encoder-budget, mm-pooling-inputs, pipeline-parallel |
 | `vllm_gaudi/v1/worker/hpu_input_batch.py` | sampling-rows-refresh, bad-words-index, logitsprocs-rows, resumed-prefill-logits, penalty-shapes, topk-subset-sampler |
+| `vllm/v1/core/sched/scheduler.py` | gdn-prefix-cache, vllm-long-prefill-share, pipeline-parallel |
 | `vllm/v1/sample/ops/topk_topp_sampler.py` | seeded-sampling, topk-subset-sampler |
 | `vllm_gaudi/extension/ops.py` | sink-once, moe-explicit-overload |
 | `vllm_gaudi/ops/hpu_fused_moe.py`, `hpu_compressed_tensors.py`, `hpu_fp8.py` | laguna-moe-sigmoid-routing, fp8-moe-gather, moe-router-weight-on-input |
 
 so-row-owners rewrites the call that structured-output-rows edits, so it must come after it.
-prompt-order adds row swaps, so apply sampling-rows-refresh with it.
+prompt-order adds row swaps, so apply sampling-rows-refresh with it. gdn-prefix-cache checks that
+hybrid-decode-pad is already in the runner.
 
 ## Not included
 
-- **GDN prefix caching (in-page checkpoints).** A large change for Qwen3.5-class hybrids that also
-  touches the scheduler, the KV cache layout and the async path, has release-specific details and
-  needs validation per model on hardware. Upstream now has a working path with compact GDN state
-  off. It is a design proposal, not a runtime fix.
 - **GDN state masking by multiplication.** The GDN layers clear a new request's state with
   `state * mask`, so a slot that ever holds NaN stays poisoned (`0 * NaN = NaN`). vllm-gaudi main
   uses `torch.where` at both sites; a backport is small but has not been validated on the releases.
-- **interleaved-swa-model-type.** On both releases, prefill with the full block list still applies
-  the sliding-window bound in the attention bias, so the model-type gate costs compute, not
-  correctness. Widening it changes shapes and performance without a validated benefit.
+- **interleaved-swa-model-type.** vllm-gaudi gives sliding-window layers their own window block list
+  in chunked prefill only for `gemma4`. For the models tested here, prefill with the full block list
+  still applies the window bound in the attention bias, so the gate costs compute, not correctness.
+  Muse Glimmer on `v0.30.0` is the exception: its sliding layers returned garbage at 120K tokens
+  and the `muse-glimmer-30b` port carries its own window gate. A general fix keyed on the config
+  instead of `model_type` has not been validated across models.
 - **Speculative decoding fixes** (rejection sampling with temperature, verify-row layout,
   structured outputs under speculation). They need rework onto the current runner and HPU tests.
 - Model ports, custom kernels and their glue, diagnostics, and fixes already contained in both
