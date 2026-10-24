@@ -27,9 +27,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements-docs.txt
-      - run: mkdocs build --strict
+      # The recipe catalog is the site root; the MkDocs site is published under docs/.
+      - run: mkdocs build --strict -d _site/docs
+      - run: python3 catalog/build.py --check --out _site
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v4

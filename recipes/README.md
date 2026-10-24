@@ -46,6 +46,7 @@ gaudi:
   max_model_len: 131072
   serve_args: []                # the complete verified command line after `vllm serve <model_id>`
   env: {}                       # only the variables the recipe needs; a comment says why
+  setup: []                     # optional: shell lines run after env and before the fixes
   buckets: null                 # bucket file name next to recipe.yaml, or null when env ranges are used
   required_fixes: []            # fix ids from fixes/ this configuration depends on, in the pack's order
   verified: []                  # concrete checks that passed on this configuration
@@ -54,6 +55,8 @@ gaudi:
 
 - `serve_args` is the whole command that was verified, including the parser flags that also appear
   under `features`. `--host`, `--port`, `--served-model-name` and shutdown settings are left out.
+- `setup` is optional: shell lines the launch needs before the fixes run, such as creating a
+  cache directory. Most recipes have none.
 - `env` holds strings only. Bucketing on these recipes is set through the `VLLM_*_BUCKET_*`
   ranges in `env`, so `buckets` is `null`. A recipe that ships a bucket file names it here and
   sets the variable that loads it in `env`.

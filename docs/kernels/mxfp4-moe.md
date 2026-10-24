@@ -1,5 +1,10 @@
 # MXFP4 MoE decode kernels
 
+**Up to 3x faster MXFP4 MoE decode on Gaudi 2.** The stock MXFP4 path caps large MoE models at about 20 tokens/s
+per stream. These kernels took GLM-5.3 from 23.3 to 59.1 tokens/s per stream and gpt-oss-120b up to 3.2x per stream, with
+lower numerical error than the stock op, and also run DeepSeek-V4.1-Flash, GLM-5.2 and Muse Spark Open (see
+[Beyond gpt-oss](#beyond-gpt-oss) for how each number was measured).
+
 Two Gaudi 2 TPC kernels run the routed experts of an MXFP4 mixture-of-experts layer directly from the packed
 weights, with no bf16 unpack round trip. For decode calls of up to 32 tokens they replace the stock
 `torch.ops.hpu.mixture_of_experts.bias_mxfp4_fused_weights` op that vllm-gaudi uses for gpt-oss. Prefill keeps the
@@ -25,7 +30,7 @@ Sources, build script, vLLM hook, tests and benchmark:
 | `openai/gpt-oss-120b` | Covered and measured: TP1, TP2 + EP and TP4 + EP |
 | `openai/gpt-oss-20b` | Expected to work, not measured. Same K, I, top-k and layout; 32 experts |
 | gpt-oss with tensor-parallel experts (TP > 1 without `--enable-expert-parallel`) | Not tested. Per-rank shapes the kernels do not support (I not a multiple of 32) fall back to the stock op |
-| Other MXFP4 MoE models | Not covered by this package; see [Other MXFP4 models](#other-mxfp4-models) |
+| Other MXFP4 MoE models (GLM-5.x, Muse Spark Open, DeepSeek-V4.1-Flash, MiMo-V2.6-Pro) | Measured with model-specific integrations that are not in this package; see [Beyond gpt-oss](#beyond-gpt-oss) |
 
 ## The bottleneck
 
@@ -338,17 +343,47 @@ The remaining engine flags, and the fixes gpt-oss needs on `v0.26.0`, are in the
 
 **Rollback:** set `MXFP4_TPC_MOE=0`. The hooks are then inert and the engine serves exactly as stock.
 
-## Other MXFP4 models
+## Beyond gpt-oss
 
-The kernel headers also build, through compile-time switches:
+The same kernel core runs other MXFP4 MoE models. The headers build two more variants through compile-time switches:
 
 - a SiLU variant without bias for `[gate; up]` row layouts;
 - a per-route w2 output for models that apply a per-route operation before the token sum.
 
-With model-specific integrations these were used on other MXFP4 MoE models. On an MXFP4 repack of GLM-5.3 (8
-cards, TP8 + EP8, one MTP draft token, `--max-num-seqs 4`), single-stream decode went from 23.3 to 59.1 tok/s at a
-2K prompt, and the 4-stream aggregate from 53.5 to 120.3 tok/s. Those integrations depend on model code outside
-vllm-gaudi and are not part of this package.
+With model-specific integrations, the kernels serve five more models on one 8-card Gaudi 2 node. How each number
+was measured is part of the result, so the table says it:
+
+| Model | Setup | Stock op | With the kernel | Gain | How it was measured |
+| --- | --- | --- | --- | --- | --- |
+| GLM-5.3 (MXFP4 checkpoint) | TP 8 + EP 8, one MTP draft token, 2K prompt, 1 stream | 23.3 tok/s | 59.1 tok/s | 2.5x | Three same-node A/Bs chained: first kernel vs stock 1.96x, then two kernel revisions 1.13x and 1.14x |
+| DeepSeek-V4.1-Flash (MXFP4 checkpoint) | TP 8, 1 stream | 16.7 tok/s | 23.3 tok/s | 1.4x | Same-pod A/B, kernel off and on |
+| GLM-5.2 (MXFP4 checkpoint) | TP 8 + EP 8, one MTP draft token, 1 stream | 23.1 tok/s | 47.8 tok/s | 2.1x | Same benchmark on a stock pod and on kernel pods; not a same-node A/B |
+| Muse Spark Open | 8 cards, 1 stream | 22.3 tok/s | 33.5 tok/s | 1.5x | Same deployment, manifest and clients; only the image and the kernel flag differ (node not recorded as the same) |
+| Muse Spark Open | 8 cards, 4 streams, per stream | 10.9 tok/s | 23.3 tok/s | 2.1x | Same |
+| Muse Spark Open | one MoE call at 1 token | 375 µs | 66 µs | 5.7x | Per-call timing on one card, as in the gpt-oss table above |
+| MiMo-V2.6-Pro (MXFP4 checkpoint) | 8 cards, 1 stream | 18.1 tok/s | 39.7 tok/s | 2.2x | Same node and configuration: stock pod, then kernel pod |
+
+- **GLM-5.3** keeps the same tool-call, needle and GSM8K results as the stock op. Greedy outputs agree on 99.1% of
+  top-1 tokens before the first near-tie split, and the kernel is the closer of the two to an fp32 reference. With
+  decode-step and expert-placement work on top of the kernel, single-stream decode reaches 69.6 tok/s.
+- **DeepSeek-V4.1-Flash** gains less because its MoE is about a third of the decode step; the rest is attention
+  and launch overhead.
+- **Muse Spark Open** is a full port to Gaudi 2: latent MoE with a norm on every expert output, and sliding plus
+  global attention. It matches the reference model's perplexity within 0.4% (top-1 agreement 97.6%) and serves on
+  one 8-card node.
+
+These integrations depend on model code outside vllm-gaudi and are not part of this package yet. The ports
+themselves are described under [Ports](../ports/index.md).
+
+### Prefill: unpack once, then the stock op
+
+Decode is where the kernels pay off, but on large MoE models the routed experts are also most of the prefill. On
+GLM-5.3 (EP 8) they take 52% to 65% of the time to first token. A third kernel, `mxk_deq`, unpacks the routed
+experts' MXFP4 weights straight to bf16 in one pass, and the stock bf16 MoE op then runs the GEMMs. The output is
+bit-identical to the stock path for prompts of 300 to 33K tokens, and time to first token drops by 22% to 26%
+(2K prompt 0.64 to 0.49 s, 8K prompt 2.01 to 1.49 s). Measured as: a baseline pod and a pod with the prefill
+path on two nodes with the same configuration; the decode-side differences between them do not touch prefill. Under an EP 4 x TP 2 layout the gain is about
+half and the output is no longer bit-identical. This path is also not in the package yet.
 
 Public MXFP4 checkpoints in other formats are not covered either. Checkpoints with `quant_method: quark` do not
 load as packed MXFP4 on stock vllm-gaudi `v0.26.0`, because `quark` is not in the HPU platform's supported

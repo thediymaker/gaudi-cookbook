@@ -4,3 +4,6 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"catalog/build.py" = ["E501"]  # HTML templates read better unwrapped

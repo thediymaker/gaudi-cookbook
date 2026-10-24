@@ -34,6 +34,7 @@ Everything here was run on these components. Treat anything outside them as unte
 | Know which fixes a release needs | `python3 fixes/apply_all.py --list` and `docs/fixes/index.md` | The profile for the release covers the generic fixes. Opt-in fixes are named on the command line. |
 | Build a serving image | `docs/getting-started.md` | Follow the build steps. They keep the Habana PyTorch fork. |
 | Speed up gpt-oss decode | `kernels/mxfp4-moe/README.md` and `docs/kernels/mxfp4-moe.md` | Opt-in and gpt-oss MXFP4 only. See the rules below. |
+| Port a model that has no vllm-gaudi path | `docs/ports/*.md`, then `docs/results/platform-findings.md` | The ports describe the design and the gates; the platform findings list Gaudi behaviours that break new models (FusedSDPA sinks and windows, fp32 trig, lazy-mode casts). The port code is not published, so do not claim it is. |
 | Run on Kubernetes | `docs/kubernetes/*.md`, `kubernetes/manifests/`, `kubernetes/tools/` | Start with `docs/kubernetes/pod-spec.md`. Replace the placeholders `<registry>/<image>:<tag>`, `<storage-class>` and namespace `llm`. |
 | Debug "Device acquire failed", missing cards or stalled engines | `docs/kubernetes/health-and-failure.md` | The matching tool is in `kubernetes/tools/`. Each prints its usage with `-h`. |
 

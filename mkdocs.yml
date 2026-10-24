@@ -1,5 +1,6 @@
 site_name: Gaudi Cookbook
 site_description: Recipes, fixes, kernels and fleet practices for serving LLMs with vLLM on Intel Gaudi.
+site_url: https://thediymaker.github.io/gaudi-cookbook/docs/
 repo_url: https://github.com/thediymaker/gaudi-cookbook
 repo_name: thediymaker/gaudi-cookbook
 edit_uri: edit/main/docs/
@@ -104,6 +105,24 @@ nav:
   - Kernels:
       - kernels/index.md
       - MXFP4 MoE decode: kernels/mxfp4-moe.md
+  - Ports:
+      - ports/index.md
+      - Muse Spark Open: ports/muse-spark-open.md
+      - GLM-5.3-Flash: ports/glm-5-3-flash.md
+      - DeepSeek-V4.1-Flash: ports/deepseek-v4-1-flash.md
+      - GLM-5.2 and GLM-5.3 MXFP4: ports/glm-5-mxfp4.md
+      - Beam-1.0: ports/beam-1-0.md
+      - MiMo-V2.6-Flash: ports/mimo-v2-6-flash.md
+      - Kimi-K2.7-Code: ports/kimi-k2-7.md
+  - Results:
+      - results/index.md
+      - Platform findings: results/platform-findings.md
+      - GDN prefix caching: results/gdn-prefix-caching.md
+      - MoE decode step: results/moe-decode-step.md
+      - Two-node pipeline: results/two-node-pipeline.md
+      - Gemma-4-E2B prefill: results/gemma-4-e2b-prefill.md
+      - Text-to-speech: results/tts-on-gaudi.md
+      - EmbeddingGemma 2: results/embeddinggemma-2.md
   - Kubernetes:
       - kubernetes/index.md
       - Pod spec: kubernetes/pod-spec.md

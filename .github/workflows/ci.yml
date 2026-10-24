@@ -31,3 +31,4 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements-docs.txt
       - run: mkdocs build --strict
+      - run: python3 catalog/build.py --check --no-fetch --out _site

@@ -11,6 +11,11 @@ on **Intel Gaudi 2**, through the [vllm-gaudi](https://github.com/vllm-project/v
 Everything here was run on a large Gaudi 2 fleet serving real traffic, and everything uses
 public images and public checkpoints.
 
+!!! tip "New: MXFP4 MoE decode kernels"
+    Up to **3x faster decode** for MXFP4 mixture-of-experts models on Gaudi 2: GLM-5.3 single stream from 23.3 to
+    59.1 tokens/s, gpt-oss-120b up to 3.2x per stream, Muse Spark Open 2.1x per stream at four streams, with lower
+    numerical error than the stock op. [Read the write-up](kernels/mxfp4-moe.md).
+
 <div class="grid cards" markdown>
 
 -   :material-chef-hat: **[Recipes](recipes/index.md)**
@@ -31,8 +36,22 @@ public images and public checkpoints.
 
     ---
 
-    Custom TPC kernels, starting with MXFP4 MoE decode that reads the packed
-    weights directly.
+    MXFP4 MoE decode kernels that read the packed weights directly: up to 3x
+    faster decode on gpt-oss, GLM and Muse Spark Open.
+
+-   :material-rocket-launch-outline: **[Ports](ports/index.md)**
+
+    ---
+
+    Seven models that released images cannot serve, brought up on Gaudi 2: Muse
+    Spark Open, GLM-5.3-Flash, DeepSeek-V4.1-Flash, Beam-1.0 and more.
+
+-   :material-flask-outline: **[Results](results/index.md)**
+
+    ---
+
+    Platform findings, prefix caching on hybrids, MoE decode-step anatomy,
+    two-node pipeline parallel, fast prefill, speech and embeddings.
 
 -   :material-kubernetes: **[Kubernetes](kubernetes/index.md)**
 

@@ -82,7 +82,7 @@ Agents: read AGENTS.md first. It maps tasks to files and gives the rules: check 
 ## Kernels
 
 - [Kernels](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/kernels/index.md): Custom TPC kernels for Gaudi 2.
-- [MXFP4 MoE decode kernels](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/kernels/mxfp4-moe.md): Two Gaudi 2 TPC kernels run the routed experts of an MXFP4 mixture-of-experts layer directly from the packed weights, with no bf16 unpack round trip.
+- [MXFP4 MoE decode kernels](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/kernels/mxfp4-moe.md): Up to 3x faster MXFP4 MoE decode on Gaudi 2.
 
 ## Kubernetes
 
