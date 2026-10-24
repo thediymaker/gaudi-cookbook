@@ -1,0 +1,18 @@
+# Verbatim copies of the platform-neutral new files of vLLM pull request #61879 (Muse Spark),
+# https://github.com/vllm-project/vllm/pull/61879 at head 6cc692b5a87a3f33c7fc5431d8add0640cb032f6.
+# Each file keeps its upstream SPDX header (Apache-2.0, the vLLM contributors).
+# patches/vllm_pr_61879.py installs them into the vLLM tree and refuses any file whose sha256
+# differs from this list. One line per file: sha256, two spaces, path relative to vendor/.
+7888c112799fbdd689f16e455fc3e16424ed637ba93a5b8d80288c309d1e0e3c  vllm/models/muse_spark/common/audio.py
+ea3ffc420805a7e5f5f9c5730ac2ed1ddfed289d25097eb4f8e8e72f725af8e1  vllm/models/muse_spark/common/__init__.py
+0721fdde4a3f3cf4355f3ec46976409193645848938f321f86bd7b6e39341b55  vllm/models/muse_spark/common/layers.py
+0325ba7cacbc789022dd847063c328d760dc13903070bd9723d2824c6ff6f26a  vllm/models/muse_spark/common/moe.py
+deeaf8102c83db73812c5cc85cfb1c0bf79e19424fc80c944a7705c64cfb65f3  vllm/models/muse_spark/common/omni.py
+070555cffd06e7cfc74e8b487e5367bde9e7660dec23836673db89a27c17f1e3  vllm/models/muse_spark/common/ops/fused_rmsnorm.py
+36bd5ea79ec84dfbfff0d17c9c36dddd400724aa86a4e859879f20c44200d7a4  vllm/models/muse_spark/common/ops/fused_routing.py
+2c6b9b241a30ee0ac9c3bf8f190cc12a67a19712d265114e982d445144762376  vllm/models/muse_spark/common/ops/__init__.py
+bb511a03d5bc324aa34593cd036b2acca39aa05873e0e114ab807f2d49b7553b  vllm/models/muse_spark/common/processor.py
+af0409f8317d791a95ab3f19917d758295a749d8dbfb2c6d8fcce75949761615  vllm/models/muse_spark/common/vision.py
+919ded6fc48fa13c9bfe881e091143d8369587cc30b2a51dfe0210725bfb2bf4  vllm/reasoning/muse_reasoning_parser.py
+10f0bb005e6a141ae873c68b5691ac1905ad8a4e36d511f7424a290b7ac5174e  vllm/tool_parsers/muse_tool_parser.py
+232573a4e00a6ea9d5b48154e9698171440118e7c5e23dfc1306543230eda7e4  vllm/transformers_utils/configs/muse_spark.py

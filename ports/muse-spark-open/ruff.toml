@@ -1,0 +1,7 @@
+# Lint settings of the repository, minus the vendored upstream files (kept byte for byte, see vendor/MANIFEST).
+extend = "../../pyproject.toml"
+extend-exclude = ["vendor"]
+
+[lint.extend-per-file-ignores]
+# the patches hold runner source lines verbatim (anchors and replacements must match vllm-gaudi exactly)
+"patches/*.py" = ["E501"]

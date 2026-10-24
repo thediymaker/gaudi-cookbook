@@ -1,0 +1,152 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/muse-spark-open.md
+meta:
+  title: "Muse Spark Open (MXFP4)"
+  slug: "muse-spark-open"
+  provider: "AMD (Quark MXFP4 of Muse Spark Open)"
+  description: >-
+    816B MoE (42B active) with a latent MoE and per-expert output norm, the AMD Quark MXFP4 checkpoint as published,
+    256K tokens per request on one 8-card Gaudi 2 node, text only, through the muse-spark-open port.
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - text
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4"
+  architecture: moe
+  parameter_count: "816B"
+  active_parameters: "42B"
+  context_length: 1048576
+
+features:
+  tool_calling:
+    description: "Tool calls with the muse parser (vLLM PR #61879); tool_choice required and named are enforced with a structural tag."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "muse"]
+  reasoning:
+    description: "Split the analysis channel from the answer; reasoning_effort sets the budget."
+    args: ["--reasoning-parser", "muse"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: mxfp4
+    vram_minimum_gb: 611
+    description: "The AMD Quark MXFP4 checkpoint (509 GB, MXFP4 experts except the BF16 expert layers 0 and 61) loaded as published; experts run W4A16."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 8, tp: 8, ep: true }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  port: muse-spark-open
+  max_model_len: 262144
+  serve_args:
+    - "--tensor-parallel-size"
+    - "8"
+    - "--enable-expert-parallel"              # attention TP 8, experts EP2 x TP4 (MUSE_SPARK_MOE_TP_SPLIT)
+    - "--dtype"
+    - "bfloat16"
+    - "--block-size"
+    - "128"
+    - "--max-model-len"
+    - "262144"
+    - "--max-num-seqs"
+    - "4"
+    - "--max-num-batched-tokens"
+    - "4096"
+    - "--gpu-memory-utilization"
+    - "0.90"
+    - "--max-cudagraph-capture-size"
+    - "4"                                     # turns HPU graphs on; decode needs them
+    - "--enable-prefix-caching"
+    - "--enable-prompt-tokens-details"
+    - "--async-scheduling"
+    - "--language-model-only"                 # the port serves text only; the model refuses to load without it
+    - "--reasoning-parser"
+    - "muse"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "muse"
+    - "--chat-template-content-format"
+    - "openai"
+    - "--num-gpu-blocks-override"
+    - "10752"                                 # 1 MiB per block per card: 4 x 256K tokens of global-layer KV
+    - "--long-prefill-token-threshold"
+    - "1024"
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"    # TP collectives in lazy mode with HPU graphs
+    PT_HPU_RECIPE_CACHE_CONFIG: "/data/muse-spark-recipe-cache,False,32768"   # compiled graphs survive restarts
+    VLLM_CONTIGUOUS_PA: "false"
+    VLLM_SKIP_WARMUP: "true"                  # decode graphs are captured per bucket at first use
+    VLLM_ENGINE_READY_TIMEOUT_S: "7200"       # loading 70.8 GB per card took 61 minutes
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "3600" # a 256K prompt prefills next to running decodes
+    VLLM_MOE_CHUNK: "256"                     # the stock MoE op's chunking for prefill
+    VLLM_MOE_TOKEN_BOUNDARY: "65536"
+    VLLM_FP32_SOFTMAX: "true"
+    VLLM_GRAPH_RESERVED_MEM: "0.4"
+    VLLM_HPU_PROMPT_LOGPROBS_ROWS: "256"      # prompt-logprobs fix: rows per log-softmax slice
+    VLLM_BUCKETING_FROM_FILE: "/opt/gaudi-cookbook/ports/muse-spark-open/serving/buckets-256k-seqs4.txt"
+    VLLM_LONG_PREFILL_SHARE: "0.25"           # a long prompt reads in at a quarter of the step budget
+    VLLM_LONG_PREFILL_SHARE_ASYNC: "1"
+    VLLM_LONG_PREFILL_MIN_TOKENS: "32768"
+    MUSE_SPARK_MOE_TP_SPLIT: "4"              # EP2 x TP4 experts (EP8 lost 33% per stream)
+    MUSE_SPARK_SWA_KV: "1"                    # window-sized KV for the 46 sliding layers
+    MUSE_SPARK_LONG_ATTN: "1"                 # long prompts with context run without a dense bias
+    MUSE_SPARK_DECODE_GRAPH_MAX_BLOCKS: "5408" # larger decode batches run without an HPU graph
+    MUSE_SPARK_DECODE_LAYER_GROUP: "62"       # one graph cut per 62 layers in decode
+    MUSE_SPARK_MXFP4_KERNELS: "1"             # MXFP4 decode kernels; 0 runs the stock MoE op
+    MUSE_SPARK_MEMLOG: "1"                    # device memory log lines from rank 0
+  setup:
+    - 'mkdir -p "${PT_HPU_RECIPE_CACHE_CONFIG%%,*}"'
+  buckets: null                               # the bucket file ships with the port (VLLM_BUCKETING_FROM_FILE)
+  required_fixes:
+    - prompt-order             # prefix-cache hits read before they are written in the same step
+    - sampling-rows-refresh    # every request sampled with its own parameters after rows reorder
+    - structured-output-rows   # grammar rows keep their own sampling parameters
+    - so-row-owners            # grammar masks on the right rows when a long prompt is chunked
+    - bad-words-index          # one request's bad_words can neither stop the engine nor ban tokens elsewhere
+    - logitsprocs-rows         # min_p, logit_bias and min_tokens take effect (ignored on stock)
+    - async-inputs             # stale decode input ids under async scheduling (duplicated tokens)
+    - resumed-prefill-logits   # a request resumed after preemption must not repeat its output
+    - gather-logprobs-int32    # top_logprobs ids read back corrupted otherwise
+    - prompt-logprobs          # prompt_logprobs over a 4096-token chunk runs out of memory otherwise
+    - logprobs-decode-guard    # a bad logprob id no longer kills the API server
+    - seeded-sampling          # a seeded request segfaults a TP worker otherwise
+    - topk-subset-sampler      # opt-in: top-k / top-p without sorting the whole vocabulary each step
+    - swa-decode-window        # the port's window patch is written on top of it
+    - rank-exception-fatal     # a failed rank stops the engine instead of serving garbage
+    - vllm-long-prefill-share  # opt-in: decodes keep running while a 256K prompt reads in
+  verified:
+    # One 8-card node, image built by install.sh from the stock releases/v0.30.0 image, this command with
+    # MUSE_SPARK_MXFP4_KERNELS=0 (the stock MXFP4 op). Gates: ports/muse-spark-open/tests/hpu/run_gates.sh.
+    - "kernel switch off: build gates 8/8; CPU tests 33 passed, patch chain on a clean release copy passed"
+    - "kernel switch off: perplexity vs the CPU reference, 5 passages, 17,408 tokens: worst ratio +0.27%, top-1 0.980, KL 0.0013"
+    - "kernel switch off: decode vs prefill 8 x 512 tokens: mean abs dlogprob 0.0058 (gate 0.05)"
+    - "kernel switch off: needles 32K and 258K x 3 depths 6/6 in content, 32K control clean; 2K 2/3 (one refusal, code in reasoning)"
+    - "kernel switch off: tool_choice auto / required / streamed pass; reasoning_effort low / high pass; greedy repeat 16/16"
+    - "kernel switch off: decode 22.7 tok/s at 1 stream, 43.3 aggregate at 4 (256 greedy tokens)"
+    # The same pod, server restarted with MUSE_SPARK_MXFP4_KERNELS=1 (this command as written).
+    - "kernel switch on: perplexity vs the CPU reference, same 5 passages: worst ratio +0.22%, top-1 0.983, KL 0.0011"
+    - "kernel switch on: decode vs prefill 8 x 512 tokens: mean abs dlogprob 0.0025 (gate 0.05)"
+    - "kernel switch on: needles 2K, 32K and 258K x 3 depths 9/9 found, 9/9 answered, 32K control clean"
+    - "kernel switch on: tool_choice auto / required / streamed pass; reasoning_effort low / high pass; greedy repeat 16/16"
+    - "kernel switch on: decode 40.8 tok/s at 1 stream, 102.8 aggregate at 4 (256 greedy tokens); peak HBM 82.9 of 94.6 GiB"
+  notes:
+    - >-
+      Needs the muse-spark-open port image: docker build -f ports/muse-spark-open/Dockerfile from the stock
+      releases/v0.30.0 image. install.sh applies the v0.30.0 fix profile before the port's runner patches, so the
+      launch's fix step finds the profile applied and adds the two opt-in fixes.
+    - >-
+      Status supported: the gates above ran with MUSE_SPARK_MXFP4_KERNELS=0; the run of this exact command (switch
+      on, the default) was not complete when the recipe was written.
+    - "Text only: the checkpoint's vision and audio towers are not loaded."
+    - "Muse Model License: products using the model must show \"Built with Muse Spark Open\"."

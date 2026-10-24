@@ -1,0 +1,31 @@
+# Bucket file for the Muse Spark Open recipe: 256K tokens x 4 sequences, 4096 batched tokens, long-prompt chunks
+# of 1024 tokens. Loaded with VLLM_BUCKETING_FROM_FILE.
+#
+# Decode: (bs, 1, total blocks of the batch, 128 tokens per block). A captured decode HPU graph keeps about
+# 0.5 MiB per block of its bucket for the life of the process, so the set is fixed here: x2 steps up to
+# 2048 / 4096 / 4096 blocks for bs 1 / 2 / 4, 20,452 bucket-blocks (about 10 GiB per card) if every graph is
+# captured. (4, 1, 8192) is above MUSE_SPARK_DECODE_GRAPH_MAX_BLOCKS and runs without a graph; it is there so a
+# batch of 3 or 4 sequences longer than 128K on average has a bucket. vllm-gaudi's default set at this shape
+# (40 buckets) is about 25,300 bucket-blocks.
+(1, 1, [4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048])
+(2, 1, [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096])
+(4, 1, [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192])
+#
+# Prompt: (bs, query tokens, context blocks). Prompts run without HPU graphs, so these buckets cost compile time
+# on first use (recipe cache), not resident memory. vllm-gaudi's defaults at this shape, plus exact 1024- and
+# 2048-token queries (long-prompt chunk sizes, which would otherwise pad to 1280 / 2304) with context steps of
+# 128 blocks (16K tokens) past 256 blocks, where the default doubles. The last context entry of each query is
+# vllm-gaudi's edge value, (max-model-len - query) / 128.
+(1, 128, [0, 1, 2, 4, 8, 16, 32, 64, 127, 254, 506, 1010, 2047])
+(1, 256, [0, 1, 2, 4, 8, 16, 32, 64, 127, 254, 506, 1010, 2046])
+(1, 384, [0, 1, 2, 4, 8, 16, 32, 64, 127, 254, 506, 1010, 2045])
+(1, 512, [0, 1, 2, 4, 8, 16, 32, 64, 127, 254, 506, 1010, 2044])
+(1, 640, [0, 1, 2, 4, 8, 16, 32, 64, 127, 254, 506, 1010, 2043])
+(1, 896, [0, 1, 2, 4, 8, 16, 32, 64, 127, 254, 506, 1010, 2041])
+(1, 1024, [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 384, 512, 640, 768, 896, 1024, 1152, 1280, 1408, 1536, 1664, 1792, 1920, 2040])
+(1, 1280, [0, 1, 2, 4, 8, 16, 32, 64, 127, 254, 506, 1010, 2038])
+(1, 1664, [0, 1, 2, 4, 8, 16, 32, 64, 127, 254, 506, 1010, 2035])
+(1, 2048, [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 384, 512, 640, 768, 896, 1024, 1152, 1280, 1408, 1536, 1664, 1792, 1920, 2032])
+(1, 2304, [0, 1, 2, 4, 8, 16, 32, 64, 127, 254, 506, 1010, 2030])
+(1, 3072, [0, 1, 2, 4, 8, 16, 32, 64, 127, 254, 506, 1010, 2024])
+(1, 4096, [0, 1, 2, 4, 8, 16, 32, 64, 127, 254, 506, 1010, 2016])

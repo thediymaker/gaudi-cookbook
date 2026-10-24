@@ -20,7 +20,7 @@ checkpoint, unconverted, on one Gaudi 2 node and serves production traffic at 25
           (different conditions: same deployment and clients, only image and kernel flag changed; the arms are not
           recorded as running on the same node).
         - Grouped decode launches: 34.5 to 39.7 tok/s at 1 stream (same-pod A/B).
-        - Perplexity within 0.4% of an fp32 CPU oracle.
+        - Perplexity within 0.4% of a CPU reference of the same checkpoint.
 
 ## Why it needed a port
 
@@ -40,7 +40,7 @@ checkpoint, unconverted, on one Gaudi 2 node and serves production traffic at 25
 layers. Attention is stock vLLM `Attention` (16 q / 2 kv heads per card) plus a runner patch: the window gate for
 this model, an exact 2048-key decode window, and a prefill off-by-one fix. The fp32 router (256 experts, top 8),
 residual stream, norms and logit softcap follow the reference numerics. Experts run
-W4A16, not the W4A4 the checkpoint declares; the CPU oracle uses the same rule. Weights and runtime take 66.0 GiB of
+W4A16, not the W4A4 the checkpoint declares; the CPU reference uses the same rule. Weights and runtime take 66.0 GiB of
 the 94.62 GiB visible per card.
 
 ### The latent MoE: A′ with a per-expert norm
@@ -86,11 +86,12 @@ The model hands each layer its group's slot mapping and window list in its own l
 
 ## Correctness
 
-Real model at TP8, against a streaming fp32 CPU oracle built from the transformers reference.
+Real model at TP8, against a streaming CPU reference of the same checkpoint (a reference implementation checked
+against the transformers code, bf16 values with fp32 accumulation, MXFP4 experts dequantized exactly).
 
 | Gate | Result |
 | --- | --- |
-| Perplexity vs oracle, 5 gated passages (within 1.5%, top-1 at least 97%, KL at most 0.02) | worst +0.38%, top-1 97.56%, KL 0.0013 |
+| Perplexity vs the CPU reference, 5 gated passages (within 1.5%, top-1 at least 97%, KL at most 0.02) | worst +0.38%, top-1 97.56%, KL 0.0013 |
 | Decode vs prefill, mean abs Δlogprob, 8 x 512 greedy tokens past the window (gate 0.05) | 0.0019; 0.0010 to 0.0030 on later configurations |
 | Needles 2K to 120K x 3 depths, plain-fact wording (a "secret code" wording draws refusals); no-needle control | 15/15; 0/2 |
 | Needles at 256K / 512K / 1,040,011 tokens, windowed KV | 3/3 / 3/3 / 1/1 |
@@ -144,6 +145,15 @@ Long context, one server each:
 
 ## Availability
 
-The integration code (plugin, runner patches, loader) is not published in this repository yet. It depends on model
-code outside vllm-gaudi: the platform-neutral Muse Spark files of the upstream vLLM draft pull request. Generic
-pieces are published as [fixes](../fixes/index.md) and [MXFP4 MoE kernels](../kernels/mxfp4-moe.md).
+The port is published in [`ports/muse-spark-open`](https://github.com/thediymaker/gaudi-cookbook/tree/main/ports/muse-spark-open):
+the plugin, the runner patches, the loader, a Dockerfile and `install.sh` that build it from the stock
+`releases/v0.30.0` image, CPU tests and the device gates. The served configuration is the recipe
+[Muse Spark Open (MXFP4)](../recipes/muse-spark-open.md). The platform-neutral files of
+[vllm#61879](https://github.com/vllm-project/vllm/pull/61879) are vendored unchanged under their Apache-2.0
+headers, pinned to the pull request's head. The MXFP4 decode kernels are built from
+[`kernels/mxfp4-moe`](../kernels/mxfp4-moe.md) (`--variant muse`). Generic pieces are separate
+[fixes](../fixes/index.md).
+
+The FusedSDPA explicit-bias workspace fix (bug 1 above) is generic but ships inside the port for now
+(`MUSE_SPARK_LONG_ATTN` and the query-tile bound); the vision and audio towers, pipeline parallelism and the CPU
+reference that produced the perplexity reference are not published.
