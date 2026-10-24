@@ -1,0 +1,24 @@
+# GLM-5.2 / GLM-5.3 MXFP4 bucket set for VLLM_BUCKETING_FROM_FILE: TP 8, --max-num-seqs 4, --max-model-len 131072,
+# --block-size 128, --max-num-batched-tokens 8192.
+# The default exponential strategy's own output at that geometry, plus a bs 3 decode row: exponential bucketing
+# gives decode batch sizes 1, 2, 4, so 3 running requests pad to 4 and pay the whole bs 4 step (the MXFP4 MoE cost
+# grows with the tokens in the batch). The loader drops or caps rows the KV pool cannot hold.
+# Regenerate if --max-num-seqs, --max-model-len, --block-size or --max-num-batched-tokens change.
+# Prompt buckets (bs, query, ctx_blocks):
+(1, 128, [0, 1, 2, 4, 8, 16, 31, 62, 123, 244, 484, 1023])
+(1, 256, [0, 1, 2, 4, 8, 16, 31, 62, 123, 244, 484, 1022])
+(1, 384, [0, 1, 2, 4, 8, 16, 31, 62, 123, 244, 484, 1021])
+(1, 512, [0, 1, 2, 4, 8, 16, 31, 62, 123, 244, 484, 1020])
+(1, 768, [0, 1, 2, 4, 8, 16, 31, 62, 123, 244, 484, 1018])
+(1, 1024, [0, 1, 2, 4, 8, 16, 31, 62, 123, 244, 484, 1016])
+(1, 1536, [0, 1, 2, 4, 8, 16, 31, 62, 123, 244, 484, 1012])
+(1, 2048, [0, 1, 2, 4, 8, 16, 31, 62, 123, 244, 484, 1008])
+(1, 2944, [0, 1, 2, 4, 8, 16, 31, 62, 123, 244, 484, 1001])
+(1, 4096, [0, 1, 2, 4, 8, 16, 31, 62, 123, 244, 484, 992])
+(1, 5888, [0, 1, 2, 4, 8, 16, 31, 62, 123, 244, 484, 978])
+(1, 8192, [0, 1, 2, 4, 8, 16, 31, 62, 123, 244, 484, 960])
+# Decode buckets (bs, 1, num_blocks):
+(1, 1, [1, 4, 8, 16, 24, 44, 72, 128, 232, 408, 728, 1024])
+(2, 1, [4, 8, 16, 24, 44, 72, 128, 232, 408, 728, 1292, 2048])
+(3, 1, [4, 8, 16, 24, 44, 72, 128, 232, 408, 728, 1292, 2300, 4096])
+(4, 1, [4, 8, 16, 24, 44, 72, 128, 232, 408, 728, 1292, 2300, 4096])

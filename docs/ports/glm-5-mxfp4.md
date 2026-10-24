@@ -15,7 +15,8 @@ decoding and replaces the stock MoE decode path with a custom TPC kernel.
           GLM-5.3 License. AMD has not published an MXFP4 build. The checkpoint is not public; the conversion
           is reproducible from the public BF16 release.
     - **Hardware:** 8 Gaudi 2 cards, TP 8 with expert parallel, 128K context served.
-    - **Stack:** Gaudi software 1.24.1, a vllm-gaudi 0.24 build (vLLM 0.24), lazy mode. Also run on `v0.30.0`.
+    - **Stack:** Gaudi software 1.24.1, lazy mode. The published port targets the stock `releases/v0.30.0`
+      image; the earlier numbers below come from a vllm-gaudi 0.24 build, and each table says which.
     - **Status:** both serve production traffic.
     - **Headline:**
         - Long-context needles fixed: 3/3 at 16K to 128K on two fillers, where the stock path failed from 32K
@@ -86,8 +87,11 @@ truly sparse above 32K keys and dense with the accurate softmax below:
   A fully masked padding block in a decode bucket made paged attention compute 0/0, so padding blocks keep their
   original mask.
 
-**MTP.** Both checkpoints ship one multi-token-prediction layer (layer 78). It was quantized with the same encoder
-and served as one-draft speculative decoding, which took eight vllm-gaudi patches. They fix: verify rows that
+**MTP.** Both checkpoints ship one multi-token-prediction layer (layer 78), with its routed experts in BF16 in both
+releases. GLM-5.3's MTP experts were encoded with the Quark-rule encoder above. GLM-5.2's were encoded earlier with
+the plain OCP floor rule, before the Quark rule was found, and that is the checkpoint served; the port's GLM-5.2
+repack keeps that encoder so its output matches the served bytes. The layer is served as one-draft speculative
+decoding, which took eight vllm-gaudi patches. They fix: verify rows that
 used the first row's KV block list; a draft residual that broadcast `[N, 1, H] + [N, H]` to `[N, N, H]`; a
 rejection sampler that was greedy-only and stopped the engine at temperature above 0; greedy rows marked with
 temperature -1.0, which the sampler divided by in mixed batches; and `logprobs` and structured output on the
@@ -127,7 +131,7 @@ bit-identical). Details: [MoE decode step anatomy](../results/moe-decode-step.md
 | Needles, 3 per prompt, 16K to 128K, two fillers | 3/3 every prompt (final DSA config); stock path failed from 32K |
 | GLM-5.2, same DSA settings | needles 3/3 at 16K to 128K |
 | GSM8K first 50, GLM-5.3 with kernels | 49/50 |
-| Tool-call canary, 40 cells | 40/40 |
+| Tool-call checks, 40 cells | 40/40 |
 
 Known weakness: a prompt of one word repeated tens of thousands of times makes the model loop under any accurate
 attention. The `fast` softmax passed it only because its error happens to help.
@@ -159,5 +163,15 @@ build, slightly slower, in a two-node crossover.
 
 ## Availability
 
-The integration code (load and router patches, repack and encoder, DSA patch, MTP patches and the GLM kernel
-build) is not published in this repository yet. It depends on model code outside vllm-gaudi.
+The port is in [`ports/glm-5-mxfp4`](https://github.com/thediymaker/gaudi-cookbook/tree/main/ports/glm-5-mxfp4),
+for the stock vllm-gaudi `releases/v0.30.0` image (`058f107`, vLLM `ced6857a`): the GLM-5.3 encoder and the GLM-5.2
+repack (`convert/`), 14 source patches with the fixes contract, the `glm5_hpu` package (DSA top-k attention, kernel
+hooks, EP x TP expert layout and placement, decode levers), the bucket file and the GLM-5.3 placement (`serving/`),
+CPU tests and serving gates. The kernels are built from
+[`kernels/mxfp4-moe`](https://github.com/thediymaker/gaudi-cookbook/tree/main/kernels/mxfp4-moe) with
+`--variant glm`. The recipes are [GLM-5.3 (MXFP4)](../recipes/glm-5-3-mxfp4.md) and
+[GLM-5.2 (MXFP4)](../recipes/glm-5-2-mxfp4.md).
+
+Both recipes passed their serving gates on that image, run as written on one 8-card node; GLM-5.3 carries one known
+issue with `tool_choice: "required"` (see its recipe page). The prefill kernel A/B and the decode-lever A/B on that run
+are in the [GLM-5.3 recipe](../recipes/glm-5-3-mxfp4.md#performance).

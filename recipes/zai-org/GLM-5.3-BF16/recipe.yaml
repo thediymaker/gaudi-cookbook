@@ -1,0 +1,141 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/glm-5-3-mxfp4.md
+meta:
+  title: "GLM-5.3 (MXFP4)"
+  slug: "glm-5-3-mxfp4"
+  provider: "Z.ai"
+  description: >-
+    744B MoE (about 41B active) with DeepSeek sparse attention, quantized to MXFP4 experts from the BF16 release and served at 128K context with
+    MTP on one 8-card Gaudi 2 node, through the glm-5-mxfp4 port.
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - text
+  related_recipes:
+    - glm-5-2-mxfp4
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "zai-org/GLM-5.3-BF16"
+  architecture: moe
+  parameter_count: "744B"
+  active_parameters: "41B"
+  context_length: 1048576
+
+features:
+  tool_calling:
+    description: "Automatic, required and named tool choice with the glm47 parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "glm47"]
+  reasoning:
+    description: "glm47 reasoning parser; reasoning_effort and clear_thinking through chat_template_kwargs."
+    args: ["--reasoning-parser", "glm47"]
+  spec_decoding:
+    description: "MTP, one draft token, from the checkpoint's own MTP layer."
+    args: ["--speculative-config", '{"method": "mtp", "num_speculative_tokens": 1}']
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: mxfp4
+    vram_minimum_gb: 479
+    description: "Routed experts MXFP4 (layers 3 to 77 and the MTP layer), everything else BF16: 399 GiB, converted by ports/glm-5-mxfp4/convert."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 8, tp: 8, ep: true }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  port: glm-5-mxfp4
+  serve_model: "$CHECKPOINT_DIR"
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "8"
+    - "--enable-expert-parallel"              # required: the fused MXFP4 experts are sliced by expert group
+    - "--dtype"
+    - "bfloat16"
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "4"
+    - "--block-size"
+    - "128"
+    - "--max-num-batched-tokens"
+    - "8192"
+    - "--enable-chunked-prefill"
+    - "--long-prefill-token-threshold"
+    - "4096"                                  # long prompts advance in 4K chunks next to running decodes
+    - "--gpu-memory-utilization"
+    - "0.86"                                  # leaves room for the DSA indexer-key buffers (allocated after profiling)
+    - "--max-cudagraph-capture-size"
+    - "2048"                                  # prefills above 2048 tokens run outside HPU graphs
+    - "--trust-remote-code"
+    - "--enable-prompt-tokens-details"
+    - "--speculative-config"
+    - '{"method": "mtp", "num_speculative_tokens": 1}'
+    - "--reasoning-parser"
+    - "glm47"
+    - "--tool-call-parser"
+    - "glm47"
+    - "--enable-auto-tool-choice"
+    - "--default-chat-template-kwargs"
+    - '{"reasoning_effort": "high", "clear_thinking": true}'
+    - "--override-generation-config"
+    - '{"temperature": 1.0, "top_p": 0.95}'   # the model card's sampling
+  env:
+    CHECKPOINT_DIR: "/models/GLM-5.3-MXFP4"    # output of ports/glm-5-mxfp4/convert/glm53_bf16_to_mxfp4.py
+    PT_HPU_LAZY_MODE: "1"
+    VLLM_SKIP_WARMUP: "true"                   # shapes compile at first use
+    VLLM_BUCKETING_FROM_FILE: "/opt/gaudi-cookbook/ports/glm-5-mxfp4/serving/tp8-seqs4-128k.txt"
+    VLLM_GRAPH_RESERVED_MEM: "0.2"
+    VLLM_MOE_CHUNK: "256"                      # MoE op chunk hints
+    VLLM_MOE_TOKEN_BOUNDARY: "2048"
+    PT_HPU_QKV_SLICE_SEQ_LEN_THLD: "128"       # kept from the served configuration
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "3600" # first long prefills compile inline; the 300 s default stops the engine
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "7200"
+    VLLM_HPU_FSDPA_SOFTMAX_MODE: "None"        # the accurate FusedSDPA softmax: "fast" breaks long prompts
+    VLLM_LONG_PREFILL_SHARE: "0.5"             # long prefills take at most half the time while others decode
+    VLLM_LONG_PREFILL_SHARE_ASYNC: "1"
+    VLLM_LONG_PREFILL_MIN_TOKENS: "32768"
+    GLM_DSA_SPARSE: "1"                        # top-2048 sparse attention above 32K keys
+    GLM_MXK: "1"                               # MXFP4 decode kernels (kernels/mxfp4-moe, variant glm)
+    GLM_MXK_PREFILL: "1"                       # prefill expert unpack kernel, output bit-identical
+    GLM_MOE_TP: "2"                            # EP 4 x TP 2 expert layout
+    GLM_MOE_PLACEMENT: "/opt/gaudi-cookbook/ports/glm-5-mxfp4/serving/glm53-ep4-placement.json"
+    GLM_ROUTER_FAST: "1"                       # decode levers, greedy bit-identical
+    GLM_EARLY_DRAFT: "1"
+    GLM_SPEC_DEVICE_REJECT: "1"
+  buckets: null                                # the bucket file ships with the port (VLLM_BUCKETING_FROM_FILE)
+  required_fixes:
+    - structured-output-rows   # grammar masks on the right rows (tool_choice required, JSON schema)
+    - so-row-owners
+    - gather-logprobs-int32    # top_logprobs ids read back corrupted otherwise
+    - logprobs-decode-guard    # a bad logprob id no longer kills the API server
+    - seeded-sampling          # a seeded request segfaults a TP worker otherwise
+    - rank-exception-fatal     # a failed rank stops the engine instead of serving garbage
+    - vllm-long-prefill-share  # VLLM_LONG_PREFILL_SHARE
+    - glm47-streaming-text-markers  # streamed tool calls and reasoning markers of the glm47 parsers
+  verified:
+    - "Needles, 3 codes at 10/50/90% depth, two fillers, 16K to 126K tokens: 30/30"
+    - "GSM8K first 50, reasoning low, greedy: 49/50"
+    - >-
+      Tools (required, named, auto, none, JSON schema; streaming and not; greedy and sampled): 31/32 on the first run, 32/32 on three runs
+      after a restart; the failing case (required with no tool needed, sampled) returned two calls in 4 of 40 repeats
+    - "MTP acceptance at default sampling: 0.816 over 1,465 drafts"
+    - "Logprobs, 40 sampled requests with top_logprobs 5 under MTP: 40/40 complete and finite"
+    - "Stress, 4 decodes while 64K and 100K prompts prefill: 4/4 finished, needles 3/3, largest decode gap 1.7 s"
+    - "Greedy with GLM_MXK_PREFILL=0 and with the decode levers off: 16/16 token-identical"
+    - "Decode 68.6 tok/s at 1 stream, 116.1 aggregate at 4 (~2K-token prompt, greedy); TTFT 0.52 / 1.76 s at 2K / 8K"
+  notes:
+    - >-
+      Needs the glm-5-mxfp4 port image: docker build -f ports/glm-5-mxfp4/Dockerfile from the stock releases/v0.30.0 image. install.sh applies the
+      fixes before the port's patches, so the launch's fix step finds every fix applied.
+    - >-
+      There is no public MXFP4 GLM-5.3: convert zai-org/GLM-5.3-BF16 once with ports/glm-5-mxfp4/convert (CPU only). The result is a derivative under
+      the GLM-5.3 License.
+    - "Speculative decoding turns async scheduling off."
