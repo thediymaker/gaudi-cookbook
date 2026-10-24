@@ -1,0 +1,122 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/mimo-v2-6-flash-rl.md
+meta:
+  title: "MiMo-V2.6-Flash-RL"
+  slug: "mimo-v2-6-flash-rl"
+  provider: "Xiaomi"
+  description: "309B MoE (15B active) with 128-token sliding-window attention and sinks, served at 512K context on one 8-card Gaudi 2 node through a port."
+  date_added: 2026-10-24
+  date_updated: 2026-10-24
+  tasks:
+    - text
+  related_recipes: []
+  hardware:
+    gaudi2: supported
+
+model:
+  model_id: "XiaomiMiMo/MiMo-V2.6-Flash-RL"
+  architecture: moe
+  parameter_count: "309B"
+  active_parameters: "15B"
+  context_length: 1048576
+
+features:
+  tool_calling:
+    description: "MiMo tool calls (<tool_call><function=...> with <parameter=...> tags) with the mimo parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "mimo"]
+  reasoning:
+    description: "Split the <think> block from the answer. The port's chat template opens <think> in the generation prompt so follow-up turns parse."
+    args: ["--reasoning-parser", "mimo"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: fp8
+    vram_minimum_gb: 208
+    description: >-
+      The public checkpoint (173 GB: FP8 block attention, MXFP4 routed experts). The port re-encodes the experts to FP8 exactly at load, about 37 GB
+      per card on eight cards.
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 8, tp: 8, ep: true }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  max_model_len: 524288
+  port: mimo-v2-6-flash
+  serve_model: "$CHECKPOINT_DIR"
+  serve_args:
+    - "--tensor-parallel-size"
+    - "8"
+    - "--max-model-len"
+    - "524288"
+    - "--max-num-seqs"
+    - "16"
+    - "--long-prefill-token-threshold"
+    - "2048"
+    - "--max-num-batched-tokens"
+    - "8192"
+    - "--block-size"
+    - "128"
+    - "--gpu-memory-utilization"
+    - "0.9"
+    - "--enable-prompt-tokens-details"
+    - "--trust-remote-code"
+    - "--generation-config"
+    - "vllm"
+    - "--override-generation-config"
+    - '{"temperature": 1.0, "top_p": 0.95}'
+    - "--chat-template"
+    - "$COOKBOOK/ports/mimo-v2-6-flash/serving/chat_template.jinja"
+    - "--reasoning-parser"
+    - "mimo"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "mimo"
+  env:
+    CHECKPOINT_DIR: "/data/mimo-v2.6-flash-rl-hpu"  # staged copy (symlinks + edited config.json), rewritten by setup at each start
+    PT_HPU_LAZY_MODE: "0"                     # torch.compile mode: eager decodes at about 5 tok/s
+    VLLM_T_COMPILE_DYNAMIC_SHAPES: "false"    # static shapes; the dynamic-shape path fails in the graph compiler
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"
+    VLLM_SKIP_WARMUP: "false"                 # warm every shape at start; otherwise first use compiles for 10-30 s
+    MIMO_SWA_KV_GROUPS: "1"                   # window-sized KV for the 39 sliding layers: 5.33x the KV blocks
+    MIMO_GA_TILE: "1"                         # tiled global-attention prefill: what lets 512K prompts fit
+    VLLM_LONG_PREFILL_SHARE: "0.5"            # a long prefill takes at most half the wall time while others decode
+    VLLM_LONG_PREFILL_SHARE_ASYNC: "1"        # make that share exact under async scheduling
+    VLLM_LONG_PREFILL_MIN_TOKENS: "65536"     # prompts from this length count as long
+    VLLM_MOE_CHUNK: "256"                     # MoE op slot chunking (output-neutral)
+    VLLM_MOE_TOKEN_BOUNDARY: "2048"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"   # first-use compiles and 500K prefills outlast the defaults
+    VLLM_RPC_TIMEOUT: "3600000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "3600"
+  setup:
+    # Stage the checkpoint: no weight copies, config.json without quantization_config and with layer_types
+    - >-
+      python3 "$COOKBOOK/ports/mimo-v2-6-flash/convert/stage_checkpoint.py" XiaomiMiMo/MiMo-V2.6-Flash-RL "$CHECKPOINT_DIR"
+      --revision 5711b268169967567844e1e560e8a3966da959b1 || exit 1
+  buckets: null
+  required_fixes:
+    - prompt-order                   # prefix-cache read-before-write across requests
+    - sampling-rows-refresh          # device sampling rows stale after batch reorders
+    - structured-output-rows         # structured-output steps sample rows with the wrong params
+    - bad-words-index                # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows               # logit_bias, min_p, min_tokens silently ignored
+    - async-inputs                   # a decode left out of a step behind long-prompt chunks repeats its last token
+    - async-discard-counter          # AttributeError on the first preemption under async scheduling
+    - resumed-prefill-logits         # a request resumed after preemption repeats its earlier output
+    - gather-logprobs-int32          # top_logprobs ids corrupted
+    - logprobs-decode-guard          # a bad logprob id no longer kills the API server
+    - swa-decode-window              # the exact decode window the port's runner patch extends to mimo_v2
+    - rank-exception-fatal           # an exception on a non-zero TP rank stops the engine instead of serving garbage
+    - vllm-long-prefill-share        # opt-in: one 500K prefill no longer stalls every other stream
+  verified: []
+  notes:
+    - >-
+      Needs the port image (ports/mimo-v2-6-flash). Its install.sh applies the v0.26.0 profile and vllm-long-prefill-share before the port's runner
+      patches, so the launch's fix step only confirms them.
+    - "TP8 only: window-sized KV needs the global and sliding layers to hold the same KV heads per rank."
+    - "A start loads in about 3 minutes from a warm page cache, then warms up every shape for 40 to 50 minutes."

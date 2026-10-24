@@ -8,15 +8,16 @@ production at 512K tokens per request, with window-sized KV for the sliding laye
 !!! summary "At a glance"
     - **Checkpoint:** [XiaomiMiMo/MiMo-V2.6-Flash-RL](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL), MIT.
       Routed experts are OCP MXFP4 in the checkpoint; production re-encodes them to FP8 e4m3 at load, exactly
-      (every one of the 36,096 expert tensors passes a round-trip check). Nothing is converted offline.
+      (every one of the 36,096 expert tensors passes a round-trip check). No weights are converted offline; a
+      staging script links the checkpoint and edits only its `config.json`.
     - **Hardware:** 8 Gaudi 2 cards, one node, TP8 with the experts split over the 8 ranks. 512K tokens per
       request, 16 sequences.
     - **Stack:** Gaudi software 1.24.1, vllm-gaudi `v0.26.0` (vLLM `568afb3a`), torch.compile mode (`PT_HPU_LAZY_MODE=0`) with static
       shapes.
     - **Status:** serving production traffic.
     - **Headline:**
-        - 33.9 / 33.4 / 32.5 tok/s per stream at 1 / 4 / 16 streams (production configuration on an unrouted
-          canary, warm, 256-token runs).
+        - 33.9 / 33.4 / 32.5 tok/s per stream at 1 / 4 / 16 streams (production configuration on a server
+          without user traffic, warm, 256-token runs).
         - Needles 3/3 at 500K, and 4 of 4 with four 500K prompts at once (one server).
         - Window-sized KV gives 5.33x the token capacity of stock vllm-gaudi with identical outputs.
 
@@ -115,16 +116,16 @@ hit up to 500K. MiMo also reads imperative "IMPORTANT NOTE" needles as prompt in
 
 | Measurement | Result | Measured as |
 | --- | --- | --- |
-| Decode per stream at 1 / 4 / 16 streams, production configuration | 33.9 / 33.4 / 32.5 tok/s (aggregate 34 / 133 / 520) | unrouted canary, warm, 256-token runs |
+| Decode per stream at 1 / 4 / 16 streams, production configuration | 33.9 / 33.4 / 32.5 tok/s (aggregate 34 / 133 / 520) | server without user traffic, warm, 256-token runs |
 | Decode at 1 stream, short / 128K / 258K context, TP8 FP8 at 256K max | 36.7 / 38.4 / 37.8 tok/s | one dev-pod server |
 | Others' decode while one 500K prompt prefills: threshold 4096 only / plus share 0.5 | 0.4 / 14 to 18 tok/s | separate server starts, one dev pod |
-| Others' speed kept during a 200K prefill, with 1 and with 3 others | stock share: 34% and 31%; exact under async: 50% and 49% | different conditions: separate canary restarts on different nodes |
-| MiMo-V2.6-Pro, MXFP4 MoE kernels (canary only), 1 / 4 streams per stream | 18.1 / 8.8 to 39.7 / 23.5 tok/s | same-node A/B, stock canary pod then kernel canary pod |
+| Others' speed kept during a 200K prefill, with 1 and with 3 others | stock share: 34% and 31%; exact under async: 50% and 49% | different conditions: separate server restarts on different nodes |
+| MiMo-V2.6-Pro, MXFP4 MoE kernels (test deployment only), 1 / 4 streams per stream | 18.1 / 8.8 to 39.7 / 23.5 tok/s | same-node A/B, stock server then kernel server |
 
 Decode speed does not fall with context: 39 of the 48 layers read a 128-token window. The exact share costs the
 long prompt a third more time to first token (178 to 237 s with one other stream). The Pro row uses
 [XiaomiMiMo/MiMo-V2.6-Pro-RL](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL) at TP8 with the
-[MXFP4 MoE kernels](../kernels/mxfp4-moe.md); perplexity was unchanged. It is a canary result, not production.
+[MXFP4 MoE kernels](../kernels/mxfp4-moe.md); perplexity was unchanged. It is a test-deployment result, not production, and not part of the port below.
 
 ## What it taught about Gaudi
 
@@ -141,6 +142,10 @@ long prompt a third more time to first token (178 to 237 s with one other stream
 
 ## Availability
 
-The integration code (HPU model, windowed-KV helper and runner patches) is not published in this repository yet.
-It depends on model code outside vllm-gaudi: vLLM's MiMo-V2 model definition and the MiMo checkpoint layout. The
-generic pieces are published as [fixes](../fixes/index.md).
+The port is in this repository: [`ports/mimo-v2-6-flash`](https://github.com/thediymaker/gaudi-cookbook/tree/main/ports/mimo-v2-6-flash)
+(a vLLM plugin, two runner patches, the checkpoint staging script and the gates), with the recipe
+[MiMo-V2.6-Flash-RL](../recipes/mimo-v2-6-flash-rl.md). The port image is built from a stock vllm-gaudi
+`v0.26.0` image by the port's `install.sh`, which applies the release's fix profile (including
+[swa-decode-window](../fixes/swa-decode-window.md), whose exact decode window the port extends to MiMo) and
+[vllm-long-prefill-share](../fixes/vllm-long-prefill-share.md) before the port's own patches. MiMo-V2.6-Pro is not
+part of it.

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mimo-v2-hpu"
+version = "0.1.0"
+description = "MiMo-V2.6-Flash on Intel Gaudi for vllm-gaudi v0.26.0"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+mimo_v2_hpu = "mimo_v2_hpu:register"
+
+[tool.setuptools]
+packages = ["mimo_v2_hpu"]
