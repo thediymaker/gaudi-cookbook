@@ -5,9 +5,10 @@
     python3 device_ops.py [CHECKPOINT_DIR]
 
 - sliding-window attention with sinks (ops.swa_band_attention) on the device in bf16 against the fp32 reference,
-  at the head layouts of TP8 (8 query heads, 1 KV head per rank) and of a wider split;
+  at the head layouts of TP8 (Flash 8 query heads, Pro 16, 1 KV head per rank) and of a wider split;
 - the MXFP4 to FP8 expert re-encode on the device: exact, and byte-identical to the CPU result, on a sample of real
-  expert tensors (needs CHECKPOINT_DIR, the public checkpoint or the staged copy);
+  expert tensors (needs CHECKPOINT_DIR, the public checkpoint or the staged copy). Flash only: Pro serves its
+  experts as MXFP4, and mxk_ops.py checks its expert path;
 - for information, the device's fp32 cos at a large argument, which is why RoPE tables are built on the CPU.
 """
 
@@ -36,7 +37,7 @@ def check_swa() -> None:
     torch.manual_seed(0)
     W, d, bs = 128, 192, 128
     worst = 0.0
-    for nh, kvh in ((8, 1), (16, 2)):
+    for nh, kvh in ((8, 1), (16, 1), (16, 2)):
         for S, ctx in ((1, 0), (128, 0), (129, 0), (300, 0), (37, 50), (200, 128), (256, 200), (64, 1000)):
             q = torch.randn(1, S, nh, d) * 0.5
             k = torch.randn(1, S, kvh, d) * 0.5
@@ -62,6 +63,10 @@ def check_swa() -> None:
 def check_experts(ckpt: str) -> None:
     from safetensors import safe_open
 
+    with open(os.path.join(ckpt, "config.json")) as fh:
+        if json.load(fh).get("n_routed_experts") != 256:
+            print("SKIP expert-fp8-device: not the Flash checkpoint (Pro keeps MXFP4 experts; run mxk_ops.py)")
+            return
     with open(os.path.join(ckpt, "model.safetensors.index.json")) as fh:
         wm = json.load(fh)["weight_map"]
     n = bad = 0

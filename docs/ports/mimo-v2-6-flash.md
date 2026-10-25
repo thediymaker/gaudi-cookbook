@@ -16,10 +16,10 @@ production at 512K tokens per request, with window-sized KV for the sliding laye
       shapes.
     - **Status:** serving production traffic.
     - **Headline:**
-        - 33.9 / 33.4 / 32.5 tok/s per stream at 1 / 4 / 16 streams (production configuration on a server
-          without user traffic, warm, 256-token runs).
-        - Needles 3/3 at 500K, and 4 of 4 with four 500K prompts at once (one server).
-        - Window-sized KV gives 5.33x the token capacity of stock vllm-gaudi with identical outputs.
+        - 33.8 / 33.2 / 25.6 tok/s per stream at 1 / 4 / 16 streams (the recipe as written, warm, 256-token runs).
+        - Needles 3/3 at 128K, 256K and 500K, and 4 of 4 with four 500K prompts at once (one server).
+        - Window-sized KV gives 5.33x the token capacity of stock vllm-gaudi with token-identical greedy outputs
+          on single requests.
 
 ## Why it needed a port
 
@@ -60,8 +60,8 @@ anchors:
   there are no new graph variants.
 
 Global context costs 6,912 B per token per card instead of 36,864. The server reports 56,774 usable blocks against
-10,645 without the change, 7.27M tokens. Prefill and greedy outputs are identical with the change on and off. It is
-TP8 only: at TP4 the global and sliding layers hold different KV-head counts per rank, so their pages differ.
+10,645 without the change, 7.27M tokens. Greedy outputs of single requests are token-identical with the change
+on and off. It is TP8 only: at TP4 the global and sliding layers hold different KV-head counts per rank, so their pages differ.
 
 ### Tiled global-attention prefill
 
@@ -79,7 +79,10 @@ upstream vLLM on the same prompts was clean. Probing q and k around positions 19
 frequency accurate to about 5e-4 rad except the fastest, whose angle equals the position in radians: its error was
 random (median π/2). Gaudi fp32 cos/sin are wrong past about 1.5e5 radians (`cos(200000)` is off by 0.997), and vLLM built the table on the device.
 Rebuilding it on the CPU in float64 brings the rotary error to bf16 level (0.27%). The generic fix is
-[rope-cpu-cache](../fixes/rope-cpu-cache.md).
+[rope-cpu-cache](../fixes/rope-cpu-cache.md). The port's own table (`ops.exact_cos_sin`) names the CPU device:
+vLLM builds the model under `torch.device("hpu")`, and float64 tensors created there are computed in fp32
+(`cos(200000)` came back as 0.0). Without the explicit device the 262K needles failed 0/3 with the same
+duplicated-digit copies.
 
 ### The async duplicated-token fix
 
@@ -120,12 +123,45 @@ hit up to 500K. MiMo also reads imperative "IMPORTANT NOTE" needles as prompt in
 | Decode at 1 stream, short / 128K / 258K context, TP8 FP8 at 256K max | 36.7 / 38.4 / 37.8 tok/s | one dev-pod server |
 | Others' decode while one 500K prompt prefills: threshold 4096 only / plus share 0.5 | 0.4 / 14 to 18 tok/s | separate server starts, one dev pod |
 | Others' speed kept during a 200K prefill, with 1 and with 3 others | stock share: 34% and 31%; exact under async: 50% and 49% | different conditions: separate server restarts on different nodes |
-| MiMo-V2.6-Pro, MXFP4 MoE kernels (test deployment only), 1 / 4 streams per stream | 18.1 / 8.8 to 39.7 / 23.5 tok/s | same-node A/B, stock server then kernel server |
 
 Decode speed does not fall with context: 39 of the 48 layers read a 128-token window. The exact share costs the
-long prompt a third more time to first token (178 to 237 s with one other stream). The Pro row uses
-[XiaomiMiMo/MiMo-V2.6-Pro-RL](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL) at TP8 with the
-[MXFP4 MoE kernels](../kernels/mxfp4-moe.md); perplexity was unchanged. It is a test-deployment result, not production, and not part of the port below.
+long prompt a third more time to first token (178 to 237 s with one other stream). MiMo-V2.6-Pro has its own
+section below.
+
+## MiMo-V2.6-Pro
+
+[XiaomiMiMo/MiMo-V2.6-Pro-RL](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL) (MIT) is the same architecture
+at 1.02T parameters (42B active): 70 layers, 60 of them sliding, 128 query and 8 KV heads, 384 experts, top-8. The
+port serves it with the same code: the model, the window-sized KV groups, the tiled global prefill and the runner
+patches do not change. At TP8 both layer kinds hold one KV head per rank, so window-sized KV works, here as 7 KV
+groups (global 10 layers, sliding 6 x 10) over 10 shared tensors. The recipe is
+[MiMo-V2.6-Pro-RL](../recipes/mimo-v2-6-pro-rl.md).
+
+The difference is the experts. The checkpoint is 566 GB, most of it MXFP4 experts. The FP8 re-encode that serves
+Flash would double the expert memory, so Pro keeps the MXFP4 bytes on the device (`MIMO_EXPERT_DTYPE=mxfp4`) and
+runs them on the stock MXFP4 MoE op. Decode on that op spends most of its time unpacking every expert it touches to
+bf16. With `MIMO_MXK=1`, MoE calls of up to 16 tokens run the [MXFP4 MoE kernels](../kernels/mxfp4-moe.md) instead,
+which read the packed experts directly:
+
+- **Variant.** Pro's per-rank shapes (K 6144, I 2048, 48 local experts, `[gate; up]` rows, plain SiLU) are inside
+  the `glm` variant's caps, so it uses `--variant glm` and has no variant of its own.
+- **torch.compile.** The window-sized KV needs compile mode, and the kernels' lazy-mode op library does not trace.
+  `build.sh --pt2` adds `libmxk_op_pt2.so`: the same ops on the PT2 custom-op API with Meta implementations. The PT2
+  ops register their kernel with the bridge on their first eager call, which a compiled graph never makes, so each
+  worker calls them once eagerly after loading.
+- **Environment.** The plugin sets `GC_KERNEL_PATH` to the kernel library when vLLM loads it in the API server
+  process, before the engine and workers start. Every process then opens its device with the kernels registered.
+
+| Measurement | Stock MoE op | With the kernels | Measured as |
+| --- | --- | --- | --- |
+| Decode per stream at 1 / 4 / 8 streams | 18.1 / 8.8 / 6.2 tok/s | 39.7 / 23.5 / 16.2 tok/s (aggregate 40 / 94 / 130) | test deployment, same node, stock server then kernel server, 256-token runs |
+| Prompt NLL, 255 tokens (fp32 oracle 0.6708) | 0.6797 | 0.6797 | same |
+| Decode vs teacher-forced, 200 greedy tokens | 0.035 nats | 0.031 nats | same |
+| Needles at about 120K / 240K | 3/3 / 2/3 (one refusal) | 3/3 / 3/3 | same |
+| GSM8K 5-shot, 200 samples | not run | 0.925 | same, kernel server |
+
+The test deployment ran the port's code from its own copies with the recipe's settings, and a kernel library built
+from the same `glm` kernel code; the recipe page lists what has run as written.
 
 ## What it taught about Gaudi
 
@@ -139,13 +175,17 @@ long prompt a third more time to first token (178 to 237 s with one other stream
   only.
 - vLLM core's hybrid KV manager already works for HPU sliding-window layers; the missing pieces are all in the
   runner. [Muse Spark Open](muse-spark-open.md) reuses the same design on vllm-gaudi v0.30.0.
+- **Custom TPC ops in torch.compile need one eager call per process.** The PT2 custom-op API registers an op's
+  kernel with the bridge on its first eager call, and a compiled graph that uses the op fails ("isn't registered in
+  KernelRegistry") until that call has run.
 
 ## Availability
 
 The port is in this repository: [`ports/mimo-v2-6-flash`](https://github.com/thediymaker/gaudi-cookbook/tree/main/ports/mimo-v2-6-flash)
-(a vLLM plugin, two runner patches, the checkpoint staging script and the gates), with the recipe
-[MiMo-V2.6-Flash-RL](../recipes/mimo-v2-6-flash-rl.md). The port image is built from a stock vllm-gaudi
-`v0.26.0` image by the port's `install.sh`, which applies the release's fix profile (including
-[swa-decode-window](../fixes/swa-decode-window.md), whose exact decode window the port extends to MiMo) and
-[vllm-long-prefill-share](../fixes/vllm-long-prefill-share.md) before the port's own patches. MiMo-V2.6-Pro is not
-part of it.
+(a vLLM plugin, two runner patches, the checkpoint staging script, the MXFP4 kernel switch and the gates), with the
+recipes [MiMo-V2.6-Flash-RL](../recipes/mimo-v2-6-flash-rl.md) and [MiMo-V2.6-Pro-RL](../recipes/mimo-v2-6-pro-rl.md).
+One port image serves both. It is built from a stock vllm-gaudi `v0.26.0` image by the port's `install.sh`, which
+applies the release's fix profile (including [swa-decode-window](../fixes/swa-decode-window.md), whose exact decode
+window the port extends to MiMo) and [vllm-long-prefill-share](../fixes/vllm-long-prefill-share.md) before the
+port's own patches, and builds the [MXFP4 MoE kernels](../kernels/mxfp4-moe.md) (`glm` variant with the
+`torch.compile` op library) that the Pro recipe turns on.

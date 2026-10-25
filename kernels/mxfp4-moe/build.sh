@@ -8,7 +8,7 @@
 #   - hpu_custom_op.h and libhabana_pytorch_plugin.so (from the installed habana_frameworks package)
 #   - g++, objcopy, strip, python3 with torch
 #
-#   ./build.sh [--variant NAME] [--extra-kernel DIR]... [OUT_DIR]      default: --variant gptoss, OUT_DIR ./dist
+#   ./build.sh [--variant NAME] [--extra-kernel DIR]... [--pt2] [OUT_DIR]   default: --variant gptoss, OUT_DIR ./dist
 #
 # Variants (the kernels each model's integration calls; one variant per serving image):
 #   gptoss   mxk_w13xib mxk_w2xb          gpt-oss: interleaved w13 + bias + SwiGLU-OAI, w2 + bias, <= 32 tokens
@@ -28,6 +28,10 @@
 #              TORCH_LIBRARY_FRAGMENT(custom_op, m) / TORCH_LIBRARY_IMPL(custom_op, HPU, m) (hpu_custom_op.h API).
 # The extra GUIDs follow the variant's GUIDs in the library, the gates expect them, and they are part of the version.
 #
+# --pt2 also builds libmxk_op_pt2.so (src/mxk_op_pt2.cpp): the same ops on the PT2 custom-op API with Meta
+# implementations, for models served in torch.compile mode (PT_HPU_LAZY_MODE=0). Not for gptoss (lazy mode) and not
+# with --extra-kernel (an extra kernel's op.cpp uses the lazy API).
+#
 # Env: TPC_CLANG (compiler path); MXK_BUILD_DIR (scratch dir, default /tmp/mxk_<variant>_v8_build: tpc-clang records
 # it in the ELF, so a fixed path keeps the kernel ELFs reproducible); MXK_STOCK_LIB (stock kernel library for the
 # gate, default /usr/lib/habanalabs/libtpc_kernels.so).
@@ -36,6 +40,7 @@
 #   libmxk_tpc.so     kernel library for GC_KERNEL_PATH: the variant's kernels, every other GUID forwarded to the
 #                     stock library, so GC_KERNEL_PATH stays a single file and the recipe cache keeps working
 #   libmxk_op_lazy.so the variant's torch.ops.custom_op.* ops (lazy mode)
+#   libmxk_op_pt2.so  with --pt2: the same ops for torch.compile mode
 #   mxk_lib_gate      the library gate (run here, and again by an image build if it likes)
 #   MANIFEST          version, variant, toolchain versions, sha256 of every kernel ELF, kernel code and library
 # Compiled files are build outputs; do not commit them.
@@ -46,13 +51,15 @@ SRC=$HERE/src
 VARIANT=gptoss
 EXTRA_DIRS=()
 OUT=""
+PT2=0
 while [ $# -gt 0 ]; do
   case $1 in
     --variant) VARIANT=$2; shift 2 ;;
     --variant=*) VARIANT=${1#*=}; shift ;;
     --extra-kernel) EXTRA_DIRS+=("$(cd "$2" && pwd)"); shift 2 ;;
     --extra-kernel=*) EXTRA_DIRS+=("$(cd "${1#*=}" && pwd)"); shift ;;
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    --pt2) PT2=1; shift ;;
+    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) [ -z "$OUT" ] || { echo "one OUT_DIR only" >&2; exit 2; }; OUT=$1; shift ;;
   esac
@@ -82,6 +89,10 @@ for d in "${EXTRA_DIRS[@]}"; do
   EXTRA+=("$g")
 done
 [ "$VARIANT" != none ] || [ ${#EXTRA[@]} -gt 0 ] || { echo "--variant none needs at least one --extra-kernel" >&2; exit 2; }
+if [ "$PT2" = 1 ]; then
+  [ "$VARIANT" != gptoss ] && [ "$VARIANT" != none ] || { echo "--pt2: no torch.compile ops for variant $VARIANT" >&2; exit 2; }
+  [ ${#EXTRA[@]} -eq 0 ] || { echo "--pt2 cannot be combined with --extra-kernel (lazy-mode op.cpp)" >&2; exit 2; }
+fi
 
 OUT=${OUT:-$HERE/dist}
 mkdir -p "$OUT"
@@ -105,6 +116,7 @@ SRCS=("$SRC/mxk8_core.h" "$SRC/mxk8_w13.h" "$SRC/mxk8_w2.h")
 for n in "${KERNELS[@]}"; do SRCS+=("$SRC/${KSRC[$n]}.c"); done
 SRCS+=("$SRC/mxk_tpc_lib.cpp" "$SRC/mxk_tpc.map" "$SRC/mxk_op_lazy.cpp" "$HERE/build.sh")
 for d in "${EXTRA_DIRS[@]}"; do SRCS+=("$d"/*.c "$d/glue.inc" "$d/op.cpp"); done
+[ "$PT2" = 0 ] || SRCS+=("$SRC/mxk_op_pt2.cpp")
 SRCHASH=$(cat "${SRCS[@]}" | sha256sum | cut -c1-12)
 VERSION=$VARIANT-v8-$SRCHASH
 HAS=()
@@ -154,10 +166,22 @@ g++ -O2 -fPIC -shared -std=c++17 -D_GLIBCXX_USE_CXX11_ABI="$ABI" -DTORCH_EXTENSI
   -L"$TL" -lhabana_pytorch_plugin -L"$TORCHLIB" -ltorch -ltorch_cpu -lc10 -Wl,-rpath,"$TL" \
   -Wl,-soname,libmxk_op_lazy.so -o "$B/libmxk_op_lazy.so"
 strip --strip-unneeded "$B/libmxk_tpc.so" "$B/libmxk_op_lazy.so"
+OPLIBS=(libmxk_op_lazy.so)
+if [ "$PT2" = 1 ]; then
+  # 3b. the same ops on the PT2 custom-op API (torch.compile mode), with Meta implementations
+  # shellcheck disable=SC2086
+  g++ -O2 -fPIC -shared -std=c++17 -D_GLIBCXX_USE_CXX11_ABI="$ABI" -DTORCH_EXTENSION_NAME=mxk_op_pt2 "${HAS[@]}" \
+    -I"$TI" -I/usr/include/habanalabs -I"$PYINC" $TORCHINC "$SRC/mxk_op_pt2.cpp" \
+    -L"$TL" -lhabana_pytorch2_plugin -L"$TORCHLIB" -ltorch -ltorch_cpu -lc10 -Wl,-rpath,"$TL" \
+    -Wl,-soname,libmxk_op_pt2.so -o "$B/libmxk_op_pt2.so"
+  strip --strip-unneeded "$B/libmxk_op_pt2.so"
+  OPLIBS+=(libmxk_op_pt2.so)
+fi
 
 # 4. library gate (host only, no device needed): stock GUIDs unchanged, then exactly this build's GUIDs
 g++ -O2 -std=c++17 -I/usr/include/habanalabs "$SRC/mxk_lib_gate.cpp" -ldl -o "$B/mxk_lib_gate"
-install -m 0644 "$B/libmxk_tpc.so" "$B/libmxk_op_lazy.so" "$OUT/"
+rm -f "$OUT/libmxk_op_pt2.so"   # a library left from an earlier --pt2 build would not match this one
+for f in libmxk_tpc.so "${OPLIBS[@]}"; do install -m 0644 "$B/$f" "$OUT/"; done
 install -m 0755 "$B/mxk_lib_gate" "$OUT/"
 "$OUT/mxk_lib_gate" "$OUT/libmxk_tpc.so" "$STOCK_LIB" "${ALL[@]}"
 
@@ -168,6 +192,7 @@ HTPV=$(python3 -c "import importlib.metadata as m;print(m.version('habana-torch-
   echo "variant: $VARIANT"
   echo "kernels: ${ALL[*]}"
   echo "extra_kernels: ${EXTRA[*]}"
+  echo "op_libraries: ${OPLIBS[*]}"
   echo "source_sha256_12: $SRCHASH"
   echo "built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "torch: $TORCHV"
@@ -177,10 +202,12 @@ HTPV=$(python3 -c "import importlib.metadata as m;print(m.version('habana-torch-
   # hash (.text and .tpc_metadata sections) does not: equal code hashes mean the same kernel machine code.
   for n in "${ALL[@]}"; do echo "elf_sha256 $n: $(sha256sum "$B/$n.o" | cut -c1-64)"; done
   for n in "${ALL[@]}"; do echo "code_sha256 $n: $(python3 "$HERE/python/tpc_elf_code.py" "$B/$n.o")"; done
-  (cd "$OUT" && sha256sum libmxk_tpc.so libmxk_op_lazy.so | sed 's/^/sha256 /')
+  (cd "$OUT" && sha256sum libmxk_tpc.so "${OPLIBS[@]}" | sed 's/^/sha256 /')
 } > "$OUT/MANIFEST"
 
 # 5. op gate: the op library loads, registers this variant's ops and no op of another variant (lazy mode would hand
 # an op with the same input signature the other op's cached result)
-python3 "$HERE/python/mxk_op_gate.py" --lib "$OUT" --guids "$(IFS=,; echo "${ALL[*]}")"
+for f in "${OPLIBS[@]}"; do
+  python3 "$HERE/python/mxk_op_gate.py" --lib "$OUT" --op-lib "$f" --guids "$(IFS=,; echo "${ALL[*]}")"
+done
 cat "$OUT/MANIFEST"

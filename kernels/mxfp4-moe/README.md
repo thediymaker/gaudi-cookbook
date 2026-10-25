@@ -9,7 +9,7 @@ Full write-up: [docs/kernels/mxfp4-moe.md](../../docs/kernels/mxfp4-moe.md).
 | | |
 | --- | --- |
 | Hardware | Gaudi 2 (`tpc-clang -march=gaudi2`). Gaudi 3 is not built or tested. |
-| Software | Gaudi software 1.24.1, vllm-gaudi `v0.26.0` or `releases/v0.30.0` (same torch and plugin), lazy mode |
+| Software | Gaudi software 1.24.1, vllm-gaudi `v0.26.0` or `releases/v0.30.0` (same torch and plugin), lazy mode; `torch.compile` mode with the `--pt2` op library |
 | Integration | gpt-oss: [`python/`](python/) here, switch `MXFP4_TPC_MOE=1`. Other models: their port under [`ports/`](../../ports/README.md) builds a variant and calls the ops. |
 | Scope | Decode: at most 32 tokens (gpt-oss) or 16 tokens (other variants) and 128 routes per call. Prefill keeps the stock op, except the GLM unpack path. |
 
@@ -20,11 +20,16 @@ Full write-up: [docs/kernels/mxfp4-moe.md](../../docs/kernels/mxfp4-moe.md).
 | Variant | Model | Kernels (GUIDs) | torch ops | Per-rank shapes it was gated at |
 | --- | --- | --- | --- | --- |
 | `gptoss` (default) | `openai/gpt-oss-120b`, `-20b` | `mxk_w13xib`, `mxk_w2xb` | `mxk_w13xib`, `mxk_w2xb` | K = I = 2880, top-4 of 128, interleaved w13 + bias, 64 local experts (TP2 + EP) |
-| `glm` | GLM-5.3, GLM-5.2 (MXFP4) | `mxk_w13x`, `mxk_w2x`, `mxk_deq` | `mxk_w13x` (`interleaved=False`), `mxk_w2x`, `mxk_deq` | K 6144, top-8 of 256, [gate; up] w13, 64 experts x I 1024 (EP4 x TP2) |
+| `glm` | GLM-5.3, GLM-5.2 (MXFP4); MiMo-V2.6-Pro | `mxk_w13x`, `mxk_w2x`, `mxk_deq` | `mxk_w13x` (`interleaved=False`), `mxk_w2x`, `mxk_deq` | K 6144, top-8 of 256, [gate; up] w13, 64 experts x I 1024 (EP4 x TP2) |
 | `dsv41` | DeepSeek-V4.1-Flash | `mxk_w13xi`, `mxk_w2x` (+ the port's `dsv41_sinkhorn`) | `mxk_w13x` (`interleaved=True`), `mxk_w2x` | K 5120, I 2304, top-6 of 384, interleaved w13, 48 local experts (EP8) |
 | `muse` | Muse Spark Open | `mxk_w13x`, `mxk_w2xr` | `mxk_w13x` (`interleaved=False`), `mxk_w2xr` | K 4096, top-8 of 256, 128 experts x I 1024 (EP2 x TP4) |
 | `kimi` | Kimi-K2.7 (MXFP4) | `mxk_w13xt`, `mxk_w2x` | `mxk_w13x` (`interleaved=False`), `mxk_w2x` | K 7168, I 2048, top-8 of 384, [gate; up] w13, 48 local experts (EP8) |
 | `none` | a port that needs only its own kernel (GLM-5.3-Flash) | the `--extra-kernel` GUIDs only | the port's own ops | needs at least one `--extra-kernel` |
+
+MiMo-V2.6-Pro uses the `glm` build: its per-rank shapes at EP8 (K 6144, I 2048, top-8 of 384, 48 local experts) are
+inside the `glm` caps (K a multiple of 512 up to 6144, I a multiple of 512 up to 3072), its rows are `[gate; up]` and
+its activation is plain SiLU. It serves in `torch.compile` mode, so its port builds with `--pt2`, and the port's
+`tests/hpu/mxk_ops.py` checks the kernels at those shapes on checkpoint layers.
 
 `mxk_w13xt` is `mxk_w13x` for rows longer than the 6144 values the kernel can stage in vector local memory: the
 first 12 chunks of 512 come from local memory, the rest from the tensor (`MXK8_XTAIL` in `src/mxk8_core.h`).
@@ -32,7 +37,7 @@ first 12 chunks of 512 come from local memory, the rest from the tensor (`MXK8_X
 ## Build interface
 
 ```bash
-kernels/mxfp4-moe/build.sh [--variant gptoss|glm|dsv41|muse|kimi] [--extra-kernel DIR]... [OUT_DIR]
+kernels/mxfp4-moe/build.sh [--variant gptoss|glm|dsv41|muse|kimi] [--extra-kernel DIR]... [--pt2] [OUT_DIR]
 ```
 
 Run it inside the serving image (or a Dockerfile stage `FROM` it); the default `OUT_DIR` is `dist/`. It writes:
@@ -41,6 +46,7 @@ Run it inside the serving image (or a Dockerfile stage `FROM` it); the default `
 | --- | --- |
 | `libmxk_tpc.so` | The kernel library for `GC_KERNEL_PATH`. It serves the variant's kernels and forwards every other GUID to the stock `libtpc_kernels.so`, so `GC_KERNEL_PATH` stays one file and the recipe cache keeps working. Its version string is `mxk_tpc <variant>-v8-<hash>`. |
 | `libmxk_op_lazy.so` | The variant's ops under `torch.ops.custom_op`, lazy mode. Load it with `torch.ops.load_library`. |
+| `libmxk_op_pt2.so` | With `--pt2`: the same ops and schemas on the PT2 custom-op API, with Meta implementations, for `torch.compile` mode (`PT_HPU_LAZY_MODE=0`). Call each op once eagerly per process before the first compiled graph that uses it: the PT2 API registers the op's kernel with the bridge on that call. Not built for `gptoss` or with `--extra-kernel`. A process loads one of the two op libraries. |
 | `mxk_lib_gate` | The library gate binary: `mxk_lib_gate <libmxk_tpc.so> <stock lib> <guid>...` |
 | `MANIFEST` | `version`, `variant`, `kernels`, `extra_kernels`, toolchain versions, `elf_sha256` and `code_sha256` per kernel, `sha256` of both libraries |
 
@@ -49,7 +55,7 @@ The build fails unless both gates pass:
 - **library gate:** the stock GUIDs are listed unchanged and in order, followed by exactly the build's GUIDs; the
   six graph-compiler entry points are exported; `GetLibVersion` matches stock;
 - **op gate** (`python/mxk_op_gate.py`): the version matches `MANIFEST`, the op library loads, it registers the ops
-  of every GUID and no op of another variant.
+  of every GUID and no op of another variant. With `--pt2` it runs on both op libraries.
 
 `code_sha256` is the hash of the kernel's machine code (`.text` and `.tpc_metadata`, `python/tpc_elf_code.py`).
 Unlike `elf_sha256` it does not change with comments or paths, which tpc-clang embeds in the ELF. Equal code hashes
@@ -127,12 +133,13 @@ kernel version. `mxfp4_tpc_moe_rt.setup_env` does exactly this for gpt-oss; port
 | `src/mxk_deq.c` | The prefill unpack kernel (GLM) |
 | `src/mxk_tpc_lib.cpp`, `src/mxk_tpc.map` | Kernel library glue, compiled per variant with `-DMXK_HAS_<guid>`; forwards every stock GUID |
 | `src/mxk_op_lazy.cpp` | The torch ops, compiled per variant the same way |
+| `src/mxk_op_pt2.cpp` | The same ops on the PT2 custom-op API for `torch.compile` mode (`--pt2`) |
 | `src/mxk_lib_gate.cpp` | Library gate |
 | `build.sh` | Builds a variant into `dist/` (or a given directory) and writes a `MANIFEST` |
 | `python/mxfp4_tpc_moe_rt.py`, `python/install_mxfp4_tpc_moe.py` | gpt-oss runtime and its fail-closed installer into vllm-gaudi |
 | `python/mxk_harness.py` | Variant shapes, CPU fp32 reference, stock and kernel runners for the tests and the benchmark |
 | `python/mxk_op_gate.py`, `python/tpc_elf_code.py` | Op gate; kernel code hashes |
-| `tests/test_*.py` | CPU tests of the host-side layout code (pytest, no device) |
+| `tests/test_*.py` | CPU tests of the host-side layout code and of the two op libraries' schemas (pytest, no device) |
 | `tests/parity_hpu.py`, `tests/run_parity.sh` | One-card parity per variant against the stock op and a CPU fp32 reference |
 | `bench/bench_moe.py` | Per-call micro benchmark per variant, stock vs kernels |
 

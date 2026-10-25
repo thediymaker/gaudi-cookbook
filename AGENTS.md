@@ -22,7 +22,7 @@ Everything here was run on these components. Treat anything outside them as unte
 | Gaudi software | 1.24.1. The container release must match the host driver. |
 | Base image | `vault.habana.ai/gaudi-docker/1.24.1/ubuntu24.04/habanalabs/pytorch-installer-2.11.0` |
 | vllm-gaudi | `v0.26.0` tag (`b059f9c`, vLLM `568afb3a`) or `releases/v0.30.0` branch (`058f107`, vLLM `ced6857a`) |
-| Execution mode | lazy mode, `PT_HPU_LAZY_MODE=1`, unless the recipe's `gaudi.env` sets `PT_HPU_LAZY_MODE=0` (compile mode: the Gated DeltaNet hybrids, MiMo-V2.6-Flash and MiniMax-M3) |
+| Execution mode | lazy mode, `PT_HPU_LAZY_MODE=1`, unless the recipe's `gaudi.env` sets `PT_HPU_LAZY_MODE=0` (compile mode: the Gated DeltaNet hybrids, MiMo-V2.6-Flash and -Pro, and MiniMax-M3) |
 
 ## Where to look
 
@@ -33,7 +33,7 @@ Everything here was run on these components. Treat anything outside them as unte
 | Explain an error, crash or wrong output | the `## Symptom` section of every `fixes/*/README.md` | Search for the error text: `grep -rn -A8 "^## Symptom" fixes/*/README.md`. Each fix lists who is affected and the releases. |
 | Know which fixes a release needs | `python3 fixes/apply_all.py --list` and `docs/fixes/index.md` | The profile for the release covers the generic fixes. Opt-in fixes are named on the command line. |
 | Build a serving image | `docs/getting-started.md` | Follow the build steps. They keep the Habana PyTorch fork. |
-| Speed up MXFP4 MoE decode | `kernels/mxfp4-moe/README.md` and `docs/kernels/mxfp4-moe.md` | Opt-in. gpt-oss uses the hook in `kernels/mxfp4-moe/python/`; GLM-5.x, DeepSeek-V4.1-Flash, Muse Spark Open and Kimi use their port. See the rules below. |
+| Speed up MXFP4 MoE decode | `kernels/mxfp4-moe/README.md` and `docs/kernels/mxfp4-moe.md` | Opt-in. gpt-oss uses the hook in `kernels/mxfp4-moe/python/`; GLM-5.x, DeepSeek-V4.1-Flash, Muse Spark Open, Kimi and MiMo-V2.6-Pro use their port. See the rules below. |
 | Serve a ported model (a recipe with `gaudi.port`) | `ports/<port>/README.md`, then the recipe | Build the port image from the stock image with `ports/<port>/Dockerfile`, then launch as for any recipe. Run `ports/<port>/tests/hpu/run_gates.sh` before serving users. |
 | Port a model that has no vllm-gaudi path | `ports/README.md`, `docs/ports/*.md`, then `docs/results/platform-findings.md` | The port contract says how a port is laid out; the write-ups describe each design and its gates; the platform findings list Gaudi behaviours that break new models (FusedSDPA sinks and windows, fp32 trig, lazy-mode casts). |
 | Serve a model that does not run on vLLM (text-to-speech, EmbeddingGemma 2) | `servers/README.md`, then `servers/<server>/README.md` | Build the server image from its `Dockerfile`, then run `tests/hpu/run_gates.sh` on the device. Orpheus is the exception: its LLM half runs on a stock vllm-gaudi image with fixes. |

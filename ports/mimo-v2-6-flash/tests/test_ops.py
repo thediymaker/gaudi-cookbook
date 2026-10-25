@@ -148,6 +148,13 @@ def test_exact_cos_sin_at_long_positions():
     assert abs(table[200_000, 32].item() - math.sin(200_000.0)) < 1e-12
 
 
+def test_exact_cos_sin_ignores_the_default_device():
+    # vLLM builds the model under torch.device(<accelerator>); the table must still come from the CPU
+    with torch.device("meta"):
+        table = ops.exact_cos_sin(8, 4, 1e7)
+    assert table.device.type == "cpu"
+
+
 def test_checkpoint_experts_round_trip():
     """Set MIMO_CHECKPOINT_DIR to a MiMo-V2.6-Flash checkpoint to re-encode a sample of real expert tensors."""
     import json

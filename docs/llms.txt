@@ -85,6 +85,8 @@ Agents: read AGENTS.md first. It maps tasks to files and gives the rules: check 
   - [amd/MiniMax-M3-MXFP4 recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/amd/MiniMax-M3-MXFP4/recipe.yaml)
 - [MiMo-V2.6-Flash-RL](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/mimo-v2-6-flash-rl.md): 309B MoE (15B active) with 128-token sliding-window attention and sinks, served at 512K context on one 8-card Gaudi 2 node through a port.
   - [XiaomiMiMo/MiMo-V2.6-Flash-RL recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/XiaomiMiMo/MiMo-V2.6-Flash-RL/recipe.yaml)
+- [MiMo-V2.6-Pro-RL](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/mimo-v2-6-pro-rl.md): 1.02T MoE (42B active), 128-token sliding windows with sinks, MXFP4 experts on the MXFP4 decode kernels, 256K context on one 8-card node.
+  - [XiaomiMiMo/MiMo-V2.6-Pro-RL recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/XiaomiMiMo/MiMo-V2.6-Pro-RL/recipe.yaml)
 - [Inkling-Small](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/inkling-small.md): 276B-A12B MoE with relative-position attention and short convs, text only, BF16 at 256K context on one 8-card Gaudi 2 node (port).
   - [thinkingmachines/Inkling-Small recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/thinkingmachines/Inkling-Small/recipe.yaml)
 

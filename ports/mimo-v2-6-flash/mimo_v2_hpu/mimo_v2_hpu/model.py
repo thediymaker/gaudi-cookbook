@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MiMo-V2 (MiMoV2ForCausalLM, MiMo-V2.6-Flash) on Gaudi, vllm-gaudi v0.26.0. Text path only.
+"""MiMo-V2 (MiMoV2ForCausalLM: MiMo-V2.6-Flash and MiMo-V2.6-Pro) on Gaudi, vllm-gaudi v0.26.0. Text path only.
 
 What differs from upstream vLLM's mimo_v2.py, and why:
 
@@ -10,9 +10,13 @@ What differs from upstream vLLM's mimo_v2.py, and why:
   prefill with the sink, and decode over exactly the last 128 positions with the sink counted once per sequence.
 - Global layers optionally prefill in query tiles (MIMO_GA_TILE=1, attention.MiMoGATiledHPUAttentionImpl).
 - RoPE tables are rebuilt on the CPU in float64 (ops.exact_cos_sin).
-- Routed experts. The checkpoint stores them as OCP MXFP4. Each rank re-encodes its E / tp experts at load to
-  per-output-channel FP8 e4m3 with power-of-two scales (ops.mxfp4_to_fp8, exact, checked on every tensor) and runs
-  the FP8 MoE op with dynamic per-token activation scales. The partial sums are all-reduced over the TP group.
+- Routed experts. The checkpoint stores them as OCP MXFP4; each rank holds E / tp whole experts and the partial
+  sums are all-reduced over the TP group. MIMO_EXPERT_DTYPE picks the device format:
+  fp8 (default, the Flash recipe): re-encoded at load to per-output-channel FP8 e4m3 with power-of-two scales
+  (ops.mxfp4_to_fp8, exact, checked on every tensor), run by the FP8 MoE op with dynamic per-token activation
+  scales. FP8 doubles expert memory, which the Pro checkpoint cannot afford on one node.
+  mxfp4 (the Pro recipe): the checkpoint bytes as they are, run by the stock MXFP4 MoE op, and with MIMO_MXK=1
+  decode-sized calls by the MXFP4 TPC kernels (mxk.py).
 - Routing: fp32 gate logits, sigmoid, e_score_correction_bias for the choice only, top-k, renormalised (the
   reference model's math for n_group == 1).
 - FP8 block weights (fused qkv_proj, the dense MLP of layer 0) are dequantised to bf16 at load, so the checkpoint
@@ -22,6 +26,7 @@ What differs from upstream vLLM's mimo_v2.py, and why:
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 
 import torch
@@ -45,12 +50,29 @@ from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead, 
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.sequence import IntermediateTensors
 
-from . import attention
-from .ops import dequant_fp8_block, dequant_qkv, exact_cos_sin, mxfp4_to_fp8, qkv_rank_rows
+from . import attention, mxk
+from .ops import (
+    MXFP4_BLOCK,
+    dequant_fp8_block,
+    dequant_qkv,
+    exact_cos_sin,
+    mxfp4_expert_slot,
+    mxfp4_to_fp8,
+    qkv_rank_rows,
+)
 
 logger = init_logger("vllm.mimo_v2_hpu")
 
 SKIP_PREFIXES = ("visual.", "audio_encoder.", "speech_embeddings.", "model.mtp.", "mtp.")
+EXPERT_DTYPES = ("fp8", "mxfp4")
+
+
+def expert_dtype() -> str:
+    """MIMO_EXPERT_DTYPE: the device format of the routed experts, fp8 (default) or mxfp4."""
+    v = os.environ.get("MIMO_EXPERT_DTYPE", "fp8").lower()
+    if v not in EXPERT_DTYPES:
+        raise ValueError(f"mimo_v2_hpu: MIMO_EXPERT_DTYPE={v!r}, expected one of {EXPERT_DTYPES}")
+    return v
 
 
 def _exact_rope_table(rope, theta: float) -> None:
@@ -200,10 +222,10 @@ class MiMoV2HpuMLP(nn.Module):
 
 
 class MiMoV2HpuMoE(nn.Module):
-    """Routed experts in FP8, E / tp whole experts per rank (expert parallel over the TP group), no shared experts.
+    """Routed experts, E / tp whole experts per rank (expert parallel over the TP group), no shared experts.
 
-    FP8 doubles expert memory against MXFP4 but skips the per-expert FP4 unpack, and an 8-card node holds the model
-    with room for KV.
+    fp8: FP8 doubles expert memory against MXFP4 but skips the per-expert FP4 unpack; an 8-card node holds Flash
+    with room for KV. mxfp4: the checkpoint bytes on the stock MXFP4 op, decode calls on the kernels with MIMO_MXK=1.
     """
 
     def __init__(self, config, prefix: str):
@@ -221,7 +243,7 @@ class MiMoV2HpuMoE(nn.Module):
         self.n_experts, self.top_k = n_exp, config.num_experts_per_tok
         self.n_local = n_exp // tp
         self.e_start = get_tensor_model_parallel_rank() * self.n_local
-        self.inter = inter
+        self.inter, self.hidden = inter, hidden
         self.norm_topk = config.norm_topk_prob
         self.scaling = config.routed_scaling_factor if config.routed_scaling_factor is not None else 1.0
         self.prefix = prefix
@@ -229,20 +251,35 @@ class MiMoV2HpuMoE(nn.Module):
         gate_dtype = getattr(torch, getattr(config, "moe_router_dtype", "float32") or "float32")
         self.gate_weight = nn.Parameter(torch.empty(n_exp, hidden, dtype=gate_dtype), requires_grad=False)
         self.e_score_correction_bias = nn.Parameter(torch.empty(n_exp, dtype=torch.float32), requires_grad=False)
-        f8, f32 = torch.float8_e4m3fn, torch.float32
-        self.w13_weight = nn.Parameter(torch.empty(self.n_local, 2 * inter, hidden, dtype=f8), requires_grad=False)
-        self.w13_weight_scale = nn.Parameter(torch.empty(self.n_local, 2 * inter, dtype=f32), requires_grad=False)
-        self.w2_weight = nn.Parameter(torch.empty(self.n_local, hidden, inter, dtype=f8), requires_grad=False)
-        self.w2_weight_scale = nn.Parameter(torch.empty(self.n_local, hidden, dtype=f32), requires_grad=False)
+        self.expert_dtype = expert_dtype()
+        n, f32, u8 = self.n_local, torch.float32, torch.uint8
+        if self.expert_dtype == "fp8":
+            f8 = torch.float8_e4m3fn
+            self.w13_weight = nn.Parameter(torch.empty(n, 2 * inter, hidden, dtype=f8), requires_grad=False)
+            self.w13_weight_scale = nn.Parameter(torch.empty(n, 2 * inter, dtype=f32), requires_grad=False)
+            self.w2_weight = nn.Parameter(torch.empty(n, hidden, inter, dtype=f8), requires_grad=False)
+            self.w2_weight_scale = nn.Parameter(torch.empty(n, hidden, dtype=f32), requires_grad=False)
+        else:
+            if hidden % MXFP4_BLOCK or inter % MXFP4_BLOCK:
+                raise ValueError(f"mimo_v2_hpu: MXFP4 experts need hidden {hidden} and intermediate {inter} % 32 == 0")
+            b = MXFP4_BLOCK
+            self.w13_weight = nn.Parameter(torch.empty(n, 2 * inter, hidden // 2, dtype=u8), requires_grad=False)
+            self.w13_weight_scale = nn.Parameter(torch.empty(n, 2 * inter, hidden // b, dtype=u8), requires_grad=False)
+            self.w2_weight = nn.Parameter(torch.empty(n, hidden, inter // 2, dtype=u8), requires_grad=False)
+            self.w2_weight_scale = nn.Parameter(torch.empty(n, hidden, inter // b, dtype=u8), requires_grad=False)
         self._pending: dict[tuple[int, str], dict[str, torch.Tensor]] = {}
         self.moe_op = None
+        self.mxk = False
 
     def load_expert(self, expert_id: int, proj: str, kind: str, w: torch.Tensor) -> str | None:
-        """Take one checkpoint expert tensor (packed weight or E8M0 scale). Once both halves of a projection are in,
-        re-encode it into its slot and return the parameter name; None while waiting or for another rank's expert."""
+        """Take one checkpoint expert tensor (packed weight or E8M0 scale). fp8: once both halves of a projection are
+        in, re-encode it into its slot and return the parameter name; None while waiting or for another rank's
+        expert. mxfp4: copy the bytes into their slot and return the parameter name."""
         e = expert_id - self.e_start
         if not 0 <= e < self.n_local:
             return None
+        if self.expert_dtype == "mxfp4":
+            return self._copy_mxfp4(e, proj, kind, w)
         entry = self._pending.setdefault((e, proj), {})
         entry[kind] = w
         if "weight" not in entry or "weight_scale" not in entry:
@@ -259,7 +296,23 @@ class MiMoV2HpuMoE(nn.Module):
         self.w13_weight_scale.data[e, rows].copy_(scale)
         return "w13_weight"
 
+    def _copy_mxfp4(self, e: int, proj: str, kind: str, w: torch.Tensor) -> str:
+        name, rows = mxfp4_expert_slot(proj, kind, self.inter)
+        dst = getattr(self, name).data[e]
+        if rows is not None:
+            dst = dst[rows]
+        if tuple(w.shape) != tuple(dst.shape) or w.dtype != torch.uint8:
+            raise ValueError(
+                f"mimo_v2_hpu {self.prefix}: expert {e + self.e_start} {proj}.{kind} is {w.dtype} {tuple(w.shape)}, "
+                f"expected uint8 {tuple(dst.shape)}"
+            )
+        dst.copy_(w)
+        return name
+
     def build_op(self):
+        if self.expert_dtype == "mxfp4":
+            self._build_mxfp4_op()
+            return
         if self._pending:
             raise RuntimeError(f"mimo_v2_hpu {self.prefix}: incomplete experts {sorted(self._pending)[:4]}")
         from vllm_gaudi.extension.ops import VllmMixtureOfExpertsOpFP8PerChannel
@@ -275,6 +328,44 @@ class MiMoV2HpuMoE(nn.Module):
         op._cache_weight_lists()
         self.moe_op = op
 
+    def _build_mxfp4_op(self):
+        from vllm_gaudi.extension.ops import VllmMixtureOfExpertsOpMXFP4
+
+        op = VllmMixtureOfExpertsOpMXFP4(
+            self.n_experts,
+            self.n_local,
+            self.e_start,
+            self.e_start + self.n_local - 1,
+            block_size=MXFP4_BLOCK,
+            has_bias=False,
+        )
+        for e in range(self.n_local):
+            op.w13_list[e].set_weight(self.w13_weight.data[e])
+            op.w13_list[e].set_scale(self.w13_weight_scale.data[e])
+            op.w2_list[e].set_weight(self.w2_weight.data[e])
+            op.w2_list[e].set_scale(self.w2_weight_scale.data[e])
+        op._cache_weight_lists()
+        self.moe_op = op
+        if not mxk.ENABLED:
+            return
+        why = mxk.layer_reason(self.n_local, self.hidden, self.inter, self.expert_dtype)
+        if why is not None:
+            mxk.warn_once("layer", "%s not used for %s (%s): stock MoE op", mxk.TAG, self.prefix, why)
+            return
+        self.mxk = mxk.load()
+        if self.mxk:
+            mxk.register_eager(
+                self.w13_weight,
+                self.w13_weight_scale,
+                self.w2_weight,
+                self.w2_weight_scale,
+                self.top_k,
+                self.e_start,
+                self.hidden,
+                self.n_local,
+                self.inter,
+            )
+
     def route(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         scores = F.linear(x.float(), self.gate_weight.float()).sigmoid()
         choice = scores + self.e_score_correction_bias.unsqueeze(0)
@@ -285,11 +376,22 @@ class MiMoV2HpuMoE(nn.Module):
         return topk_idx, topk_w * self.scaling
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        from vllm_gaudi.extension.ops import dynamic_quant
-
         shape = hidden_states.shape
         x = hidden_states.reshape(-1, shape[-1])
         topk_idx, topk_w = self.route(x)
+        if self.expert_dtype == "mxfp4":
+            # Static shapes under torch.compile: the token count is a constant of each graph, so this picks one path
+            # per bucket.
+            if self.mxk and mxk.covers(x.shape[0], self.top_k) and x.dtype == torch.bfloat16:
+                w13, s13, w2, s2 = self.w13_weight, self.w13_weight_scale, self.w2_weight, self.w2_weight_scale
+                out = mxk.moe(x, topk_idx, topk_w, w13, s13, w2, s2, self.top_k, self.e_start)
+            else:
+                out = self.moe_op(
+                    x, topk_idx.to(torch.int32), topk_w.to(x.dtype), permuted_weights=True, activation="silu"
+                )
+            return tensor_model_parallel_all_reduce(out).view(shape)
+        from vllm_gaudi.extension.ops import dynamic_quant
+
         op = self.moe_op
         x_fp8, x_scale = dynamic_quant(x)
         # The explicit overload: the op packet otherwise resolves overloads by trial, and each miss formats
@@ -464,9 +566,12 @@ class MiMoV2HpuForCausalLM(nn.Module):
                 eid, proj, kind = tail.split(".")
                 moe = self.get_submodule(f"{head}.mlp")
                 got = moe.load_expert(int(eid), proj, kind, w)
-                if got is not None:
+                if got is not None and moe.expert_dtype == "fp8":  # one re-encoded projection, weight and scale
                     loaded.update((f"{head}.mlp.{got}", f"{head}.mlp.{got}_scale"))
                     n_expert_tensors += 1
+                elif got is not None:  # mxfp4: one tensor copied, weight or scale
+                    loaded.add(f"{head}.mlp.{got}")
+                    n_expert_tensors += kind == "weight"
                 continue
             if name.endswith(".weight_scale_inv") or (name.endswith(".weight") and w.dtype == torch.float8_e4m3fn):
                 base, kind = name.rsplit(".", 1)

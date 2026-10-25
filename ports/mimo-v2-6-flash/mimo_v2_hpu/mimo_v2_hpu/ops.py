@@ -155,6 +155,25 @@ def mxfp4_reference(w: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
     return lut[nib] * scale
 
 
+def mxfp4_expert_slot(proj: str, kind: str, inter: int) -> tuple[str, slice | None]:
+    """Where one checkpoint expert tensor goes when the experts stay MXFP4: (parameter name, rows of w13 or None).
+
+    The checkpoint holds model.layers.L.mlp.experts.E.{gate,up,down}_proj.{weight,weight_scale}; the MoE op and the
+    kernels read w13 as [gate (I rows); up (I rows)] per expert and w2 as the down projection, with the E8M0 scales
+    in tensors of the same row layout.
+    """
+    if kind not in ("weight", "weight_scale"):
+        raise KeyError(f"unexpected expert tensor kind {kind!r}")
+    suffix = "_scale" if kind == "weight_scale" else ""
+    if proj == "down_proj":
+        return "w2_weight" + suffix, None
+    if proj == "gate_proj":
+        return "w13_weight" + suffix, slice(0, inter)
+    if proj == "up_proj":
+        return "w13_weight" + suffix, slice(inter, 2 * inter)
+    raise KeyError(f"unexpected expert projection {proj!r}")
+
+
 # --------------------------------------------------------------------------------------------------------------------
 # Sliding-window attention with a sink, prefill
 # --------------------------------------------------------------------------------------------------------------------
@@ -286,8 +305,10 @@ def exact_cos_sin(n: int, rotary_dim: int, theta: float) -> torch.Tensor:
     """[n, rotary_dim] cos | sin table, computed on the CPU in float64.
 
     Gaudi fp32 cos and sin are wrong for arguments past about 1.5e5 radians, and the fastest rotary frequency's
-    angle is the position itself, so a table built on the device is wrong from about 196K positions on.
+    angle is the position itself, so a table built on the device is wrong from about 196K positions on. The CPU
+    device is explicit: vLLM builds the model under torch.device("hpu"), and a float64 tensor created there computes
+    in fp32 (cos(200000) comes back as 0.0).
     """
-    inv = 1.0 / (float(theta) ** (torch.arange(0, rotary_dim, 2, dtype=torch.float64) / rotary_dim))
-    ang = torch.outer(torch.arange(n, dtype=torch.float64), inv)
+    inv = 1.0 / (float(theta) ** (torch.arange(0, rotary_dim, 2, dtype=torch.float64, device="cpu") / rotary_dim))
+    ang = torch.outer(torch.arange(n, dtype=torch.float64, device="cpu"), inv)
     return torch.cat([ang.cos(), ang.sin()], dim=-1)

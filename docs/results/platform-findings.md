@@ -84,7 +84,9 @@ affected, the workaround and how to check. Where the cookbook ships a fix, the s
   fastest rotary frequency had random error (median pi/2); the others were within about 5e-4 rad.
 - **Who.** Models that build RoPE tables on the device.
 - **Workaround.** Build tables on the CPU in float64: [rope-cpu-cache](../fixes/rope-cpu-cache.md) (upstream in
-  v0.30.0). On one model, seeded needles at 207.5K and 242.3K went from 7/12 to 12/12.
+  v0.30.0). On one model, seeded needles at 207.5K and 242.3K went from 7/12 to 12/12. Pass `device="cpu"`
+  to every tensor the table is built from: vLLM constructs the model under `torch.device("hpu")`, and a float64
+  tensor created there is computed in fp32 (`cos(200000)` came back as 0.0).
 - **How to check.** Compare `torch.cos(torch.arange(N).float().to("hpu"))` with CPU float64.
 
 ## int64 cat then an int32 cast reads back corrupted

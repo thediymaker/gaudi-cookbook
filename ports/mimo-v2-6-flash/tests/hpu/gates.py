@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Device gates for the MiMo-V2.6-Flash port, run against a live server (stdlib only).
+"""Device gates for the MiMo-V2.6 port (Flash and Pro), run against a live server (stdlib only).
 
     gates.py needles --tokens 131072 [--depths 0.1,0.5,0.9] [--seed 11]
     gates.py concurrent --tokens 500000 [--seeds 21,22,23,24]

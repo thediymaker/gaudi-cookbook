@@ -5,12 +5,12 @@ meta:
   provider: "Xiaomi"
   description: "309B MoE (15B active) with 128-token sliding-window attention and sinks, served at 512K context on one 8-card Gaudi 2 node through a port."
   date_added: 2026-10-24
-  date_updated: 2026-10-24
+  date_updated: 2026-10-25
   tasks:
     - text
   related_recipes: []
   hardware:
-    gaudi2: supported
+    gaudi2: verified
 
 model:
   model_id: "XiaomiMiMo/MiMo-V2.6-Flash-RL"
@@ -113,7 +113,16 @@ gaudi:
     - swa-decode-window              # the exact decode window the port's runner patch extends to mimo_v2
     - rank-exception-fatal           # an exception on a non-zero TP rank stops the engine instead of serving garbage
     - vllm-long-prefill-share        # opt-in: one 500K prefill no longer stalls every other stream
-  verified: []
+  verified:
+    # One 8-card node, image built by install.sh from the stock v0.26.0 image, this command as written.
+    # Gates: ports/mimo-v2-6-flash/tests/hpu/run_gates.sh.
+    - "install.sh: commit check, v0.26.0 profile + vllm-long-prefill-share, both runner patches, plugin install applied"
+    - "device_ops.py on one card: windowed attention with sinks 0.0036 worst relative vs fp32; 12/12 sampled experts re-encode to FP8 exactly"
+    - "decode 33.8 / 33.2 / 25.6 tok/s per stream at 1 / 4 / 16 streams (floor 20)"
+    - "tool calls 6/6, including tool_choice required and a call after a 32.9K-token document"
+    - "needles at 128K / 256K / 500K x depths 0.1 / 0.5 / 0.9: 3/3 each; four 500K-token prompts at once 4/4 (932 s)"
+    # The other 2 batch rows also differ between two runs of the window-sized layout, so they do not separate the layouts.
+    - "window-sized KV vs the stock layout, greedy: chats, 12K and 30K chunked prompts, a prefix hit, 2 of 4 batch rows identical"
   notes:
     - >-
       Needs the port image (ports/mimo-v2-6-flash). Its install.sh applies the v0.26.0 profile and vllm-long-prefill-share before the port's runner

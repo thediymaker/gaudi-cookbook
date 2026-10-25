@@ -94,7 +94,7 @@ def convert_spec_dict(kv_cache_spec: dict, windows: dict) -> dict:
         raise ValueError(
             f"{ENV}: KV page sizes differ across layers ({sorted(pages)} B; KV heads per rank "
             f"{heads}). Global and sliding layers need the same KV heads per rank: "
-            "MiMo-V2.6-Flash only at TP8."
+            "MiMo-V2.6 only at TP8."
         )
     return out
 

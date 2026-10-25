@@ -128,45 +128,46 @@ because the fastest rotary frequency's angle is the position and Gaudi fp32 cos 
 
 ## Verified
 
-This exact recipe has not been run end to end in the port image yet, so the recipe is `supported`, not
-`verified`. What ran as written:
+Run on one 8-card Gaudi 2 node from the stock vllm-gaudi `v0.26.0` image (`b059f9c`, vLLM `568afb3a`), with
+`install.sh` run as the Dockerfile runs it and this page's Launch block as written. The device gates are
+`ports/mimo-v2-6-flash/tests/hpu/run_gates.sh`.
 
-- `install.sh` in a stock vllm-gaudi `v0.26.0` image (`b059f9c`, vLLM `568afb3a`): commit check, the v0.26.0
-  profile plus `vllm-long-prefill-share`, both runner patches and the plugin install all applied; the launch's fix
-  step and both patches' `--check` then report "applied"; vLLM resolves `MiMoV2ForCausalLM`,
-  `MiMoV2FlashForCausalLM` and `MiMoV2OmniForCausalLM` to the port's model.
-- `tests/hpu/device_ops.py` on one Gaudi 2 card: the sliding-window attention with sinks matches the fp32
-  reference in bf16 (worst relative error 0.0036), and 12 of 12 sampled expert tensors of the checkpoint re-encode
-  to FP8 exactly and byte-identically to the CPU encode. The device's fp32 `cos(200000)` read 0.0000 against an
-  exact 0.9974, the reason the RoPE tables are built on the CPU.
+- `install.sh`: commit check, the v0.26.0 profile plus `vllm-long-prefill-share`, both runner patches and the
+  plugin install all applied; the launch's fix step and both patches' `--check` then report "applied"; vLLM
+  resolves `MiMoV2ForCausalLM`, `MiMoV2FlashForCausalLM` and `MiMoV2OmniForCausalLM` to the port's model.
+- `tests/hpu/device_ops.py` on one card: the sliding-window attention with sinks matches the fp32 reference in
+  bf16 (worst relative error 0.0036), and 12 of 12 sampled expert tensors of the checkpoint re-encode to FP8
+  exactly and byte-identically to the CPU encode. The device's fp32 `cos(200000)` read 0.0000 against an exact
+  0.9974, the reason the RoPE tables are built on the CPU.
 - `stage_checkpoint.py` on the public checkpoint (revision `5711b26`) produces the same `config.json` as the
   configuration that serves production.
 
-The serving gates below were recorded on the production deployment of the same code and settings (not on an
-image built by this `install.sh`), on 8 Gaudi 2 cards, TP 8:
+| Gate | Result |
+| --- | --- |
+| Decode, 256 greedy tokens (floor 20 tok/s per stream) | 33.8 / 33.2 / 25.6 tok/s per stream at 1 / 4 / 16 streams |
+| Tool calls: one call with arguments, choosing between tools, no call, using a result, `tool_choice: "required"`, a call after a 32.9K-token document | 6/6 |
+| Needles at 128K / 256K / 500K tokens x depths 0.1 / 0.5 / 0.9 (greedy) | 3/3 at each length. At 500K and depth 0.5 the model called the line inserted text and declined to repeat it, quoting the line with the code in the same answer |
+| Four 500K-token prompts at once | 4/4, 932 s |
+| Window-sized KV against the stock layout, greedy (a second server with `MIMO_SWA_KV_GROUPS=0`) | token-identical on two short chats, 12K and 30K prompts chunked across 8,192-token steps, a 12K prefix hit, and 2 of the 4 rows of one batched request. The other 2 batch rows (first difference at tokens 5 to 33) also differ between two runs of the window-sized layout, so they do not separate the layouts |
 
-- Needles at 128K / 256K / 500K: 3/3 each (depths 0.1, 0.5, 0.9). Four 500K-token requests at once: 4/4.
-- Greedy outputs with window-sized KV on and off: token-identical (short chats, 12K and 30K prompts chunked across
-  8,192-token steps, a 10,752-token prefix hit, and four prompts in one batch on warm engines).
-- Tool calls: short suite 7/7; correct calls after a 33.8K and a 138K document.
-- Prompt NLL on a 1,535-token document 0.7986 against a streaming fp32 CPU oracle at 0.7943; GSM8K 5-shot 0.910
-  (200 samples).
+On the production deployment of the same code and settings: prompt NLL on a 1,535-token document 0.7986 against a
+streaming fp32 CPU oracle at 0.7943; GSM8K 5-shot 0.910 (200 samples); tool calls after a 138K document.
 
 ## Performance
 
-Recorded on the production deployment (same code and settings, server without user traffic, warm, 256-token
-runs; not re-measured on this image build):
+From the decode gate above (one run, warm server, 256 greedy tokens):
 
 | Streams | Tokens/s per stream | Aggregate |
 | --- | --- | --- |
-| 1 | 33.9 | 34 |
-| 4 | 33.4 | 133 |
-| 16 | 32.5 | 520 |
+| 1 | 33.8 | 34 |
+| 4 | 33.2 | 133 |
+| 16 | 25.6 | 410 |
 
-Decode speed does not fall with context: 39 of the 48 layers read a 128-token window. The KV pool holds 56,681
-blocks (7.26M tokens of global context, 11.9x concurrency at 524,288). With `VLLM_LONG_PREFILL_SHARE=0.5`, other
-streams decode at 14 to 18 tok/s while one 500K prompt prefills (about 0.4 tok/s without the share; separate
-server starts).
+The production deployment measured 32.5 tok/s per stream at 16 (a different run, without user traffic). Decode
+speed does not fall with context: 39 of the 48 layers read a 128-token window. The KV pool holds 56,681 blocks
+(7.26M tokens of global context, 11.9x concurrency at 524,288). With `VLLM_LONG_PREFILL_SHARE=0.5`, other streams
+decode at 14 to 18 tok/s while one 500K prompt prefills (about 0.4 tok/s without the share; separate server
+starts).
 
 ## Known issues
 
@@ -175,7 +176,8 @@ server starts).
 - The model reads imperative inserted text ("IMPORTANT NOTE: ...") as prompt injection and may decline to repeat
   it. Phrase retrieval tests as plain facts.
 - Compile mode computes a new batch shape slightly differently the first time it runs. Compare outputs only on
-  warm runs.
+  warm runs. Greedy rows of a batched request can still differ between two server starts of the same
+  configuration; single requests repeat exactly.
 - `prompt_logprobs` over a prompt of a few hundred thousand tokens needs a multi-gigabyte logits workspace and
   can run the engine out of memory at `--gpu-memory-utilization 0.9`.
 - Text only. The checkpoint's vision tower, audio encoder and MTP layers are not loaded.

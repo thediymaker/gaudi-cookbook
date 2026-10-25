@@ -22,9 +22,9 @@ container images and public checkpoints. Nothing depends on a private build.
 > Gaudi 2 node: GLM-5.3 single stream from 23.3 to 59.1 tokens/s, Kimi-K2.7 from 17.9 to 44.5, Muse Spark Open 2.4x
 > aggregate at four streams, with lower numerical error than the stock op. See [the write-up](docs/kernels/mxfp4-moe.md).
 >
-> **Ports.** Seven models that released images cannot serve, brought up on Gaudi 2: Muse Spark Open,
-> GLM-5.3-Flash, DeepSeek-V4.1-Flash, GLM-5.x MXFP4, Beam-1.0, MiMo-V2.6-Flash and Kimi-K2.7-Code. See
-> [Ports](docs/ports/index.md) and [Results](docs/results/index.md).
+> **Ports.** Nine ports bring up models that released images cannot serve on Gaudi 2: Muse Spark Open,
+> GLM-5.3-Flash, DeepSeek-V4.1-Flash, GLM-5.x MXFP4, Beam-1.0, MiMo-V2.6 (Flash and Pro), Kimi-K2.7-Code,
+> MiniMax-M3 and Inkling-Small. See [Ports](docs/ports/index.md) and [Results](docs/results/index.md).
 >
 > **Using a coding agent?** Point it at this repository and have it read [`AGENTS.md`](AGENTS.md)
 > first. See [Use it with your coding agent](#use-it-with-your-coding-agent).

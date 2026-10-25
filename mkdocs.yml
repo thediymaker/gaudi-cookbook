@@ -87,6 +87,7 @@ nav:
       - "Kimi-K2.7-Code (MXFP4)": recipes/kimi-k2-7-code.md
       - MiniMax-M3: recipes/minimax-m3.md
       - MiMo-V2.6-Flash-RL: recipes/mimo-v2-6-flash-rl.md
+      - MiMo-V2.6-Pro-RL: recipes/mimo-v2-6-pro-rl.md
       - Inkling-Small: recipes/inkling-small.md
   - Fixes:
       - fixes/index.md

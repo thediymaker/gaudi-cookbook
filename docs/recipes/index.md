@@ -49,7 +49,8 @@ otherwise; none has been run on Gaudi 3.
 | [DeepSeek-V4.1-Flash-1017](deepseek-v4-1-flash-1017.md) | 8 (TP 8, EP) | MXFP4 | releases/v0.30.0 | tools, reasoning | verified, port |
 | [Kimi-K2.7-Code (MXFP4)](kimi-k2-7-code.md) | 8 (TP 8, EP) | MXFP4 | releases/v0.30.0 | tools, reasoning | verified, port |
 | [MiniMax-M3](minimax-m3.md) | 8 (TP 8, EP) | FP8 | v0.26.0 | tools, reasoning | verified, port |
-| [MiMo-V2.6-Flash-RL](mimo-v2-6-flash-rl.md) | 8 (TP 8, EP) | FP8 | v0.26.0 | tools, reasoning, 512K | supported, port |
+| [MiMo-V2.6-Flash-RL](mimo-v2-6-flash-rl.md) | 8 (TP 8, EP) | FP8 | v0.26.0 | tools, reasoning, 512K | verified, port |
+| [MiMo-V2.6-Pro-RL](mimo-v2-6-pro-rl.md) | 8 (TP 8, EP) | MXFP4 | v0.26.0 | tools, reasoning, 256K | verified, port |
 | [Inkling-Small](inkling-small.md) | 8 (TP 8) | BF16 | releases/v0.30.0 | tools, reasoning, 256K | verified, port |
 
 ## Images

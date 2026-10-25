@@ -36,7 +36,7 @@ Sources, build script, gpt-oss vLLM hook, tests and benchmark:
 | DeepSeek-V4.1-Flash (MXFP4 checkpoint) | Variant `dsv41`: decode kernels, parity and per-call timings on one card in this package. The port adds its `dsv41_sinkhorn` kernel with `--extra-kernel` and holds the model hook |
 | Muse Spark Open | Variant `muse`: decode kernels, parity and per-call timings on one card in this package. The model hook is in the port |
 | Kimi-K2.7 (MXFP4 checkpoint) | Variant `kimi`: decode kernels, parity and per-call timings on one card in this package. New kernel for K = 7168; no end-to-end measurement yet |
-| MiMo-V2.6-Pro (MXFP4 checkpoint) | Measured end to end (see [Beyond gpt-oss](#beyond-gpt-oss)) with the `glm` kernels and a `torch.compile` op library that is not in this package; no variant of its own |
+| MiMo-V2.6-Pro (MXFP4 checkpoint) | Variant `glm` built with `--pt2` (the `torch.compile` op library): Pro's per-rank shapes (K 6144, I 2048, 48 experts) are inside the `glm` caps, so it has no variant of its own. The model hook is in the [MiMo-V2.6 port](../ports/mimo-v2-6-flash.md), recipe [MiMo-V2.6-Pro-RL](../recipes/mimo-v2-6-pro-rl.md) |
 
 ## The bottleneck
 
@@ -369,9 +369,13 @@ device time shows up only partly.
     | `kimi` | multiple of 512, at most 8192 | multiple of 512, at most 3072 | at most 16 |
 
     Every variant also needs at most 128 routes per call and at most 128 local experts.
-- **Lazy mode only.** The op library uses the legacy `hpu_custom_op.h` API. The PT2 custom-op API fails in lazy
-  mode when the op's input comes from a native op in the same lazy graph. Eager and `torch.compile` serving are
-  not covered.
+- **One op library per execution mode.** `libmxk_op_lazy.so` uses the legacy `hpu_custom_op.h` API, because the
+  PT2 custom-op API fails in lazy mode when the op's input comes from a native op in the same lazy graph.
+  `build.sh --pt2` also builds `libmxk_op_pt2.so`: the same ops on the PT2 API with Meta implementations, for
+  `torch.compile` serving (MiMo-V2.6-Pro). The PT2 ops register their kernel with the bridge on their first eager
+  call, and a compiled graph does not make that call, so a process calls each op once eagerly before its first
+  compiled graph ("isn't registered in KernelRegistry" otherwise). gpt-oss and the lazy-mode ports load the lazy
+  library; a process never loads both.
 - **`PT_HPU_LAZY_ACC_PAR_MODE=0` is required.** With the lazy accumulation thread on, a custom op whose input is a
   view of a tensor produced in the same lazy graph fails intermittently. The runtime sets the variable when the flag
   is on. With the kernels off, this setting gave bit-identical output and the same speed and TTFT.
@@ -418,13 +422,13 @@ build needs: `tpc-clang` at `/opt/habanalabs/bin/tpc-clang`, `tpc_kernel_lib_int
 `/usr/include/habanalabs`, and `hpu_custom_op.h` in the `habana_frameworks` package.
 
 ```bash
-kernels/mxfp4-moe/build.sh [--variant gptoss|glm|dsv41|muse|kimi] [--extra-kernel DIR]... OUT_DIR
+kernels/mxfp4-moe/build.sh [--variant gptoss|glm|dsv41|muse|kimi] [--extra-kernel DIR]... [--pt2] OUT_DIR
 ```
 
 | Variant | Kernels | Model |
 | --- | --- | --- |
 | `gptoss` (default) | `mxk_w13xib`, `mxk_w2xb` | gpt-oss, through `python/` in this package |
-| `glm` | `mxk_w13x`, `mxk_w2x`, `mxk_deq` | GLM-5.3 and GLM-5.2, decode and the prefill unpack |
+| `glm` | `mxk_w13x`, `mxk_w2x`, `mxk_deq` | GLM-5.3 and GLM-5.2, decode and the prefill unpack; MiMo-V2.6-Pro decode (with `--pt2`) |
 | `dsv41` | `mxk_w13xi`, `mxk_w2x` | DeepSeek-V4.1-Flash (its port adds `dsv41_sinkhorn` with `--extra-kernel`) |
 | `muse` | `mxk_w13x`, `mxk_w2xr` | Muse Spark Open |
 | `kimi` | `mxk_w13xt`, `mxk_w2x` | Kimi-K2.7 MXFP4 |
@@ -434,7 +438,9 @@ which forwards every stock GUID. It builds `libmxk_op_lazy.so` with the variant'
 the image's torch, and writes a `MANIFEST` with versions and sha256 sums. The build fails unless two gates pass: the
 library lists every stock GUID unchanged followed by exactly the variant's GUIDs, and the op library registers the
 variant's ops and no op of another variant. `--extra-kernel DIR` adds a model-only TPC kernel a port supplies
-(`<guid>.c`, `glue.inc`, `op.cpp`) to the same two libraries, so `GC_KERNEL_PATH` stays one file.
+(`<guid>.c`, `glue.inc`, `op.cpp`) to the same two libraries, so `GC_KERNEL_PATH` stays one file. `--pt2` also
+builds `libmxk_op_pt2.so` for `torch.compile` serving and runs the op gate on it too; it is refused for `gptoss`
+and together with `--extra-kernel`.
 
 The `MANIFEST` also records a `code_sha256` per kernel: the hash of its machine code (the `.text` and
 `.tpc_metadata` sections). tpc-clang embeds the source text and the build command in the ELF, so the ELF hash
@@ -514,13 +520,18 @@ was measured is part of the result, so the table says it:
 | Muse Spark Open | TP 8, 4 streams, aggregate | 43.3 tok/s | 102.8 tok/s | 2.4x | Same |
 | Kimi-K2.7-Code (MXFP4 checkpoint) | TP 8 + EP 8, 16K context, 1 stream | 17.9 tok/s | 44.5 tok/s | 2.5x | Same-pod A/B, the published recipe with `KIMI_MXK` off and on |
 | Kimi-K2.7-Code (MXFP4 checkpoint) | TP 8 + EP 8, 16K context, 8 streams, per stream | 7.5 tok/s | 14.8 tok/s | 2.0x | Same |
-| MiMo-V2.6-Pro (MXFP4 checkpoint) | 8 cards, 1 stream | 18.1 tok/s | 39.7 tok/s | 2.2x | Same node and configuration: stock pod, then kernel pod |
+| MiMo-V2.6-Pro (MXFP4 checkpoint) | TP 8, 1 stream, 256 tokens | 18.1 tok/s | 39.7 tok/s | 2.2x | Same node and configuration, stock pod then kernel pod: a test deployment of the port's code with the recipe's settings, not a build of the recipe's `install.sh` |
+| MiMo-V2.6-Pro (MXFP4 checkpoint) | TP 8, 8 streams, per stream | 6.2 tok/s | 16.2 tok/s | 2.6x | Same |
 
 - **GLM-5.3** keeps the same tool-call, needle and GSM8K results as the stock op. Greedy outputs agree on 99.1% of
   top-1 tokens before the first near-tie split, and the kernel is the closer of the two to an fp32 reference. With
   decode-step and expert-placement work on top of the kernel, single-stream decode reaches 69.6 tok/s.
 - **DeepSeek-V4.1-Flash** gains less because its MoE is about a third of the decode step; the rest is attention
   and launch overhead.
+- **MiMo-V2.6-Pro** runs the `glm` kernels in `torch.compile` mode through the PT2 op library. On the same test
+  deployment, prompt perplexity on a 255-token text stayed at 1.973 (mean NLL 0.6797 against an fp32 oracle at
+  0.6708, same with the stock op), and greedy decode against teacher-forced scoring of the same 200 tokens differed
+  by 0.031 nats on average (0.035 with the stock op).
 - **Muse Spark Open** is a full port to Gaudi 2: latent MoE with a norm on every expert output, and sliding plus
   global attention. It matches the reference model's perplexity within 0.4% (top-1 agreement 97.6%) and serves on
   one 8-card node.

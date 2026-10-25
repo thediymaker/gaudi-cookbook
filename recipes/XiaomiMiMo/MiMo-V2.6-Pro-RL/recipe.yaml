@@ -1,0 +1,133 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/mimo-v2-6-pro-rl.md
+meta:
+  title: "MiMo-V2.6-Pro-RL"
+  slug: "mimo-v2-6-pro-rl"
+  provider: "Xiaomi"
+  description: "1.02T MoE (42B active), 128-token sliding windows with sinks, MXFP4 experts on the MXFP4 decode kernels, 256K context on one 8-card node."
+  date_added: 2026-10-24
+  date_updated: 2026-10-25
+  tasks:
+    - text
+  related_recipes:
+    - "XiaomiMiMo/MiMo-V2.6-Flash-RL"
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "XiaomiMiMo/MiMo-V2.6-Pro-RL"
+  architecture: moe
+  parameter_count: "1.02T"
+  active_parameters: "42B"
+  context_length: 1048576
+
+features:
+  tool_calling:
+    description: "MiMo tool calls (<tool_call><function=...> with <parameter=...> tags) with the mimo parser."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "mimo"]
+  reasoning:
+    description: "Split the <think> block from the answer. The port's chat template opens <think> in the generation prompt so follow-up turns parse."
+    args: ["--reasoning-parser", "mimo"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: mxfp4
+    vram_minimum_gb: 680
+    description: >-
+      The public checkpoint (566 GB: FP8 block attention, MXFP4 routed experts). The experts stay MXFP4 on the device, about 67 GiB of weights per
+      card on eight cards.
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 8, tp: 8, ep: true }
+  image:
+    vllm_gaudi: "v0.26.0"
+    vllm_gaudi_commit: "b059f9c"
+    vllm_commit: "568afb3a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.26.0-image>"
+  max_model_len: 262144
+  port: mimo-v2-6-flash
+  serve_model: "$CHECKPOINT_DIR"
+  serve_args:
+    - "--tensor-parallel-size"
+    - "8"
+    - "--max-model-len"
+    - "262144"
+    - "--max-num-seqs"
+    - "8"
+    - "--long-prefill-token-threshold"
+    - "2048"
+    - "--max-num-batched-tokens"
+    - "8192"
+    - "--block-size"
+    - "128"
+    - "--gpu-memory-utilization"
+    - "0.8"
+    - "--enable-prompt-tokens-details"
+    - "--trust-remote-code"
+    - "--generation-config"
+    - "vllm"
+    - "--override-generation-config"
+    - '{"temperature": 1.0, "top_p": 0.95}'
+    - "--chat-template"
+    - "$COOKBOOK/ports/mimo-v2-6-flash/serving/chat_template.jinja"
+    - "--reasoning-parser"
+    - "mimo"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "mimo"
+  env:
+    CHECKPOINT_DIR: "/data/mimo-v2.6-pro-rl-hpu"  # staged copy (symlinks + edited config.json), rewritten by setup at each start
+    PT_HPU_LAZY_MODE: "0"                     # torch.compile mode: the port's window-sized KV and the kernels' PT2 ops need it
+    VLLM_T_COMPILE_DYNAMIC_SHAPES: "false"    # static shapes; the dynamic-shape path fails in the graph compiler
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"
+    VLLM_SKIP_WARMUP: "false"                 # warm every shape at start; otherwise first use compiles for 10-30 s
+    MIMO_EXPERT_DTYPE: "mxfp4"                # keep the experts MXFP4: FP8 experts would not fit one node
+    MIMO_MXK: "1"                             # decode-sized MoE calls on the MXFP4 kernels (glm build); 0 = stock op
+    MIMO_SWA_KV_GROUPS: "1"                   # window-sized KV for the 60 sliding layers: 7x the KV blocks
+    MIMO_GA_TILE: "1"                         # tiled global-attention prefill for long prompts with context
+    VLLM_LONG_PREFILL_SHARE: "0.5"            # a long prefill takes at most half the wall time while others decode
+    VLLM_LONG_PREFILL_SHARE_ASYNC: "1"        # make that share exact under async scheduling
+    VLLM_LONG_PREFILL_MIN_TOKENS: "65536"     # prompts from this length count as long (the fix's default, kept explicit)
+    VLLM_MOE_CHUNK: "256"                     # MoE op slot chunking (output-neutral)
+    VLLM_MOE_TOKEN_BOUNDARY: "2048"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"   # first-use compiles and long prefills outlast the defaults
+    VLLM_RPC_TIMEOUT: "3600000"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "3600"
+  setup:
+    # Stage the checkpoint: no weight copies, config.json without quantization_config and with layer_types
+    - >-
+      python3 "$COOKBOOK/ports/mimo-v2-6-flash/convert/stage_checkpoint.py" XiaomiMiMo/MiMo-V2.6-Pro-RL "$CHECKPOINT_DIR"
+      --revision 73875d00b30a89ef8cc353a0b60b0e9f9561952d || exit 1
+  buckets: null
+  required_fixes:
+    - prompt-order                   # prefix-cache read-before-write across requests
+    - sampling-rows-refresh          # device sampling rows stale after batch reorders
+    - structured-output-rows         # structured-output steps sample rows with the wrong params
+    - bad-words-index                # bad_words IndexError kills the EngineCore
+    - logitsprocs-rows               # logit_bias, min_p, min_tokens silently ignored
+    - async-inputs                   # a decode left out of a step behind long-prompt chunks repeats its last token
+    - async-discard-counter          # AttributeError on the first preemption under async scheduling
+    - resumed-prefill-logits         # a request resumed after preemption repeats its earlier output
+    - gather-logprobs-int32          # top_logprobs ids corrupted
+    - logprobs-decode-guard          # a bad logprob id no longer kills the API server
+    - swa-decode-window              # the exact decode window the port's runner patch extends to mimo_v2
+    - rank-exception-fatal           # an exception on a non-zero TP rank stops the engine instead of serving garbage
+    - vllm-long-prefill-share        # opt-in: a long prefill no longer stalls every other stream
+  verified:
+    # One 8-card node, image built by install.sh from the stock v0.26.0 image, this command as written.
+    # Gates: PROFILE=pro ports/mimo-v2-6-flash/tests/hpu/run_gates.sh.
+    - "install.sh: profile, runner patches, plugin, kernel build --variant glm --pt2; library gate 3,253 GUIDs and both op gates pass"
+    - "mxk_ops.py on one card: 28/28 decode cases within the parity bound, kernel worst rel 1.71e-3 vs 2.3e-3 to 4.8e-3 for the stock op; compiled = eager"
+    - "decode 40.3 / 27.5 / 15.1 tok/s per stream at 1 / 4 / 8 streams (floor 12)"
+    - "tool calls 6/6, including tool_choice required and a call after a 32.9K-token document"
+    - "needles at 240K x 3 depths 3/3; four 240K-token prompts at once 4/4 (899 s); 128K 2/3 (one refusal: the model called the needle inserted text)"
+    - "window-sized KV vs the stock layout: not completed (pod preempted); identical on single requests on Flash with the same port code"
+  notes:
+    - >-
+      Needs the port image (ports/mimo-v2-6-flash, which serves both MiMo-V2.6 models). Its install.sh applies the v0.26.0 profile and
+      vllm-long-prefill-share before the port's runner patches, and builds the MXFP4 MoE kernels (glm variant with the torch.compile op library).
+    - "TP8 only: window-sized KV needs the global and sliding layers to hold the same KV heads per rank."
+    - "--gpu-memory-utilization 0.8: in development runs 0.9 ran out of memory at a short prefill and 0.85 failed on a prefix-cached prefill."

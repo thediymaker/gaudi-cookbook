@@ -128,7 +128,7 @@ KERNEL = {
             "39.7",
             "2.2\u00d7",
             "same node: stock pod, then kernel pod",
-            "doc:kernels/mxfp4-moe/#beyond-gpt-oss",
+            "recipe:XiaomiMiMo/MiMo-V2.6-Pro-RL",
         ),
         (
             "openai/gpt-oss-120b",
@@ -140,9 +140,9 @@ KERNEL = {
             "recipe:openai/gpt-oss-120b",
         ),
     ],
-    "models_note": "GLM-5.x, DeepSeek-V4.1-Flash, Kimi-K2.7 and Muse Spark Open run the kernel through their ports, "
-    "each with a recipe here; MiMo-V2.6-Pro's integration is not published. GLM-5.3 reaches 69.6 tok/s single stream "
-    "with decode-step and expert-placement work on top of the kernel.",
+    "models_note": "GLM-5.x, DeepSeek-V4.1-Flash, Kimi-K2.7, Muse Spark Open and MiMo-V2.6-Pro run the kernel through "
+    "their ports, each with a recipe here. GLM-5.3 reaches 69.6 tok/s single stream with decode-step and "
+    "expert-placement work on top of the kernel.",
     "proof": "Every model above passes its recipe's gates with the kernel on: tool calls, long-context needles, and "
     "GSM8K or perplexity against a reference.",
     "doc": "kernels/mxfp4-moe/",
