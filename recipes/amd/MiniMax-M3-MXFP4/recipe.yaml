@@ -16,6 +16,7 @@ meta:
 
 model:
   model_id: "amd/MiniMax-M3-MXFP4"
+  base_model: "MiniMaxAI/MiniMax-M3"
   architecture: moe
   parameter_count: "427B"
   active_parameters: "23B"

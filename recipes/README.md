@@ -21,7 +21,7 @@ keys keep their meaning, and a renderer that does not know `gaudi:` can ignore i
 | Key | Same as recipes.vllm.ai | Notes |
 | --- | --- | --- |
 | `meta` | yes | `title`, `slug`, `provider`, `description`, `date_added`, `date_updated`, `tasks`, `related_recipes`. `hardware` uses the id `gaudi2`, which is not in the upstream taxonomy yet, with the upstream states: `verified` when this exact configuration was tested end to end, `supported` when it was not (the notes say why). |
-| `model` | yes | `model_id` (must match the directory), `architecture` (`dense` or `moe`), `parameter_count`, `active_parameters`, `context_length` (the checkpoint's `max_position_embeddings`; the served window is in `gaudi.max_model_len`). |
+| `model` | yes | `model_id` (must match the directory), `architecture` (`dense` or `moe`), `parameter_count`, `active_parameters`, `context_length` (the checkpoint's `max_position_embeddings`; the served window is in `gaudi.max_model_len`). Optional `base_model`: the original model of a third-party quantization (the checkpoint's Hugging Face `base_model`); the catalog shows that maker's logo. |
 | `features` | yes | `tool_calling`, `reasoning`, `spec_decoding`, each with `description` and `args`, using the parser names vLLM registers. |
 | `opt_in_features` | yes | Features that are off by default. |
 | `variants` | yes | Always a `default` variant with `precision` and `vram_minimum_gb` (`ceil(checkpoint GB x 1.2)`). |

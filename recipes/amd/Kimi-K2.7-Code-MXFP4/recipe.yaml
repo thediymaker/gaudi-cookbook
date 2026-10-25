@@ -17,6 +17,7 @@ meta:
 
 model:
   model_id: "amd/Kimi-K2.7-Code-MXFP4"
+  base_model: "moonshotai/Kimi-K2.7-Code"
   architecture: moe
   parameter_count: "1T"
   active_parameters: "32B"

@@ -730,6 +730,12 @@ def precision_of(r):
     return ((r.get("variants") or {}).get("default") or {}).get("precision", "")
 
 
+def maker_org(r):
+    """The org whose logo a recipe shows: the base model's maker for a third-party quantization, else its own org."""
+    base = r["model"].get("base_model")
+    return base.split("/")[0] if base else r["org"]
+
+
 def provider_logo(org, prefix, logos, size=28, cls="logo"):
     inv = " invert-dark" if org.lower() in INVERT_IN_DARK else ""
     if org in logos:
@@ -849,7 +855,7 @@ def recipe_card(r, prefix, logos):
     attrs = " ".join(f'data-{k}="{E(v)}"' for k, v in data.items())
     return f"""<a class="recipe-card" href="{prefix}{r["org"]}/{r["repo"]}/" {attrs}>
   <div class="card-head">
-    {provider_logo(r["org"], prefix, logos)}
+    {provider_logo(maker_org(r), prefix, logos)}
     <div class="card-title-wrap">
       <div class="card-title">{E(r["repo"])}</div>
       <div class="card-org mono">{E(r["org"])}</div>
@@ -1236,7 +1242,7 @@ def recipe_page(r, recipes, fix_pack, fix_status, logos):
   <nav class="crumbs"><a href="{p}index.html">Recipes</a>{icon("chevron-right", 12)}<a href="{p}{r["org"]}/">{E(meta.get("provider") or r["org"])}</a>{icon("chevron-right", 12)}<span>{E(r["repo"])}</span></nav>
   <header class="recipe-head">
     <div class="recipe-title-row">
-      {provider_logo(r["org"], p, logos, 44, "logo logo-lg")}
+      {provider_logo(maker_org(r), p, logos, 44, "logo logo-lg")}
       <div class="recipe-title-wrap">
         <h1 class="mono"><span class="muted">{E(r["org"])}/</span>{E(r["repo"])}</h1>
         <p class="recipe-desc">{E(meta.get("description", ""))}</p>
@@ -1380,7 +1386,7 @@ def main():
         shutil.copyfile(HERE / "assets" / name, out / "assets" / name)
     shutil.copyfile(ROOT / "docs" / "assets" / "logo.svg", out / "assets" / "logo.svg")
     (out / "assets" / "pygments.css").write_text(pygments_css())
-    orgs = sorted({r["org"] for r in recipes})
+    orgs = sorted({r["org"] for r in recipes} | {maker_org(r) for r in recipes})
     logos = {} if a.no_fetch else fetch_logos(orgs, out)
     fix_status = load_fix_status()
     index = search_index(recipes)

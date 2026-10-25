@@ -2,7 +2,7 @@
 meta:
   title: "Muse Spark Open (MXFP4)"
   slug: "muse-spark-open"
-  provider: "AMD (Quark MXFP4 of Muse Spark Open)"
+  provider: "Meta"
   description: >-
     816B MoE (42B active) with a latent MoE and per-expert output norm, the AMD Quark MXFP4 checkpoint as published,
     256K tokens per request on one 8-card Gaudi 2 node, text only, through the muse-spark-open port.
@@ -16,6 +16,7 @@ meta:
 
 model:
   model_id: "amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4"
+  base_model: "meta-models/Muse-Spark-Open-816B-A42B"
   architecture: moe
   parameter_count: "816B"
   active_parameters: "42B"

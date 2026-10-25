@@ -17,6 +17,7 @@ meta:
 
 model:
   model_id: "amd/GLM-5.2-MXFP4"
+  base_model: "zai-org/GLM-5.2"
   architecture: moe
   parameter_count: "744B"
   active_parameters: "41B"
