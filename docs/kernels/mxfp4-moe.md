@@ -502,7 +502,7 @@ kernels of the package:
 `build.sh --variant` picks the set each model needs (see [Build](#build-enable-and-verify)).
 [Per-call timings by variant](#per-call-timings-by-variant) has one-card numbers.
 
-With model-specific integrations, the kernels serve five more models on one 8-card Gaudi 2 node. How each number
+With model-specific integrations, the kernels serve six more models on one 8-card Gaudi 2 node. How each number
 was measured is part of the result, so the table says it:
 
 | Model | Setup | Stock op | With the kernel | Gain | How it was measured |
@@ -510,8 +510,10 @@ was measured is part of the result, so the table says it:
 | GLM-5.3 (MXFP4 checkpoint) | TP 8 + EP 8, one MTP draft token, 2K prompt, 1 stream | 23.3 tok/s | 59.1 tok/s | 2.5x | Three same-node A/Bs chained: first kernel vs stock 1.96x, then two kernel revisions 1.13x and 1.14x |
 | DeepSeek-V4.1-Flash (MXFP4 checkpoint) | TP 8, 1 stream | 20.7 tok/s | 37.6 tok/s | 1.8x | Same-pod A/B, the published recipe with `DSV41_MXK` off and on |
 | GLM-5.2 (MXFP4 checkpoint) | TP 8 + EP 8, one MTP draft token, 1 stream | 23.1 tok/s | 47.8 tok/s | 2.1x | Same benchmark on a stock pod and on kernel pods; not a same-node A/B |
-| Muse Spark Open | 8 cards, 1 stream | 22.3 tok/s | 33.5 tok/s | 1.5x | Same deployment, manifest and clients; only the image and the kernel flag differ (node not recorded as the same) |
-| Muse Spark Open | 8 cards, 4 streams, per stream | 10.9 tok/s | 23.3 tok/s | 2.1x | Same |
+| Muse Spark Open | TP 8, 1 stream, 256 greedy tokens | 22.7 tok/s | 40.8 tok/s | 1.8x | Same-pod A/B, the published recipe with `MUSE_SPARK_MXFP4_KERNELS` off and on |
+| Muse Spark Open | TP 8, 4 streams, aggregate | 43.3 tok/s | 102.8 tok/s | 2.4x | Same |
+| Kimi-K2.7-Code (MXFP4 checkpoint) | TP 8 + EP 8, 16K context, 1 stream | 17.9 tok/s | 44.5 tok/s | 2.5x | Same-pod A/B, the published recipe with `KIMI_MXK` off and on |
+| Kimi-K2.7-Code (MXFP4 checkpoint) | TP 8 + EP 8, 16K context, 8 streams, per stream | 7.5 tok/s | 14.8 tok/s | 2.0x | Same |
 | MiMo-V2.6-Pro (MXFP4 checkpoint) | 8 cards, 1 stream | 18.1 tok/s | 39.7 tok/s | 2.2x | Same node and configuration: stock pod, then kernel pod |
 
 - **GLM-5.3** keeps the same tool-call, needle and GSM8K results as the stock op. Greedy outputs agree on 99.1% of

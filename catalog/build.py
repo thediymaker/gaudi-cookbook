@@ -50,29 +50,23 @@ RELEASES = ("v0.26.0", "v0.30.0")
 # "measured as" label comes from docs/kernels/mxfp4-moe.md; keep them in step.
 KERNEL = {
     "name": "MXFP4 MoE decode kernel",
-    "headline": "Up to 3\u00d7 faster MXFP4 MoE decode on Gaudi 2",
+    "headline": "Up to 2.5\u00d7 faster MXFP4 MoE decode on Gaudi 2",
     "lead": "Custom TPC kernels run the routed experts straight from the packed MXFP4 weights, with no bf16 unpack "
-    "round trip. They took GLM-5.3 from 23.3 to 59.1 tok/s per stream and gpt-oss up to 3.2x, with lower numerical "
-    "error than the stock op, and also serve DeepSeek-V4.1-Flash, GLM-5.2, MiMo-V2.6-Pro and Muse Spark Open. "
-    "Prefill and time to first token are unchanged.",
+    "round trip. On one 8-card node they took GLM-5.3 from 23.3 to 59.1 tok/s per stream and Kimi-K2.7 from 17.9 to "
+    "44.5, with lower numerical error than the stock op, and also serve DeepSeek-V4.1-Flash, GLM-5.2, Muse Spark Open "
+    "and MiMo-V2.6-Pro. Time to first token is unchanged, except on GLM-5.x, where a prefill unpack kernel cuts it "
+    "by 10% to 19%.",
     "stats": [
         ("2.5\u00d7", "GLM-5.3 single stream: 23.3 \u2192 59.1 tok/s on one 8-card node"),
-        ("3.2\u00d7", "gpt-oss-120b decode tok/s per stream at 4 in flight"),
-        ("2.1\u00d7", "Muse Spark Open per stream at 4 streams: 10.9 \u2192 23.3 tok/s"),
+        ("2.5\u00d7", "Kimi-K2.7 single stream at 16K context: 17.9 \u2192 44.5 tok/s, same pod"),
+        ("2.4\u00d7", "Muse Spark Open, 4 streams aggregate: 43.3 \u2192 102.8 tok/s, same pod"),
         ("2\u20134\u00d7", "lower error than the stock op against an fp32 reference"),
     ],
+    # the recipe the spotlight's second button opens
+    "featured": ("zai-org/GLM-5.3-BF16", "GLM-5.3 recipe"),
     # (model, setup, stock, with the kernel, gain, how it was measured, where it lives: recipe:<id>, port:<id>
     # (links the port's recipe once one exists, else its write-up) or doc:<path>)
     "models": [
-        (
-            "openai/gpt-oss-120b",
-            "2 cards, TP 2 + EP, 4 in flight",
-            "16.6 tok/s per stream",
-            "52.4",
-            "3.2\u00d7",
-            "same-node A/B",
-            "recipe:openai/gpt-oss-120b",
-        ),
         (
             "GLM-5.3 (MXFP4)",
             "8 cards, TP 8 + EP 8, 1 stream",
@@ -80,7 +74,34 @@ KERNEL = {
             "59.1",
             "2.5\u00d7",
             "3 same-node A/Bs chained",
-            "port:glm-5-mxfp4",
+            "recipe:zai-org/GLM-5.3-BF16",
+        ),
+        (
+            "Kimi-K2.7-Code (MXFP4)",
+            "8 cards, TP 8 + EP 8, 16K, 1 stream",
+            "17.9 tok/s",
+            "44.5",
+            "2.5\u00d7",
+            "same-pod A/B, published recipe",
+            "recipe:amd/Kimi-K2.7-Code-MXFP4",
+        ),
+        (
+            "Muse Spark Open",
+            "8 cards, 1 stream",
+            "22.7 tok/s",
+            "40.8",
+            "1.8\u00d7",
+            "same-pod A/B, published recipe",
+            "recipe:amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4",
+        ),
+        (
+            "Muse Spark Open",
+            "8 cards, 4 streams, aggregate",
+            "43.3 tok/s",
+            "102.8",
+            "2.4\u00d7",
+            "same-pod A/B, published recipe",
+            "recipe:amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4",
         ),
         (
             "DeepSeek-V4.1-Flash (MXFP4)",
@@ -89,7 +110,7 @@ KERNEL = {
             "37.6",
             "1.8\u00d7",
             "same-pod A/B, published recipe",
-            "port:deepseek-v4-1-flash",
+            "recipe:deepseek-ai/DeepSeek-V4.1-Flash-1017",
         ),
         (
             "GLM-5.2 (MXFP4)",
@@ -98,25 +119,7 @@ KERNEL = {
             "47.8",
             "2.1\u00d7",
             "stock pod vs kernel pods",
-            "port:glm-5-mxfp4",
-        ),
-        (
-            "Muse Spark Open",
-            "8 cards, 1 stream",
-            "22.3 tok/s",
-            "33.5",
-            "1.5\u00d7",
-            "same deployment, image + flag swapped",
-            "port:muse-spark-open",
-        ),
-        (
-            "Muse Spark Open",
-            "8 cards, 4 streams, per stream",
-            "10.9 tok/s",
-            "23.3",
-            "2.1\u00d7",
-            "same deployment, image + flag swapped",
-            "port:muse-spark-open",
+            "recipe:amd/GLM-5.2-MXFP4",
         ),
         (
             "MiMo-V2.6-Pro (MXFP4)",
@@ -127,13 +130,21 @@ KERNEL = {
             "same node: stock pod, then kernel pod",
             "doc:kernels/mxfp4-moe/#beyond-gpt-oss",
         ),
+        (
+            "openai/gpt-oss-120b",
+            "2 cards, TP 2 + EP, 4 in flight",
+            "16.6 tok/s per stream",
+            "52.4",
+            "3.2\u00d7",
+            "same-node A/B",
+            "recipe:openai/gpt-oss-120b",
+        ),
     ],
-    "models_note": "GLM, DeepSeek, MiMo and Muse Spark Open use model-specific integrations that are not in the cookbook yet. "
-    "Muse Spark Open is a full port to Gaudi 2 (latent MoE with per-expert norms, sliding and global attention) that "
-    "matches the reference model's perplexity within 0.4% and serves on one 8-card node. GLM-5.3 reaches 69.6 tok/s "
-    "single stream with decode-step and expert-placement work on top of the kernel.",
-    "proof": "Passes the same tool-call, JSON-schema, long-context needle and GSM8K gates as the stock op, and ran a "
-    "25-minute mixed stress test at 16 in flight with 0 errors.",
+    "models_note": "GLM-5.x, DeepSeek-V4.1-Flash, Kimi-K2.7 and Muse Spark Open run the kernel through their ports, "
+    "each with a recipe here; MiMo-V2.6-Pro's integration is not published. GLM-5.3 reaches 69.6 tok/s single stream "
+    "with decode-step and expert-placement work on top of the kernel.",
+    "proof": "Every model above passes its recipe's gates with the kernel on: tool calls, long-context needles, and "
+    "GSM8K or perplexity against a reference.",
     "doc": "kernels/mxfp4-moe/",
     "source": "kernels/mxfp4-moe",
     "recipes": {
@@ -632,8 +643,7 @@ def spotlight(prefix, recipes):
         f'<div class="stat"><div class="stat-num">{E(n)}</div><div class="stat-label">{E(t)}</div></div>'
         for n, t in KERNEL["stats"]
     )
-    gptoss = next(iter(KERNEL["recipes"]))
-    org, repo = gptoss.split("/")
+    featured, featured_label = KERNEL["featured"]
 
     def tag(where):
         kind, _, target = where.partition(":")
@@ -659,7 +669,7 @@ def spotlight(prefix, recipes):
     <p class="spot-proof">{icon("shield", 12)} {E(KERNEL["proof"])}</p>
     <div class="spot-links">
       <a class="spot-btn primary" href="{prefix}{DOCS_DIR}{KERNEL["doc"]}">Read the write-up</a>
-      <a class="spot-btn" href="{prefix}{org}/{repo}/">gpt-oss-120b recipe</a>
+      <a class="spot-btn" href="{prefix}{featured}/">{E(featured_label)}</a>
       <a class="spot-btn" href="{REPO_URL}/tree/main/{KERNEL["source"]}">Source {icon("external", 11)}</a>
     </div>
   </div>
@@ -924,7 +934,7 @@ def home_page(recipes, logos):
         (
             "zap",
             "Kernels",
-            "MXFP4 MoE decode TPC kernels: 2 to 3x faster decode on gpt-oss, GLM and Muse Spark Open.",
+            "MXFP4 MoE decode TPC kernels: up to 2.5x faster decode on GLM-5.x, Kimi-K2.7, Muse Spark Open and DeepSeek-V4.1.",
             f"{DOCS_DIR}kernels/",
         ),
         (

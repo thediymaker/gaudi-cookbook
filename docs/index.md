@@ -12,9 +12,9 @@ Everything here was run on a large Gaudi 2 fleet serving real traffic, and every
 public images and public checkpoints.
 
 !!! tip "New: MXFP4 MoE decode kernels"
-    Up to **3x faster decode** for MXFP4 mixture-of-experts models on Gaudi 2: GLM-5.3 single stream from 23.3 to
-    59.1 tokens/s, gpt-oss-120b up to 3.2x per stream, Muse Spark Open 2.1x per stream at four streams, with lower
-    numerical error than the stock op. [Read the write-up](kernels/mxfp4-moe.md).
+    Up to **2.5x faster decode** for MXFP4 mixture-of-experts models on one 8-card Gaudi 2 node: GLM-5.3 single
+    stream from 23.3 to 59.1 tokens/s, Kimi-K2.7 from 17.9 to 44.5, Muse Spark Open 2.4x aggregate at four streams,
+    with lower numerical error than the stock op. [Read the write-up](kernels/mxfp4-moe.md).
 
 <div class="grid cards" markdown>
 
@@ -36,8 +36,8 @@ public images and public checkpoints.
 
     ---
 
-    MXFP4 MoE decode kernels that read the packed weights directly: up to 3x
-    faster decode on gpt-oss, GLM and Muse Spark Open.
+    MXFP4 MoE decode kernels that read the packed weights directly: up to 2.5x
+    faster decode on GLM-5.x, Kimi-K2.7, Muse Spark Open and DeepSeek-V4.1-Flash.
 
 -   :material-rocket-launch-outline: **[Ports](ports/index.md)**
 

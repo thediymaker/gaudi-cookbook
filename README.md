@@ -18,9 +18,9 @@
 Everything here was run on a large Gaudi 2 fleet serving real traffic. Everything uses public
 container images and public checkpoints. Nothing depends on a private build.
 
-> **New: MXFP4 MoE decode kernels.** Up to 3x faster decode for MXFP4 mixture-of-experts models on Gaudi 2:
-> GLM-5.3 single stream from 23.3 to 59.1 tokens/s, gpt-oss-120b up to 3.2x per stream, Muse Spark Open 2.1x per
-> stream at four streams, with lower numerical error than the stock op. See [the write-up](docs/kernels/mxfp4-moe.md).
+> **New: MXFP4 MoE decode kernels.** Up to 2.5x faster decode for MXFP4 mixture-of-experts models on one 8-card
+> Gaudi 2 node: GLM-5.3 single stream from 23.3 to 59.1 tokens/s, Kimi-K2.7 from 17.9 to 44.5, Muse Spark Open 2.4x
+> aggregate at four streams, with lower numerical error than the stock op. See [the write-up](docs/kernels/mxfp4-moe.md).
 >
 > **Ports.** Seven models that released images cannot serve, brought up on Gaudi 2: Muse Spark Open,
 > GLM-5.3-Flash, DeepSeek-V4.1-Flash, GLM-5.x MXFP4, Beam-1.0, MiMo-V2.6-Flash and Kimi-K2.7-Code. See
@@ -35,7 +35,7 @@ container images and public checkpoints. Nothing depends on a private build.
 | --- | --- |
 | [`recipes/`](recipes/) | One `recipe.yaml` per model: cards, precision, buckets, parsers, environment, the checks that passed, measured throughput, and known pitfalls. Rendered pages live under [`docs/recipes/`](docs/recipes/). |
 | [`fixes/`](fixes/) | Small runtime patches for bugs in released vllm-gaudi and vLLM images. Each one is tied to an upstream pull request or issue, has a `--check` mode, and refuses to start the server if the image does not match what it expects. |
-| [`kernels/`](kernels/) | Custom TPC kernels. The MXFP4 MoE decode kernels read the packed E2M1 weights and E8M0 scales directly and make decode 2 to 3x faster. The package ships the gpt-oss integration with build scripts, a parity test and a micro benchmark; GLM and Muse Spark Open results are in the write-up. |
+| [`kernels/`](kernels/) | Custom TPC kernels. The MXFP4 MoE decode kernels read the packed E2M1 weights and E8M0 scales directly and make decode up to 2.5x faster. One build variant per model family (GLM-5.x, DeepSeek-V4.1, Muse Spark Open, Kimi, gpt-oss) with build scripts, parity tests and micro benchmarks; the ports hook them in. |
 | [`docs/ports/`](docs/ports/index.md) | Write-ups of models brought up on Gaudi 2 that released images cannot serve: what was hard, how it was solved, the correctness gates and measured speed. The integration code is not published yet. |
 | [`docs/results/`](docs/results/index.md) | Studies and findings that are not tied to one model: platform behaviours and workarounds, prefix caching on Gated DeltaNet hybrids, MoE decode-step anatomy, two-node pipeline parallel, fast prefill, text-to-speech and embeddings. |
 | [`servers/`](servers/README.md) | Small HPU servers for models vLLM does not serve: Qwen3-TTS, Chatterbox and Orpheus text-to-speech behind an OpenAI `/v1/audio/speech` API, and EmbeddingGemma 2 multimodal embeddings, each with an image, CPU tests and device gates. |
@@ -45,7 +45,7 @@ container images and public checkpoints. Nothing depends on a private build.
 
 1. Check the [software baseline](docs/getting-started.md): Gaudi software 1.24.1, the
    `pytorch-installer` base image, vllm-gaudi `v0.26.0` or `releases/v0.30.0`.
-2. Pick a recipe, for example [`recipes/openai/gpt-oss-120b`](recipes/openai/gpt-oss-120b/).
+2. Pick a recipe, for example [`recipes/Qwen/Qwen3.5-397B-A17B-FP8`](recipes/Qwen/Qwen3.5-397B-A17B-FP8/).
 3. Apply the fixes it lists, then start the server:
 
    ```bash
@@ -91,7 +91,7 @@ where everything is and what it must not do. `CLAUDE.md` loads the same file for
 - "My engine died with `tensor_data is empty` in `hccl::allgather_out`. What is it, and how do I
   fix it?"
 - "Which fixes does my v0.30.0 image need for a Gemma 4 deployment with tool calling?"
-- "Turn the gpt-oss-120b recipe into a Kubernetes Deployment for our cluster."
+- "Turn the Qwen3.5-397B recipe into a Kubernetes Deployment for our cluster."
 - "Some nodes show 8 allocatable cards but every multi-card start fails with `Device acquire
   failed`. Help me find out why."
 

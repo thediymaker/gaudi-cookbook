@@ -46,7 +46,7 @@ configurations instead of guessing at Gaudi flags.
 - "My engine died with `tensor_data is empty` in `hccl::allgather_out`. What is it, and how do I
   fix it?"
 - "Which fixes does my v0.30.0 image need for a Gemma 4 deployment with tool calling?"
-- "Turn the gpt-oss-120b recipe into a Kubernetes Deployment for our cluster."
+- "Turn the Qwen3.5-397B recipe into a Kubernetes Deployment for our cluster."
 - "Some nodes show 8 allocatable cards but every multi-card start fails with `Device acquire
   failed`. Help me find out why."
 
