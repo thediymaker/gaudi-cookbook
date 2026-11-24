@@ -6,3 +6,4 @@ ARG BASE
 FROM ${BASE}
 COPY . /opt/gaudi-cookbook
 RUN bash /opt/gaudi-cookbook/ports/inkling-small/install.sh
+ENV COOKBOOK=/opt/gaudi-cookbook

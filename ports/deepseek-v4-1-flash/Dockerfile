@@ -10,3 +10,4 @@ ARG BASE
 FROM ${BASE}
 COPY . /opt/gaudi-cookbook
 RUN bash /opt/gaudi-cookbook/ports/deepseek-v4-1-flash/install.sh
+ENV COOKBOOK=/opt/gaudi-cookbook

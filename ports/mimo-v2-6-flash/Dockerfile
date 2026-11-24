@@ -7,3 +7,4 @@ ARG BASE
 FROM ${BASE}
 COPY . /opt/gaudi-cookbook
 RUN bash /opt/gaudi-cookbook/ports/mimo-v2-6-flash/install.sh
+ENV COOKBOOK=/opt/gaudi-cookbook
