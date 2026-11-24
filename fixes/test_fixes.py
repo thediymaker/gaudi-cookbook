@@ -136,7 +136,49 @@ def test_recipe_fix_sets_end_to_end(tmp_path):
         for pkg in ("vllm", "vllm_gaudi"):
             shutil.copytree(Path(root) / pkg, site / pkg, ignore=shutil.ignore_patterns("__pycache__"))
         cmd = [sys.executable, str(HERE / "apply_all.py"), "--profile", profile, "--root", str(site), *opt_in]
+        # The documented first step: --check must not report a matching image as drifted (exit 2).
+        proc = subprocess.run([*cmd, "--check"], capture_output=True, text=True, check=False)
+        assert proc.returncode in (0, 1), f"{recipe}: {proc.stdout}{proc.stderr}"
         for _ in range(2):
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
             assert proc.returncode == 0, f"{recipe}: {proc.stdout}{proc.stderr}"
         shutil.rmtree(site)
+
+
+def test_check_reports_drift_behind_a_pending_fix(tmp_path):
+    """gdn-prefix-cache needs hybrid-decode-pad in the source. --check on an unpatched release reports it as not
+    applied (1), not drifted, and still reports 2 when one of its own anchors does not match."""
+    root, profile = os.environ.get("GAUDI_FIXES_ROOT"), os.environ.get("GAUDI_FIXES_PROFILE")
+    if not root or not profile:
+        pytest.skip("set GAUDI_FIXES_ROOT and GAUDI_FIXES_PROFILE to check a fix behind its prerequisite")
+    name, sched = "gdn-prefix-cache", Path("vllm") / "v1" / "core" / "sched" / "scheduler.py"
+    assert "hybrid-decode-pad" in apply_all.PROFILES[profile]
+
+    def site(tag):
+        dst = tmp_path / tag
+        for pkg in ("vllm", "vllm_gaudi"):
+            shutil.copytree(Path(root) / pkg, dst / pkg, ignore=shutil.ignore_patterns("__pycache__"))
+        return dst
+
+    def run(dst, *extra):
+        cmd = [sys.executable, str(HERE / "apply_all.py"), "--profile", profile, "--root", str(dst), name, *extra]
+        return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+    clean = site("clean")
+    before = {p: p.read_bytes() for p in clean.rglob("*.py")}
+    proc = run(clean, "--check")
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert f"[gaudi-fix:{name}] not applied" in proc.stdout
+    assert before == {p: p.read_bytes() for p in clean.rglob("*.py")}, "--check wrote to the sources"
+
+    # Break a line that only this fix rewrites: one the patched scheduler no longer has.
+    assert run(clean).returncode == 0
+    patched = set((clean / sched).read_text().splitlines())
+    drifted = site("drifted")
+    lines = (drifted / sched).read_text().splitlines(keepends=True)
+    at = next(i for i, line in enumerate(lines) if line.strip() and line.rstrip("\n") not in patched)
+    lines[at] = lines[at].rstrip("\n") + "  # drifted\n"
+    (drifted / sched).write_text("".join(lines))
+    proc = run(drifted, "--check")
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert f"[gaudi-fix:{name}]" in proc.stderr

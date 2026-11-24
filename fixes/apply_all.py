@@ -15,13 +15,20 @@ Usage:
 
 Exit codes (same as each apply.py): 0 applied, already applied or not needed; 1 (--check only)
 at least one fix not applied yet; 2 source drift or another error, nothing further written.
+
+--check writes nothing, so a fix that needs an earlier fix in the source (gdn-prefix-cache needs
+hybrid-decode-pad) cannot find it on an image that is not patched yet. Such a fix is checked against
+a scratch copy of the files involved, with the pending fixes before it applied there.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -29,7 +36,8 @@ HERE = Path(__file__).resolve().parent
 # Application order. Fixes that edit the same file must keep their relative order:
 #   hpu_model_runner.py: prompt-order, structured-output-rows, so-row-owners, async-inputs,
 #     hybrid-decode-pad, gdn-prefix-cache, gather-logprobs-int32, prompt-logprobs, seeded-sampling,
-#     swa-decode-window, pipeline-parallel (appends; it mirrors prompt-order on non-last stages)
+#     swa-decode-window, mm-encoder-budget, mm-pooling-inputs, pipeline-parallel (appends; it mirrors
+#     prompt-order on non-last stages)
 #   vllm scheduler.py: gdn-prefix-cache, vllm-long-prefill-share, pipeline-parallel
 #   hpu_input_batch.py: sampling-rows-refresh, bad-words-index, logitsprocs-rows,
 #     resumed-prefill-logits, penalty-shapes, topk-subset-sampler
@@ -121,13 +129,42 @@ PROFILES = {
 }
 
 
-def run_fix(name: str, check: bool, root: str | None) -> int:
+def run_fix(name: str, check: bool, root: str | None, quiet: bool = False) -> subprocess.CompletedProcess:
     cmd = [sys.executable, str(HERE / name / "apply.py")]
     if check:
         cmd.append("--check")
     if root:
         cmd += ["--root", root]
-    return subprocess.run(cmd, check=False).returncode
+    return subprocess.run(cmd, check=False, capture_output=quiet, text=True)
+
+
+def load_fix(name: str):
+    """A fix's apply.py as a module, for its TARGETS and its locate()."""
+    spec = importlib.util.spec_from_file_location(f"gaudi_fix_{name.replace('-', '_')}", HERE / name / "apply.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def applies_after(name: str, pending: list[str], root: str | None) -> bool:
+    """True if `name` reports "not applied, anchors match" once the fixes in `pending` are in.
+
+    Copies the files those fixes and `name` touch to a scratch directory, applies the pending fixes there in
+    order and checks `name` against the result. Nothing under `root` or in the installed packages is written.
+    """
+    with tempfile.TemporaryDirectory(prefix="gaudi-fix-check-") as scratch:
+        for fix in (*pending, name):
+            mod = load_fix(fix)
+            for pkg, rel, _fn, _key in getattr(mod, "TARGETS", ()):
+                src, dst = mod.locate(pkg, rel, root), Path(scratch) / pkg / rel
+                if src is None:
+                    return False
+                if not dst.exists():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(src, dst)
+        if any(run_fix(fix, False, scratch, quiet=True).returncode != 0 for fix in pending):
+            return False
+        return run_fix(name, True, scratch, quiet=True).returncode == 1
 
 
 def main() -> int:
@@ -161,13 +198,25 @@ def main() -> int:
         ap.error("name at least one fix or a --profile")
 
     worst = 0
+    pending: list[str] = []  # --check: fixes that are not applied yet and whose anchors match
     for name in ORDER:
         if name not in wanted:
             continue
-        rc = run_fix(name, args.check, args.root)
-        if rc != 0 and not args.check:
-            print(f"[apply_all] {name} failed with exit code {rc}; stopping", file=sys.stderr)
-            return 2
+        proc = run_fix(name, args.check, args.root, quiet=args.check)
+        rc = proc.returncode
+        if not args.check:
+            if rc != 0:
+                print(f"[apply_all] {name} failed with exit code {rc}; stopping", file=sys.stderr)
+                return 2
+            continue
+        if rc == 2 and pending and applies_after(name, pending, args.root):
+            print(f"[gaudi-fix:{name}] not applied (anchors match after the pending fixes before it)")
+            rc = 1
+        else:
+            sys.stdout.write(proc.stdout)
+            sys.stderr.write(proc.stderr)
+        if rc == 1:
+            pending.append(name)
         worst = max(worst, rc)
     return worst
 

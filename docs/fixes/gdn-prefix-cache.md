@@ -98,7 +98,8 @@ Limits:
 ## Verify
 
 ```bash
-python3 fixes/gdn-prefix-cache/apply.py --check   # 0 = applied, 1 = not applied, 2 = source drifted
+python3 fixes/apply_all.py --check --profile v0.26.0 gdn-prefix-cache   # 0 = applied, 1 = not applied, 2 = drifted
+python3 fixes/gdn-prefix-cache/apply.py --check   # the same, but 2 until hybrid-decode-pad is applied
 GAUDI_FIXES_ROOT=/path/to/site-packages pytest fixes/gdn-prefix-cache
 ```
 
