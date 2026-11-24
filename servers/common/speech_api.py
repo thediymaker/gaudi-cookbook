@@ -157,10 +157,9 @@ def _split_long(sentence: str, limit: int) -> list[str]:
             continue
         if len(clause) <= limit:
             pieces.append(clause)
-        elif " " in clause:
-            pieces.extend(_pack(clause.split(" "), limit))
-        else:  # no spaces (CJK, or one enormous token): cut at the limit
-            pieces.extend(clause[i : i + limit] for i in range(0, len(clause), limit))
+        else:  # break between words; a word longer than the limit (a URL, a hash, unspaced CJK) is cut at the limit
+            words = [w[i : i + limit] for w in clause.split(" ") for i in range(0, len(w), limit)]
+            pieces.extend(_pack(words, limit))
     return _pack(pieces, limit)
 
 
