@@ -56,7 +56,8 @@ def check_swa() -> None:
                 return t.to(DEV) if not t.is_floating_point() else t.to(torch.bfloat16).to(DEV)
 
             out = ops.swa_band_attention(to(q), to(k), to(v), to(sinks), d**-0.5, W, to(kc), to(vc), to(ct), to(fr))
-            worst = max(worst, ((out.float().cpu() - ref).norm() / ref.norm()).item())
+            err = ((out.float().cpu() - ref).norm() / ref.norm()).item()
+            worst = err if err != err or err > worst else worst  # keep a NaN: max() would drop it
     verdict(worst < 2e-2, "swa-band-device", f"worst relative error {worst:.4f} in bf16 (bound 0.02)")
 
 

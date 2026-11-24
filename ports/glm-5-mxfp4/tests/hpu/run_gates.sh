@@ -39,7 +39,8 @@ gate() {
   "$@" > "$OUT/last.log" 2>&1
   local r=$?
   cat "$OUT/last.log" >> "$OUT/gates.log"
-  grep -E '^(PASS|FAIL)' "$OUT/last.log" || echo "FAIL $2: no result (see $OUT/gates.log)"
+  # "$@" is: python3 <script> <gate> [args], so the gate's name is $3
+  grep -E '^(PASS|FAIL)' "$OUT/last.log" || { echo "FAIL $3: no result (see $OUT/gates.log)"; rc=1; }
   [ "$r" -eq 0 ] || rc=1
 }
 gate $G greedy "$OUT/greedy.json"
