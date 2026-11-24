@@ -1371,6 +1371,40 @@ def api_json(recipes, fix_pack):
     return {"generator": "gaudi-cookbook catalog", "repository": REPO_URL, "recipes": out}
 
 
+def dead_links(out, pages):
+    """Relative links on the catalog pages that lead nowhere.
+
+    A link into docs/ must have a source under the repository's docs/ (MkDocs builds that site separately, and
+    `mkdocs build --strict` checks the links inside it). Any other link must be a file this build wrote, and a
+    fragment on a catalog page must be an id on that page.
+    """
+    docs, docs_src = DOCS_DIR.rstrip("/"), ROOT / "docs"
+    texts = {p: p.read_text() for p in pages}
+    dead = []
+    for page_path, text in texts.items():
+        here = page_path.parent.relative_to(out).as_posix()
+        for url in sorted(set(re.findall(r'\s(?:href|src)="([^"]+)"', text))):
+            url = html.unescape(url)
+            if re.match(r"^[a-z][a-z0-9+.-]*:|^//", url):
+                continue
+            path, _, frag = url.partition("#")
+            target = posixpath.normpath(posixpath.join(here, path)) if path else page_path.relative_to(out).as_posix()
+            if target == docs or target.startswith(docs + "/"):
+                rel = target[len(docs) :].strip("/")
+                found = any(
+                    c.is_file() for c in (docs_src / rel, docs_src / f"{rel}.md", docs_src / rel / "index.md") if rel
+                ) or (not rel and (docs_src / "index.md").is_file())
+            else:
+                dest = out / target
+                dest = dest / "index.html" if dest.is_dir() else dest
+                found = dest.is_file() and not target.startswith("..")
+                if found and frag and dest in texts:
+                    found = f'id="{frag}"' in texts[dest]
+            if not found:
+                dead.append(f"{page_path.relative_to(out).as_posix()}: {url}")
+    return dead
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 
 
@@ -1404,14 +1438,14 @@ def main():
     desc = (
         "Pick a model, copy the vllm serve line that runs on Intel Gaudi 2. Tested recipes with their fixes and checks."
     )
-    (out / "index.html").write_text(
-        page(f"{SITE_TITLE}: vLLM on Intel Gaudi", desc, "", home_page(recipes, logos), index)
-    )
+    pages = [out / "index.html"]
+    pages[0].write_text(page(f"{SITE_TITLE}: vLLM on Intel Gaudi", desc, "", home_page(recipes, logos), index))
     for org, rs in by_org(recipes):
         d = out / org
         d.mkdir(parents=True, exist_ok=True)
         name = rs[0]["meta"].get("provider") or org
-        (d / "index.html").write_text(
+        pages.append(d / "index.html")
+        pages[-1].write_text(
             page(
                 f"{name} | {SITE_TITLE}",
                 f"{name} models on Intel Gaudi 2 with vLLM.",
@@ -1431,9 +1465,13 @@ def main():
             recipe_page(r, recipes, fix_pack, fix_status, logos),
             index,
         )
-        (d / "index.html").write_text(html_)
+        pages.append(d / "index.html")
+        pages[-1].write_text(html_)
     (out / "recipes.json").write_text(json.dumps(api_json(recipes, fix_pack), indent=1))
     (out / ".nojekyll").write_text("")
+    dead = dead_links(out, pages)
+    if dead:
+        sys.exit("catalog: dead links\n  " + "\n  ".join(dead))
     print(f"catalog: {len(recipes)} recipes, {len(orgs)} providers, {len(logos)} logos -> {out}")
 
 
