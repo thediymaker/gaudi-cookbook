@@ -4,8 +4,8 @@
 Backport of vLLM PR #62052 (merge 153a1716, `vllm/parser/beam.py`). The PR's parsers sit
 on the response-template framework (`vllm/parser/response_template.py`,
 `vllm/parser/response_template_grammar.py`, `vllm/parser/chat_parsing/`), which v0.30
-does not have; those files are vendored verbatim (vendor_pr/, installed in-tree by
-patches/install_pr_files.py). This module is the PR's `beam.py` rewritten against
+does not have; those files are vendored verbatim (vendor/, installed in-tree by
+patches/vllm_pr_62052.py). This module is the PR's `beam.py` rewritten against
 v0.30's request objects and helpers:
 
 Output format (checkpoint `response_template`, tokenizer_config.json), after the

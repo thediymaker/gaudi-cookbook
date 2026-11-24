@@ -9,7 +9,7 @@ Gaudi 2 cards.
 | Model | [MiniMaxAI/MiniMax-M2.7](https://huggingface.co/MiniMaxAI/MiniMax-M2.7) |
 | Licence | MiniMax M2.7 licence: non-commercial use; commercial use needs written authorization from MiniMax |
 | Hardware | 4x Gaudi 2 (TP 4) |
-| Image | vllm-gaudi `v0.26.0` (`b059f9c`), vLLM `568afb3a`, Gaudi SW 1.24.1 |
+| Image | vllm-gaudi `releases/v0.30.0` (`058f107`), vLLM `ced6857a`, Gaudi SW 1.24.1 |
 | Precision | FP8 checkpoint (block 128 x 128, dynamic activations, 230 GB) |
 | Context | 131,072 (the checkpoint allows 204,800) |
 | Concurrency | `--max-num-seqs 4` |

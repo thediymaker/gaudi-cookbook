@@ -45,7 +45,7 @@ otherwise; none has been run on Gaudi 3.
 | [Muse Spark Open](muse-spark-open.md) | 8 (TP 8, EP) | MXFP4 | releases/v0.30.0 | tools, reasoning, 256K | verified, port |
 | [GLM-5.2 (MXFP4)](glm-5-2-mxfp4.md) | 8 (TP 8, EP) | MXFP4 | releases/v0.30.0 | tools, reasoning, MTP | verified, port |
 | [GLM-5.3 (MXFP4)](glm-5-3-mxfp4.md) | 8 (TP 8, EP) | MXFP4 | releases/v0.30.0 | tools, reasoning, MTP | verified, port |
-| [GLM-5.3-Flash](glm-5-3-flash.md) | 8 (TP 8, EP) | FP8 | v0.26.0 | tools, reasoning, 256K | verified, port |
+| [GLM-5.3-Flash](glm-5-3-flash.md) | 8 (TP 8, EP) | FP8 | v0.26.0 | tools, reasoning, vision, 256K | verified, port |
 | [DeepSeek-V4.1-Flash-1017](deepseek-v4-1-flash-1017.md) | 8 (TP 8, EP) | MXFP4 | releases/v0.30.0 | tools, reasoning | verified, port |
 | [Kimi-K2.7-Code (MXFP4)](kimi-k2-7-code.md) | 8 (TP 8, EP) | MXFP4 | releases/v0.30.0 | tools, reasoning | verified, port |
 | [MiniMax-M3](minimax-m3.md) | 8 (TP 8, EP) | FP8 | v0.26.0 | tools, reasoning | verified, port |
