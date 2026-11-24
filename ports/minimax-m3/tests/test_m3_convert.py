@@ -206,6 +206,7 @@ def test_torch_codec_matches_reference():
 
 def test_bf16_codec_exact():
     torch = pytest.importorskip("torch")
+    pytest.importorskip("numpy")  # Bf16Codec.encode uses Tensor.numpy()
     nib, sc = C.synthetic_row(random.Random(5), 256, 6, base=118)
     w = torch.tensor([list(C.pack_row(nib))], dtype=torch.uint8)
     s = torch.tensor([sc], dtype=torch.uint8)

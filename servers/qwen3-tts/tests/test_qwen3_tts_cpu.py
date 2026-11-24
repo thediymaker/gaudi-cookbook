@@ -4,6 +4,7 @@
 import pytest
 
 torch = pytest.importorskip("torch")
+pytest.importorskip("numpy")  # engine.py imports it
 from server_modules import load  # noqa: E402
 
 (engine,) = load(__file__, "engine")
