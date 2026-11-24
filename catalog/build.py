@@ -817,7 +817,7 @@ def page(title, description, prefix, body, search_index, canonical=""):
     <span class="footer-note">Independent project, not affiliated with Intel or the vLLM project. Apache-2.0.</span>
   </div>
 </footer>
-<script>window.GC_INDEX = {json.dumps(search_index, separators=(",", ":"))};</script>
+<script>window.GC_INDEX = {json.dumps(search_index, separators=(",", ":")).replace("</", "<\\/")};</script>
 <script src="{prefix}assets/catalog.js"></script>
 </body>
 </html>
