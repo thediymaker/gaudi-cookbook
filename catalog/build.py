@@ -315,6 +315,11 @@ def load_recipes():
                 **data,
             }
         )
+    ids = {r["id"] for r in recipes}
+    for r in recipes:
+        unknown = sorted(set(r["meta"].get("related_recipes") or []) - ids)
+        if unknown:
+            sys.exit(f"{r['yaml']}: related_recipes {unknown} are not recipe ids (<hf_org>/<hf_repo>)")
     return recipes
 
 

@@ -11,7 +11,7 @@ meta:
   tasks:
     - text
   related_recipes:
-    - glm-5-3-mxfp4
+    - "zai-org/GLM-5.3-BF16"
   hardware:
     gaudi2: verified
 
