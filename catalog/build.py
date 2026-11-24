@@ -1170,15 +1170,22 @@ def guide_html(r, recipes, prefix):
     for x in recipes:
         page_to_recipe.setdefault(x["page"], x)
 
+    ids = set(re.findall(r'\sid="([^"]+)"', out))
+    full_guide = f"{prefix}{DOCS_DIR}recipes/{r['page'][:-3]}/"
+
     def link(m):
         href = m.group(1)
-        if re.match(r"^[a-z]+:|^#", href):
+        if href.startswith("#"):
+            # A heading under "## Launch" is not on this page (the builder replaces that section); the full guide has it.
+            return m.group(0) if href[1:] in ids else f'href="{full_guide}{href}"'
+        if re.match(r"^[a-z]+:", href):
             return m.group(0)
         path, _, frag = href.partition("#")
         target = posixpath.normpath(posixpath.join("docs/recipes", path))
         frag = "#" + frag if frag else ""
         if target == "docs/recipes/index.md":
-            return f'href="{prefix}index.html{frag or "#all"}"'
+            # The catalog home replaces the index table; the index page's other sections are only on the docs site.
+            return f'href="{prefix}{DOCS_DIR}recipes/{frag}"' if frag else f'href="{prefix}index.html#all"'
         name = target.rsplit("/", 1)[-1]
         if target.startswith("docs/recipes/") and name in page_to_recipe:
             x = page_to_recipe[name]
@@ -1196,10 +1203,13 @@ def port_links(r, prefix):
     port = port_of(r)
     if not port:
         return ""
-    return (
+    # A small port has its README but no write-up under docs/ports/.
+    writeup = (
         f'<a href="{prefix}{DOCS_DIR}ports/{port}/">How it was ported {icon("book", 11)}</a>'
-        f'<a href="{REPO_URL}/tree/main/ports/{port}">Port code {icon("external", 10)}</a>'
+        if (ROOT / "docs" / "ports" / f"{port}.md").is_file()
+        else ""
     )
+    return writeup + f'<a href="{REPO_URL}/tree/main/ports/{port}">Port code {icon("external", 10)}</a>'
 
 
 def recipe_page(r, recipes, fix_pack, fix_status, logos):
