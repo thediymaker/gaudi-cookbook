@@ -204,6 +204,8 @@ def g_kernels():
     assert ver, f"no version string in {mxk.tpc_lib()}"
     why = mxk.unsupported(128, 4096, 1024, 8)  # EP2 x TP4: 128 local experts, Hm 4096, Is 1024, top-8
     assert why is None, why
+    # EP8 (MUSE_SPARK_MOE_TP_SPLIT=1) keeps the whole intermediate, 4096, above the kernels' 3072: stock op
+    assert mxk.unsupported(32, 4096, 4096, 8), "Is 4096 must stay on the stock op"
     with tempfile.TemporaryDirectory() as td:
         rc = f"{td}/rc/,False,1024"
         base = {"GC_KERNEL_PATH": STOCK, "PT_HPU_RECIPE_CACHE_CONFIG": rc}

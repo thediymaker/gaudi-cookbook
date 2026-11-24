@@ -33,7 +33,8 @@ MAX_TOKENS = 4  # the recipe's --max-num-seqs; parity and timing were measured a
 STOCK = "/usr/lib/habanalabs/libtpc_kernels.so"
 NO_LIMIT = 3.0e38  # silu(gate) * up without a clamp
 MAX_ROUTES = 128  # kernel limit on T * top_k per call
-MAX_K = 6144  # kernel limit on the GEMV input width
+MAX_K = 6144  # kernel limit on the w13 input width (the route's x row is staged in vector local memory)
+MAX_I = 3072  # kernel limit on the intermediate width, for mxk_w13x and mxk_w2xr alike
 _ops_loaded = False
 
 
@@ -113,8 +114,10 @@ def unsupported(n: int, Hm: int, Is: int, k: int) -> str | None:
         return f"{n} local experts > 128"
     if Hm % 512 or Is % 512:
         return f"Hm {Hm} / Is {Is} not multiples of 512"
-    if Hm > MAX_K or Is > MAX_K:
-        return f"Hm {Hm} / Is {Is} > {MAX_K}"
+    if Hm > MAX_K:
+        return f"Hm {Hm} > {MAX_K}"
+    if Is > MAX_I:
+        return f"Is {Is} > {MAX_I}"
     if MAX_TOKENS * k > MAX_ROUTES:
         return f"{MAX_TOKENS} tokens x top-{k} > {MAX_ROUTES} routes"
     return None
