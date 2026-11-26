@@ -8,15 +8,26 @@
 #   - hpu_custom_op.h and libhabana_pytorch_plugin.so (from the installed habana_frameworks package)
 #   - g++, objcopy, strip, python3 with torch
 #
-#   ./build.sh [--variant NAME] [--extra-kernel DIR]... [--pt2] [OUT_DIR]   default: --variant gptoss, OUT_DIR ./dist
+#   ./build.sh [--variant NAME] [--kernels v8|v10] [--extra-kernel DIR]... [--pt2] [OUT_DIR]
+#   defaults: --variant gptoss, --kernels v10 for a variant that has a v10 set (all but muse) unless --pt2, v8 otherwise,
+#   OUT_DIR ./dist
 #
 # Variants (the kernels each model's integration calls; one variant per serving image):
 #   gptoss   mxk_w13xib mxk_w2xb          gpt-oss: interleaved w13 + bias + SwiGLU-OAI, w2 + bias, <= 32 tokens
+#            v10 adds mxk_w13xibn mxk_w2gn mxk_w2cb
 #   glm      mxk_w13x mxk_w2x mxk_deq     GLM-5.x: [gate; up] w13 + SiLU, w2 sum (<= 16 tokens), prefill unpack
+#            v10 adds mxk_w13xn mxk_w2xc mxk_w2gp mxk_w2c (and the mxk_w2g ELF, mxk_w2gp's fallback, no GUID)
 #   dsv41    mxk_w13xi mxk_w2x            DeepSeek-V4.1-Flash: interleaved w13 + clamped SwiGLU, w2 sum
+#            v10 adds mxk_w13xin mxk_w2gn mxk_w2c (and the mxk_w2gp ELF, mxk_w2gn's nch-2 kernel, no GUID)
 #   muse     mxk_w13x mxk_w2xr            Muse Spark Open: [gate; up] w13 + SiLU, w2 per route
 #   kimi     mxk_w13xt mxk_w2x            Kimi-K2.7: [gate; up] w13 + SiLU for K up to 8192, w2 sum
+#            v10 adds mxk_w13xk (K <= 7168) mxk_w2xc mxk_w2gp mxk_w2c (and the mxk_w2g ELF)
 #   none     (no MoE kernels)             a port that only needs its own --extra-kernel (GLM-5.3-Flash)
+#
+# --kernels v10 builds the variant's v8 kernels (the same machine code as a v8 build) PLUS its v10 kernels into one
+# library, so the port picks the v10 path or keeps the v8 path at run time from the ops the library registers.
+# The v10 kernels give the v8 kernels' outputs bit for bit. --kernels v8 builds the v8 library only. Variants
+# without a v10 set build v8 and refuse --kernels v10. v10 has no torch.compile ops: --pt2 builds v8 and refuses --kernels v10.
 #
 # --extra-kernel DIR adds a model-only TPC kernel supplied by a port. DIR holds:
 #   <guid>.c   the TPC-C source; its file name is the GUID. Self-contained (compiled without include paths).
@@ -32,8 +43,8 @@
 # implementations, for models served in torch.compile mode (PT_HPU_LAZY_MODE=0). Not for gptoss (lazy mode) and not
 # with --extra-kernel (an extra kernel's op.cpp uses the lazy API).
 #
-# Env: TPC_CLANG (compiler path); MXK_BUILD_DIR (scratch dir, default /tmp/mxk_<variant>_v8_build: tpc-clang records
-# it in the ELF, so a fixed path keeps the kernel ELFs reproducible); MXK_STOCK_LIB (stock kernel library for the
+# Env: TPC_CLANG (compiler path); MXK_BUILD_DIR (scratch dir, default /tmp/mxk_<variant>_v8_build for both kernel sets:
+# tpc-clang records it in the ELF, so a fixed path keeps the kernel ELFs reproducible); MXK_STOCK_LIB (stock kernel library for the
 # gate, default /usr/lib/habanalabs/libtpc_kernels.so).
 #
 # Output in OUT_DIR:
@@ -49,6 +60,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 SRC=$HERE/src
 
 VARIANT=gptoss
+KV=""
 EXTRA_DIRS=()
 OUT=""
 PT2=0
@@ -56,10 +68,12 @@ while [ $# -gt 0 ]; do
   case $1 in
     --variant) VARIANT=$2; shift 2 ;;
     --variant=*) VARIANT=${1#*=}; shift ;;
+    --kernels) KV=$2; shift 2 ;;
+    --kernels=*) KV=${1#*=}; shift ;;
     --extra-kernel) EXTRA_DIRS+=("$(cd "$2" && pwd)"); shift 2 ;;
     --extra-kernel=*) EXTRA_DIRS+=("$(cd "${1#*=}" && pwd)"); shift ;;
     --pt2) PT2=1; shift ;;
-    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,57p' "$0"; exit 0 ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) [ -z "$OUT" ] || { echo "one OUT_DIR only" >&2; exit 2; }; OUT=$1; shift ;;
   esac
@@ -74,10 +88,29 @@ case $VARIANT in
   none)   KERNELS=() ;;
   *) echo "unknown variant '$VARIANT' (gptoss, glm, dsv41, muse, kimi, none)" >&2; exit 2 ;;
 esac
+# v10 kernels per variant: GUIDs, and ELFs built into the library without a GUID of their own
+declare -A V10=([glm]="mxk_w13xn mxk_w2xc mxk_w2gp mxk_w2c" [kimi]="mxk_w13xk mxk_w2xc mxk_w2gp mxk_w2c"
+                [dsv41]="mxk_w13xin mxk_w2gn mxk_w2c" [gptoss]="mxk_w13xibn mxk_w2gn mxk_w2cb")
+declare -A V10_NOGUID=([glm]="mxk_w2g" [kimi]="mxk_w2g" [dsv41]="mxk_w2gp")
+if [ -z "$KV" ]; then
+  if [ -n "${V10[$VARIANT]:-}" ] && [ "$PT2" = 0 ]; then KV=v10; else KV=v8; fi
+fi
+case $KV in
+  v8) NOGUID=() ;;
+  v10)
+    [ -n "${V10[$VARIANT]:-}" ] || { echo "--kernels v10: variant $VARIANT has no v10 kernels (build it with v8)" >&2; exit 2; }
+    read -r -a NEW <<< "${V10[$VARIANT]}"
+    read -r -a NOGUID <<< "${V10_NOGUID[$VARIANT]:-}"
+    KERNELS+=("${NEW[@]}") ;;
+  *) echo "unknown --kernels '$KV' (v8, v10)" >&2; exit 2 ;;
+esac
 # GUID -> source (the ELF symbol follows the GUID: each source is copied to <GUID>.c)
 declare -A KSRC=([mxk_w13x]=mxk8_w13x [mxk_w13xi]=mxk8_w13xi [mxk_w13xib]=mxk8_w13xib [mxk_w13xt]=mxk8_w13xt
                  [mxk_w2x]=mxk8_w2x
-                 [mxk_w2xr]=mxk8_w2xr [mxk_w2xb]=mxk8_w2xb [mxk_deq]=mxk_deq)
+                 [mxk_w2xr]=mxk8_w2xr [mxk_w2xb]=mxk8_w2xb [mxk_deq]=mxk_deq
+                 [mxk_w13xn]=mxk10_w13xn [mxk_w13xk]=mxk10_w13xk [mxk_w13xin]=mxk10_w13xin
+                 [mxk_w13xibn]=mxk10_w13xibn [mxk_w2gn]=mxk9_w2gn [mxk_w2cb]=mxk9_w2cb [mxk_w2xc]=mxk10_w2xc [mxk_w2gp]=mxk9_w2gp [mxk_w2c]=mxk9_w2c
+                 [mxk_w2g]=mxk9_w2g)
 
 EXTRA=()
 for d in "${EXTRA_DIRS[@]}"; do
@@ -92,6 +125,7 @@ done
 if [ "$PT2" = 1 ]; then
   [ "$VARIANT" != gptoss ] && [ "$VARIANT" != none ] || { echo "--pt2: no torch.compile ops for variant $VARIANT" >&2; exit 2; }
   [ ${#EXTRA[@]} -eq 0 ] || { echo "--pt2 cannot be combined with --extra-kernel (lazy-mode op.cpp)" >&2; exit 2; }
+  [ "$KV" = v8 ] || { echo "--pt2: the v10 kernels have no torch.compile ops; build with --kernels v8 --pt2" >&2; exit 2; }
 fi
 
 OUT=${OUT:-$HERE/dist}
@@ -113,14 +147,16 @@ fi
 
 # Version: variant + hash of everything that goes into the libraries
 SRCS=("$SRC/mxk8_core.h" "$SRC/mxk8_w13.h" "$SRC/mxk8_w2.h")
-for n in "${KERNELS[@]}"; do SRCS+=("$SRC/${KSRC[$n]}.c"); done
+[ "$KV" = v8 ] || SRCS+=("$SRC"/mxk10_*.h "$SRC"/mxk9_*.h)
+for n in "${KERNELS[@]}" "${NOGUID[@]}"; do SRCS+=("$SRC/${KSRC[$n]}.c"); done
 SRCS+=("$SRC/mxk_tpc_lib.cpp" "$SRC/mxk_tpc.map" "$SRC/mxk_op_lazy.cpp" "$HERE/build.sh")
 for d in "${EXTRA_DIRS[@]}"; do SRCS+=("$d"/*.c "$d/glue.inc" "$d/op.cpp"); done
 [ "$PT2" = 0 ] || SRCS+=("$SRC/mxk_op_pt2.cpp")
 SRCHASH=$(cat "${SRCS[@]}" | sha256sum | cut -c1-12)
-VERSION=$VARIANT-v8-$SRCHASH
+VERSION=$VARIANT-$KV-$SRCHASH
 HAS=()
 for n in "${KERNELS[@]}"; do HAS+=("-DMXK_HAS_$n"); done
+for n in "${NOGUID[@]}"; do HAS+=("-DMXK_ELF_$n"); done
 
 # 1. TPC kernels -> ELF -> x86 object holding the ELF as a binary blob
 tpc() {  # tpc <guid> <source> [include dir]
@@ -128,7 +164,7 @@ tpc() {  # tpc <guid> <source> [include dir]
   (cd "$B" && "$TPCCLANG" -march=gaudi2 -O2 -x c++ ${3:+-I"$3"} "$1.c" -c -o "$1.o")
   (cd "$B" && objcopy -I binary -O elf64-x86-64 -B i386:x86-64 "$1.o" "${1}_x86.o")
 }
-for n in "${KERNELS[@]}"; do tpc "$n" "$SRC/${KSRC[$n]}.c" "$SRC"; done
+for n in "${KERNELS[@]}" "${NOGUID[@]}"; do tpc "$n" "$SRC/${KSRC[$n]}.c" "$SRC"; done
 EXTRA_GLUE=()
 EXTRA_OPS=()
 if [ ${#EXTRA[@]} -gt 0 ]; then
@@ -146,7 +182,7 @@ if [ ${#EXTRA[@]} -gt 0 ]; then
 fi
 ALL=("${KERNELS[@]}" "${EXTRA[@]}")
 OBJS=()
-for n in "${ALL[@]}"; do OBJS+=("$B/${n}_x86.o"); done
+for n in "${ALL[@]}" "${NOGUID[@]}"; do OBJS+=("$B/${n}_x86.o"); done
 
 # 2. kernel library (single file, forwards stock GUIDs)
 g++ -O2 -fPIC -shared -std=c++17 -fvisibility=hidden -DMXK_VERSION="\"$VERSION\"" "${HAS[@]}" "${EXTRA_GLUE[@]}" \
@@ -190,7 +226,9 @@ HTPV=$(python3 -c "import importlib.metadata as m;print(m.version('habana-torch-
 {
   echo "version: $VERSION"
   echo "variant: $VARIANT"
+  echo "kernel_set: $KV"
   echo "kernels: ${ALL[*]}"
+  echo "fallback_elfs: ${NOGUID[*]}"
   echo "extra_kernels: ${EXTRA[*]}"
   echo "op_libraries: ${OPLIBS[*]}"
   echo "source_sha256_12: $SRCHASH"
@@ -200,8 +238,8 @@ HTPV=$(python3 -c "import importlib.metadata as m;print(m.version('habana-torch-
   echo "tpc_clang: $("$TPCCLANG" --version 2>/dev/null | head -1)"
   # The ELF embeds the source text and the command line, so its hash changes with any comment or path. The code
   # hash (.text and .tpc_metadata sections) does not: equal code hashes mean the same kernel machine code.
-  for n in "${ALL[@]}"; do echo "elf_sha256 $n: $(sha256sum "$B/$n.o" | cut -c1-64)"; done
-  for n in "${ALL[@]}"; do echo "code_sha256 $n: $(python3 "$HERE/python/tpc_elf_code.py" "$B/$n.o")"; done
+  for n in "${ALL[@]}" "${NOGUID[@]}"; do echo "elf_sha256 $n: $(sha256sum "$B/$n.o" | cut -c1-64)"; done
+  for n in "${ALL[@]}" "${NOGUID[@]}"; do echo "code_sha256 $n: $(python3 "$HERE/python/tpc_elf_code.py" "$B/$n.o")"; done
   (cd "$OUT" && sha256sum libmxk_tpc.so "${OPLIBS[@]}" | sed 's/^/sha256 /')
 } > "$OUT/MANIFEST"
 

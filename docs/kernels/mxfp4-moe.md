@@ -3,7 +3,9 @@
 **Up to 3x faster MXFP4 MoE decode on Gaudi 2.** The stock MXFP4 path caps large MoE models at about 20 tokens/s
 per stream. These kernels took GLM-5.3 from 23.3 to 59.1 tokens/s per stream and gpt-oss-120b up to 3.2x per stream, with
 lower numerical error than the stock op, and also run DeepSeek-V4.1-Flash, GLM-5.2 and Muse Spark Open (see
-[Beyond gpt-oss](#beyond-gpt-oss) for how each number was measured).
+[Beyond gpt-oss](#beyond-gpt-oss) for how each number was measured). The [v10 kernels](#v10-decode-kernels) add
+another 7% to 16% per stream at 4 to 16 streams on GLM-5.3, gpt-oss-120b, DeepSeek-V4.1-Flash and Kimi-K2.7, with the
+same output bit for bit.
 
 Two Gaudi 2 TPC kernels run the routed experts of an MXFP4 mixture-of-experts layer directly from the packed
 weights, with no bf16 unpack round trip. For small decode calls they replace the stock
@@ -23,7 +25,8 @@ Sources, build script, gpt-oss vLLM hook, tests and benchmark:
       (rel_l2 1.57e-3 to 1.75e-3, against 4.08e-3 to 7.17e-3).
     - **End to end:** 1.1x to 3.2x decode tok/s per stream. The largest gains are at 4 to 16 requests in flight.
       TTFT is unchanged.
-    - **Switch:** `MXFP4_TPC_MOE=1`. Off by default; any mismatch keeps the stock op.
+    - **Switch:** `MXFP4_TPC_MOE=1`. Off by default; any mismatch keeps the stock op. `MXFP4_TPC_MOE_V10=1` adds
+      the v10 kernels (bit-identical, +9% to +16% per stream at 4 to 16 streams).
 
 ## Coverage
 
@@ -422,16 +425,16 @@ build needs: `tpc-clang` at `/opt/habanalabs/bin/tpc-clang`, `tpc_kernel_lib_int
 `/usr/include/habanalabs`, and `hpu_custom_op.h` in the `habana_frameworks` package.
 
 ```bash
-kernels/mxfp4-moe/build.sh [--variant gptoss|glm|dsv41|muse|kimi] [--extra-kernel DIR]... [--pt2] OUT_DIR
+kernels/mxfp4-moe/build.sh [--variant gptoss|glm|dsv41|muse|kimi] [--kernels v8|v10] [--extra-kernel DIR]... [--pt2] OUT_DIR
 ```
 
-| Variant | Kernels | Model |
-| --- | --- | --- |
-| `gptoss` (default) | `mxk_w13xib`, `mxk_w2xb` | gpt-oss, through `python/` in this package |
-| `glm` | `mxk_w13x`, `mxk_w2x`, `mxk_deq` | GLM-5.3 and GLM-5.2, decode and the prefill unpack; MiMo-V2.6-Pro decode (with `--pt2`) |
-| `dsv41` | `mxk_w13xi`, `mxk_w2x` | DeepSeek-V4.1-Flash (its port adds `dsv41_sinkhorn` with `--extra-kernel`) |
-| `muse` | `mxk_w13x`, `mxk_w2xr` | Muse Spark Open |
-| `kimi` | `mxk_w13xt`, `mxk_w2x` | Kimi-K2.7 MXFP4 |
+| Variant | v8 kernels | v10 kernels (`--kernels v10`, the default) | Model |
+| --- | --- | --- | --- |
+| `gptoss` (default) | `mxk_w13xib`, `mxk_w2xb` | `mxk_w13xibn`, `mxk_w2gn`, `mxk_w2cb` | gpt-oss, through `python/` in this package |
+| `glm` | `mxk_w13x`, `mxk_w2x`, `mxk_deq` | `mxk_w13xn`, `mxk_w2xc`, `mxk_w2gp`, `mxk_w2c` | GLM-5.3 and GLM-5.2, decode and the prefill unpack; MiMo-V2.6-Pro decode (`--pt2`, which builds v8) |
+| `dsv41` | `mxk_w13xi`, `mxk_w2x` | `mxk_w13xin`, `mxk_w2gn`, `mxk_w2c` | DeepSeek-V4.1-Flash (its port adds `dsv41_sinkhorn` with `--extra-kernel`) |
+| `muse` | `mxk_w13x`, `mxk_w2xr` | none (v8 only) | Muse Spark Open |
+| `kimi` | `mxk_w13xt`, `mxk_w2x` | `mxk_w13xk`, `mxk_w2xc`, `mxk_w2gp`, `mxk_w2c` | Kimi-K2.7 MXFP4 |
 
 `build.sh` compiles the variant's kernels with `tpc-clang -march=gaudi2 -O2` and embeds the ELFs in `libmxk_tpc.so`,
 which forwards every stock GUID. It builds `libmxk_op_lazy.so` with the variant's `torch.ops.custom_op` ops against
@@ -439,14 +442,17 @@ the image's torch, and writes a `MANIFEST` with versions and sha256 sums. The bu
 library lists every stock GUID unchanged followed by exactly the variant's GUIDs, and the op library registers the
 variant's ops and no op of another variant. `--extra-kernel DIR` adds a model-only TPC kernel a port supplies
 (`<guid>.c`, `glue.inc`, `op.cpp`) to the same two libraries, so `GC_KERNEL_PATH` stays one file. `--pt2` also
-builds `libmxk_op_pt2.so` for `torch.compile` serving and runs the op gate on it too; it is refused for `gptoss`
-and together with `--extra-kernel`.
+builds `libmxk_op_pt2.so` for `torch.compile` serving and runs the op gate on it too; it is refused for `gptoss`,
+together with `--extra-kernel`, and with `--kernels v10` (the v10 kernels have no `torch.compile` ops, so a `--pt2`
+build defaults to v8). A v10 build holds the v8
+kernels too, so one image serves either set.
 
 The `MANIFEST` also records a `code_sha256` per kernel: the hash of its machine code (the `.text` and
 `.tpc_metadata` sections). tpc-clang embeds the source text and the build command in the ELF, so the ELF hash
 changes with any comment or path, but the code hash does not. Built from this repository, every kernel of the
 `gptoss`, `glm`, `dsv41` and `muse` variants has the same code hash as the kernels of the same name in the
-libraries the measurements on this page ran on.
+libraries the measurements on this page ran on. The same holds for all ten v10 kernels and the two fallback ELFs
+(`mxk_w2g`, `mxk_w2gp`), checked against the libraries the [v10 measurements](#v10-decode-kernels) ran on.
 
 For gpt-oss, build and install in one image stage:
 
@@ -478,19 +484,23 @@ The remaining engine flags, and the fixes gpt-oss needs on `v0.26.0`, are in the
 | `MXFP4_TPC_MOE` | `0` | `1` turns the kernels on |
 | `MXFP4_TPC_MOE_MAX_TOKENS` | `32` | Per-call token cap (at most 32) |
 | `MXFP4_TPC_MOE_LIB` | `/opt/mxfp4-moe/lib` | Directory with `libmxk_tpc.so` and `libmxk_op_lazy.so` |
+| `MXFP4_TPC_MOE_V10` | `0` | `1` runs the v10 kernels (needs `MXFP4_TPC_MOE=1` and a v10 build); same output bit for bit |
 
 **Verify:**
 
 1. On one card, before enabling any variant:
    `kernels/mxfp4-moe/tests/run_parity.sh --variant <name> --lib <build> [--checkpoint <dir>]` must report
    `PARITY PASS` and `SIG_DEVICE PASS`, and `PREFILL PASS` for `glm`. Without `--checkpoint` it uses random
-   weights of the variant's serving shapes.
-2. gpt-oss: the engine log shows `MXFP4 TPC MoE installed: mxk_tpc gptoss-v8-<hash>` and
+   weights of the variant's serving shapes. A v10 build is checked on every decode path, and each v10 path must be
+   bit-identical to v8.
+2. gpt-oss: the engine log shows `MXFP4 TPC MoE installed: mxk_tpc gptoss-v10-<hash>, decode v8 (...)` (or
+   `decode v10 (...)` with `MXFP4_TPC_MOE_V10=1`) and
    `MXFP4 TPC MoE enabled (E_local=64 K=2880 I=2880, <= 32 tokens, ...)` (64 local experts at TP2 + EP).
 3. `grep -l libmxk_tpc.so /proc/*/maps` inside the container lists the engine worker processes.
 4. For speed, run `kernels/mxfp4-moe/bench/bench_moe.py --variant <name>` once per implementation, then `--compare`.
 
 **Rollback (gpt-oss):** set `MXFP4_TPC_MOE=0`. The hooks are then inert and the engine serves exactly as stock.
+Unset `MXFP4_TPC_MOE_V10` to go from the v10 kernels back to v8.
 
 ## Beyond gpt-oss
 
@@ -555,6 +565,188 @@ token-identical. Measured as: same pod, server restarted with `GLM_MXK_PREFILL` 
 Public MXFP4 checkpoints in other formats are not covered either. Checkpoints with `quant_method: quark` do not
 load as packed MXFP4 on stock vllm-gaudi `v0.26.0`, because `quark` is not in the HPU platform's supported
 quantizations.
+
+## v10 decode kernels
+
+The v8 kernels above are issue-bound: each local route costs a fixed number of vector instructions, and the
+schedule around them was already tuned. v10 is a second set of decode kernels that keeps the served weight layout
+and the v8 arithmetic order, and cuts instructions and graph nodes instead. Every v10 kernel gives the v8 kernel's
+output bit for bit, so turning v10 on changes speed and nothing else.
+
+A `--kernels v10` build (the default) holds both sets in one library. Each integration switches with its own flag
+and keeps v8 when the flag is off or the library has no v10 ops:
+
+| Model | Switch | Built and gated in this repository | Measured end to end |
+| --- | --- | --- | --- |
+| GLM-5.3, GLM-5.2 | `GLM_MXK_V10=1` with `GLM_MXK=1` ([GLM port](../ports/glm-5-mxfp4.md)) | `glm` v10, parity at I 1024 and 2048 | GLM-5.3 (below) |
+| gpt-oss-120b | `MXFP4_TPC_MOE_V10=1` with `MXFP4_TPC_MOE=1` | `gptoss` v10 | yes (below) |
+| DeepSeek-V4.1-Flash | `DSV41_MXK_V10=1` with `DSV41_MXK=1` ([port](../ports/deepseek-v4-1-flash.md)) | `dsv41` v10 | yes (below) |
+| Kimi-K2.7 | `KIMI_MXK_V10=1` with `KIMI_MXK=1` ([port](../ports/kimi-k2-7.md)) | `kimi` v10 | at EP 4 x TP 2 only (below) |
+| Muse Spark Open | none | v8 only | a v10 build was faster at 3 to 4 streams but about 1.6% slower per token at one stream, and was not kept |
+| MiMo-V2.6-Pro | none | `glm` v8 with `--pt2` | the v10 kernels have no `torch.compile` ops |
+
+### What changed
+
+**w13.** v8 reduces the four row sums of a pass with four separate horizontal-sum trees of six butterfly steps each.
+The first two steps exchange whole dual groups, so after them all four rows can share one vector: v10 packs them
+there and runs the remaining four steps once. Every lane adds the same two values in the same order as v8's tree, so
+the sums are bit-identical. The tail of that tree is carried into the next pass, where it fills issue slots the
+next pass's dot product leaves free (`MXG_W13C 2`), and the flush test of the batched activation epilogue becomes one
+branch (`MXG_FB 2`). For GLM, DeepSeek-V4.1-Flash and gpt-oss the kernel also takes x in natural order and does the
+per-512 permute while it stages the row in vector local memory, which removes the host permute node (`MXKX_NATX`).
+Kimi keeps the permuted x: at K 7168 the natural-order staging needs more vector local memory than is free.
+
+**w2.** v8 walks one route at a time, so two tokens routed to the same local expert unpack that expert twice, and
+it keeps the per-token sums in vector local memory. v10 splits w2 into two kernels:
+
+1. `mxk_w2gp` / `mxk_w2gn` walk the routes expert-outer, in units of up to two routes of one expert, and write one
+   fp32 row per route. Two routes of the same expert share one unpack. The four row sums use the same packed tree
+   with a carried tail, on one-route passes and on two-route half passes. `mxk_w2gp` is specialised for nch 2
+   (I_slice 1024, one chunk pair per pass, the whole pass one basic block); `mxk_w2gn` handles nch 4 and 6.
+2. `mxk_w2c` (`mxk_w2cb` with the gpt-oss bias) sums the per-route rows per token in v8's order. The sums of a whole
+   step do not fit vector local memory, and a kernel cannot read another TPC's stores without a graph edge, which is
+   why the combine is a second node.
+
+`mxk_w2xc` is the one-node alternative for nch 2 (stack2): v8's w2 with the packed tree, carried tail and an
+accumulator laid out by dual group. It is the fallback for calls outside the grouped limits (more than 512 routes).
+
+### Per-route cost model
+
+Measured as: one Gaudi 2 card, GLM-5.3 layer shapes of one EP 4 x TP 2 rank (64 local experts, K 6144, I_slice
+1024), weights cold (8 copies, more than the 48 MB SRAM), each candidate timed in the same process as v8 and as an
+A/A copy of v8, HPU graphs of 8 chained calls, 30 rounds, on a Gaudi software 1.24.1 image whose kernels have the
+same code hashes as this repository's build.
+
+- v8 costs about **18 µs fixed plus 22 to 24 µs per local route** (T 2: 0 routes 18.0 µs, 1 route 43.0, 6 routes
+  161.9, 8 routes 197.2).
+- Decode with one MTP draft token puts T = 2, 4 and 8 rows in a MoE call at 1, 2 and 4 streams. With recorded chat
+  routing, the slowest of the four expert-parallel groups gets **5.9, 10.6 and 19.5 local routes** per call (1.25,
+  2.7 and 6.1 of them repeats of an expert already routed in the same call). That makes about 155, 260 and 448 µs
+  per MoE call, 76 calls per step.
+- The per-route slope is vector issue, not memory: the w13 hot loop is 137 instruction bundles per 8 chunk-rows
+  (32 MACs, 32 scale multiplies, 32 nibble operations, 20 scale-build operations, 24 register moves), and the nch-2
+  w2 pass is 268 bundles of which 61 are NOPs. That is about one bundle per clock, and 4x to 5x the HBM read time
+  of the packed bytes. Weights warm in SRAM run no faster than cold ones.
+- In the real 8-card graph the MoE kernels of the slowest rank took 11.91 ms of a 28.8 ms step at C=1, 2K (about
+  41%); with v10 10.34 ms. At one stream the host launch floor of the step hides part of that.
+
+### Why the exact levers without a re-pack are used up
+
+Timing-only bounds (wrong results on purpose) at the same shapes, as a projected gain over the C=1 / 2 / 4 mix:
+
+| Bound | What it removes | Projected gain | Status |
+| --- | --- | --- | --- |
+| no scale multiply | the per-chunk scale build and 4 bf16 multiplies | +8.2% | needs a weight layout that applies E8M0 scales per block partial sum |
+| no horizontal sums | every row reduction tree, w13 and w2 | +7.4% | v10 recovers part of it exactly; the rest needs a layout change |
+| no host permute | the x permute node | +0.9% / +1.0% (two runs) | folded into w13 in v10, worth about +1% |
+
+v10 took what is reachable without changing the weight layout. After it, the gap from the w2 kernel to its no-reduce
+ceiling was about 0.6%, and no exact w13 change measured above the noise (±3 bundles of register-allocation drift).
+On DeepSeek-V4.1-Flash shapes the remaining ceilings were +0.6% to +1.2% for w2 and +0.2% to +1.2% for w13. The next
+step would be a block-grouped re-pack of the experts; a first prototype of that was slower
+([what did not work](what-did-not-work.md#a-block-grouped-weight-re-pack)), and it would also need the prefill
+unpack and the stock op to read the new layout.
+
+### Results
+
+**One card, per MoE call.** Same method and shapes as the cost model; µs per call, the mean of three paired runs
+(each within 1% of the others; one v8 stall of +16 µs left out). `r` = local routes on the rank, `d` = distinct local experts among them.
+
+| Point | v8 | stack2 (`mxk_w13xn` + `mxk_w2xc`) | stack3 (`mxk_w13xn` + `mxk_w2gp` + `mxk_w2c`) | stack3 vs v8 |
+| --- | --- | --- | --- | --- |
+| T 2, r 0 | 21.5 | 19.4 | 21.7 | 1.01x (a third node) |
+| T 2, r 6, d 5 | 153.8 | 138.3 | 129.1 | 0.84x |
+| T 2, r 6, d 6 | 153.9 | 138.5 | 131.8 | 0.86x |
+| T 4, r 10, d 8 | 245.6 | 217.0 | 198.5 | 0.81x |
+| T 8, r 20, d 14 | 462.7 | 412.2 | 370.9 | 0.80x |
+| T 8, r 20, d 20 | 461.7 | 411.9 | 381.8 | 0.83x |
+
+Projected over the recorded routing mix (76 MoE calls per step) this is +7.8%, +12.2% and +15.4% tok/s at C=1, 2
+and 4 for stack3, and +6.3% overall for stack2. In the same kind of measurement, gpt-oss-120b shapes (64 local
+experts, K = I = 2880) gave the v10 path 1.13x to 1.18x of v8 per call at T 2 to 16.
+
+**End to end.** Each row compares v8 with v10 on the same deployment, with only the v10 switch (or the kernel
+library) different. These runs used images built for those deployments, not the ports in this repository; each
+"measured as" says what ran.
+
+GLM-5.3 (MXFP4). Measured as: Gaudi 2, one 8-card node; an image built on a vllm-gaudi v0.24-era fork with that
+deployment's GLM-5.3 port; TP 8 with the routed experts as EP 4 x TP 2 and a fitted expert placement, one MTP
+draft token, the decode-step levers and the prefill unpack on; one pod, the server restarted with the v10 switch off
+(v8) and on; tok/s per stream, mean of 3 rounds (off) and 6 rounds (on).
+
+| | v8 | v10 (stack3) | Change |
+| --- | --- | --- | --- |
+| C=1, 2K / 8K prompt | 68.06 / 66.68 | 68.80 / 69.30 | +1.1% / +3.9% |
+| C=2, 2K / 8K | 52.51 / 48.31 | 57.47 / 52.54 | +9.5% / +8.8% |
+| C=4, 2K / 8K | 35.35 / 29.42 | 40.42 / 33.01 | +14.3% / +12.2% |
+| TTFT C=1, 2K / 8K | 0.73 / 1.12 s | 0.73 / 1.14 s | unchanged |
+
+Greedy output was token-identical with identical logprobs (16 prompts x 192 tokens, 3,027/3,027 tokens; 10 prompts
+of 300 to 33K tokens x 64, 640/640), MTP acceptance 0.7738 against 0.7730 under a 15-minute mixed load, and the
+needle (32K, 64K), GSM8K (49/50), 31-minute long-prefill stress and 4 x 130K memory checks passed, with tool calls
+at 99/100, the same rate as the v8 gate. C=1
+varies by about ±5% between rounds on this pod (v8 67.0 to 69.9, v10 64.9 to 73.8), so the 8K row is the steadier
+C=1 estimate. The one-card projection overstates C=1 because the step there is partly host-bound.
+
+gpt-oss-120b. Measured as: Gaudi 2, 2 cards, TP 2 + EP, an image built on vllm-gaudi v0.26 with that deployment's gpt-oss
+kernel hook; two identical warm pods, v8 and v10; 2K prompt, 256 output tokens, tok/s per stream.
+
+| C | 1 | 2 | 4 | 8 | 16 |
+| --- | --- | --- | --- | --- | --- |
+| v8 | 67.25 | 64.91 | 57.48 | 30.48 | 20.11 |
+| v10 | 67.39 | 66.69 | 62.49 | 35.16 | 23.28 |
+| Change | +0.2% | +2.7% | +8.7% | +15.4% | +15.8% |
+
+Greedy output was bitwise identical including logprobs (16/16), and GSM8K was 50/50 with both.
+
+DeepSeek-V4.1-Flash. Measured as: Gaudi 2, one 8-card node, TP 8 with the experts as EP 8; an image built on vllm-gaudi
+v0.30 with that deployment's DeepSeek-V4.1-Flash port, including its speculative decoding (DSpark); two
+identical pods, v8 and v10; 2K prompt, 256 output tokens, tok/s per stream.
+
+| C | 2 | 4 | 8 |
+| --- | --- | --- | --- |
+| v8 | 49.02 | 32.32 | 21.96 |
+| v10 | 60.49 | 37.00 | 23.58 |
+| Change | +23% | +14% | +7% |
+
+At C=1 speculative decoding makes single runs too noisy to compare: over 10 repeats at 2K, v8 76.3 tok/s (sd 18.3)
+and v10 81.3 (sd 16.3). Perplexity (1.6202), the decode teacher-forcing, needle and isolation checks passed, and GSM8K
+was 50/50 (v8 49/50).
+
+Kimi-K2.7-Code (MXFP4). Measured as: Gaudi 2, one 8-card node, TP 8 with the routed experts as **EP 4 x TP 2**
+(96 local experts, I_slice 1024, so `mxk_w2gp` runs its nch-2 kernel); an image on a vllm-gaudi v0.24-era fork with
+that deployment's Kimi integration; one pod, v8 then v10; 16K and 2K prompts, tok/s per stream, mean of 2 reps.
+
+| C | 1 | 2 | 4 | 8 |
+| --- | --- | --- | --- | --- |
+| 16K: v8 / v10 | 49.7 / 46.8 | 42.2 / 43.9 | 27.9 / 30.4 | 17.1 / 19.1 |
+| 16K change | -6% | +4% | +9% | +12% |
+| 2K change | +1% | +5% | +11% | +16% |
+
+C=1 is host-bound there and moved by ±4% between starts of the same configuration. Greedy output was identical
+(16/16, 1,763/1,763 tokens). This repository's Kimi port serves EP 8 (48 local experts, I 2048, nch 4): there
+`mxk_w2gp` runs its plain grouped-route ELF and `mxk_w2xc` the v8 w2. That layout passes the one-card parity below
+but has no end-to-end measurement with v10.
+
+**Parity of this repository's build.** Measured as: one Gaudi 2 card, the stock vllm-gaudi `releases/v0.30.0` image
+(Gaudi software 1.24.1), `build.sh --variant <v>` (v10), `tests/run_parity.sh --variant <v> --lib <build>`, random
+weights of each variant's serving shape. Every v10 path matched v8 bit for bit on every case:
+
+| Variant | Shape (local experts, I) | Printed |
+| --- | --- | --- |
+| `glm` | 64, 1024 | `[glm] path stack2: bit-identical to v8 in 7/7 cases`, `[glm] path stack3: bit-identical to v8 in 7/7 cases`, `[glm] PARITY PASS (paths v8, stack2, stack3)`, `[glm] PREFILL PASS`, `[glm] SIG_DEVICE PASS` for paths v8, stack3 and stack2 |
+| `glm` | 64, 2048 | `[glm] path stack2: bit-identical to v8 in 7/7 cases`, `[glm] path stack3: bit-identical to v8 in 7/7 cases`, `[glm] PARITY PASS (paths v8, stack2, stack3)`, `[glm] PREFILL PASS`, `[glm] SIG_DEVICE PASS` for paths v8, stack3 and stack2 |
+| `kimi` | 48, 2048 | `[kimi] path stack2: bit-identical to v8 in 7/7 cases`, `[kimi] path stack3: bit-identical to v8 in 7/7 cases`, `[kimi] PARITY PASS (paths v8, stack2, stack3)`, `[kimi] SIG_DEVICE PASS` for paths v8, stack3 and stack2 |
+| `dsv41` | 48, 2304 | `[dsv41] path stack3: bit-identical to v8 in 14/14 cases`, `[dsv41] PARITY PASS (paths v8, stack3)`, `[dsv41] SIG_DEVICE PASS` for paths v8 and stack3 |
+| `gptoss` | 64, 2880 | `[gptoss] path stack3: bit-identical to v8 in 16/16 cases`, `[gptoss] PARITY PASS (paths v8, stack3)`, `[gptoss] SIG_DEVICE PASS` for paths v8 and stack3 |
+
+The GLM prefill unpack matched the reference exactly (per-layer rel_l2 4.54e-3 for both, measured at 256, 1024 and
+4096 tokens). `muse` has no v10 set and was not re-run.
+
+The same build on the same card, `bench/bench_moe.py --variant glm --impl ours --path v8|stack3 --reps 10` (random
+weights, 64 local experts, K 6144, I 1024, µs per MoE call, v8 / stack3): T1 41.4 / 40.8, T2 128.2 / 112.0, T4
+218.3 / 183.1, T8 328.7 / 273.6, T16 656.4 / 533.0, so stack3 ran 1.02x to 1.23x of v8 (1.28x at T8 with all 64
+routes local). Single run.
 
 ## Upstream
 

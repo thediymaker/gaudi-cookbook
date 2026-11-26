@@ -141,6 +141,7 @@ nav:
   - Kernels:
       - kernels/index.md
       - MXFP4 MoE decode: kernels/mxfp4-moe.md
+      - What did not work: kernels/what-did-not-work.md
   - Ports:
       - ports/index.md
       - Muse Spark Open: ports/muse-spark-open.md

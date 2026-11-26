@@ -16,7 +16,8 @@
 #   3. the glm5_hpu package (DSA top-k attention, MXFP4 kernel hooks, EP x TP expert layout, decode levers);
 #   4. the port patches (patches/apply_all.py: MXFP4 fused loading, FusedSDPA softmax mode, MTP and speculative
 #      decoding on the HPU runner, and the hooks into glm5_hpu);
-#   5. the kernel build: kernels/mxfp4-moe/build.sh --variant glm into /opt/gaudi-cookbook-glm5/mxk;
+#   5. the kernel build: kernels/mxfp4-moe/build.sh --variant glm --kernels v10 into /opt/gaudi-cookbook-glm5/mxk
+#      (the v8 kernels plus the v10 decode kernels in one library: GLM_MXK=1 runs v8, GLM_MXK_V10=1 adds v10);
 #   6. a final check that every fix and patch reports "applied" and the package finds the kernels.
 set -euo pipefail
 PORT=$(cd "$(dirname "$0")" && pwd)
@@ -71,11 +72,11 @@ rm -rf "$BUILD"
 step "4/6 port patches"
 python3 "$PORT/patches/apply_all.py"
 
-step "5/6 MXFP4 MoE kernels (variant glm)"
-bash "$COOKBOOK/kernels/mxfp4-moe/build.sh" --variant glm "$KERNEL_DIR"
+step "5/6 MXFP4 MoE kernels (variant glm, v8 + v10)"
+bash "$COOKBOOK/kernels/mxfp4-moe/build.sh" --variant glm --kernels v10 "$KERNEL_DIR"
 
 step "6/6 checks"
 python3 "$COOKBOOK/fixes/apply_all.py" --check "${FIXES[@]}"
 python3 "$PORT/patches/apply_all.py" --check
-python3 -c "import glm5_hpu.mxfp4_moe as m; assert m.lib_version(), 'no kernel library in ' + m.LIB_DIR; print(m.lib_version())"
+python3 -c "import glm5_hpu.mxfp4_moe as m; v = m.lib_version(); assert v, 'no kernel library in ' + m.LIB_DIR; assert '-v10-' in v, v; print(v)"
 step "done"

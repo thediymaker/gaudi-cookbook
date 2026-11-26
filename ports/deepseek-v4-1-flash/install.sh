@@ -12,7 +12,7 @@
 #   2. install the dsv41_hpu plugin (vLLM general plugin: model, quant config, runner hook, frontend corrections)
 #   3. patch vllm_gaudi/__init__.py so every process registers the kernel library before the device opens
 #      (patches/dsv41-kernel-env; does nothing unless DSV41_MXK=1)
-#   4. build the MXFP4 decode kernels (kernels/mxfp4-moe, variant dsv41) plus the port's Sinkhorn kernel
+#   4. build the MXFP4 decode kernels (kernels/mxfp4-moe, variant dsv41, v8 + v10 kernels) plus the port's Sinkhorn kernel
 #      (kernels/dsv41_sinkhorn) into /opt/mxfp4-moe/lib, where dsv41_hpu/mxk.py looks for them
 #   5. image gate (kernels/image_gate.py): op library, kernel library version, served layer covered, env hook
 #
@@ -71,8 +71,8 @@ step "3/5 kernel env hook"
 python3 "$PORT/patches/dsv41-kernel-env/apply.py"
 python3 "$PORT/patches/dsv41-kernel-env/apply.py" --check
 
-step "4/5 MXFP4 decode kernels (variant dsv41) and the Sinkhorn kernel"
-bash "$COOKBOOK/kernels/mxfp4-moe/build.sh" --variant dsv41 --extra-kernel "$PORT/kernels/dsv41_sinkhorn" "$LIB_DIR"
+step "4/5 MXFP4 decode kernels (variant dsv41, v8 + v10) and the Sinkhorn kernel"
+bash "$COOKBOOK/kernels/mxfp4-moe/build.sh" --variant dsv41 --kernels v10 --extra-kernel "$PORT/kernels/dsv41_sinkhorn" "$LIB_DIR"
 
 step "5/5 image gate"
 DSV41_MXK_LIB=$LIB_DIR python3 "$PORT/kernels/image_gate.py"

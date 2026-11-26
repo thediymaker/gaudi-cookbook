@@ -33,7 +33,7 @@ docker build -f ports/mimo-v2-6-flash/Dockerfile --build-arg BASE=<your-vllm-gau
 1. check the release commits;
 2. apply the v0.26.0 fix profile and `vllm-long-prefill-share`;
 3. apply the port's runner patches and install the plugin;
-4. build the MXFP4 MoE kernels with `kernels/mxfp4-moe/build.sh --variant glm --pt2` into
+4. build the MXFP4 MoE kernels with `kernels/mxfp4-moe/build.sh --variant glm --pt2` (v8 kernels) into
    `/opt/gaudi-cookbook-mimo/mxk`.
 
 The kernel build needs `tpc-clang`, which is in the Habana base image, and runs its library gate and op gates. See
@@ -149,7 +149,8 @@ Run on one 8-card Gaudi 2 node from the stock vllm-gaudi `v0.26.0` image (`b059f
 `install.sh` run as the Dockerfile runs it and this page's Launch block as written.
 
 - `install.sh`: commit check, the v0.26.0 profile plus `vllm-long-prefill-share`, both runner patches, the plugin
-  install, and the kernel build `--variant glm --pt2`. The library gate (3,253 GUIDs: the 3,250 stock ones plus
+  install, and the kernel build `--variant glm --pt2` (v8 kernels; the v10 kernels have no `torch.compile`
+  ops). The library gate (3,253 GUIDs: the 3,250 stock ones plus
   `mxk_w13x`, `mxk_w2x`, `mxk_deq`) passed, and the op gate passed on both op libraries.
 - `tests/hpu/mxk_ops.py` on one card, in compile mode with the `torch.compile` op library, on layers 1 and 69 for
   TP8 ranks 0 and 7: 28 of 28 decode cases (1 to 16 tokens) within the parity bound. The kernels' worst relative

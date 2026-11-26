@@ -85,10 +85,14 @@ over rebuilding it from the YAML.
 - **Treat the kernel as opt-in.** The MXFP4 kernel has one build variant per model family
   (`build.sh --variant gptoss|glm|dsv41|muse|kimi`); never use one variant for another model. Each
   variant has shape caps (see "Op reference" in `kernels/mxfp4-moe/README.md`), and calls outside
-  them must stay on the stock op. Build it inside the serving image, and run
-  `tests/run_parity.sh --variant <name>` and check for `PARITY PASS` and `SIG_DEVICE PASS` before
-  enabling it. gpt-oss switches with `MXFP4_TPC_MOE=1` (rollback `MXFP4_TPC_MOE=0`); a port names its
-  own switch in its README.
+  them must stay on the stock op. Build it inside the serving image (`--kernels v10`, the default for
+  `glm`, `kimi`, `dsv41` and `gptoss`, also holds the v8 kernels; `muse` and `--pt2` builds are v8
+  only), and run `tests/run_parity.sh --variant <name>` and check for `PARITY PASS` and `SIG_DEVICE PASS`
+  before enabling it. On a v10 build the parity run checks every decode path and requires each to be
+  bit-identical to v8. gpt-oss switches with `MXFP4_TPC_MOE=1` (rollback `MXFP4_TPC_MOE=0`) and adds
+  v10 with `MXFP4_TPC_MOE_V10=1`; a port names its own switches in its README, and unsetting the v10
+  switch goes back to v8. `docs/kernels/what-did-not-work.md` lists the measured dead ends; read it
+  before proposing another kernel or decode-step change.
 - **Cite the page.** When you give the user a setting from here, name the file it came from, so
   they can read the reasoning and the evidence.
 

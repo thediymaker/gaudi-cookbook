@@ -74,6 +74,9 @@ VARIANTS = {
     "kimi": _spec(k=7168, inter=2048, e_global=384, topk=8, e_local=48, max_tokens=16, layer=3),
 }
 
+for _name, _s in VARIANTS.items():
+    _s["name"] = _name
+
 # Tensor names of checkpoints already in the served layout (the ports' converted checkpoints)
 SERVED_PREFIX = {
     "glm": "model.layers.{layer}.mlp.experts.routed_experts.",
@@ -421,12 +424,64 @@ def kernel_act_params(spec):
     return alpha * 2.0**-sh, limit * 2.0**sh, beta, 2.0 ** (-2 * sh)
 
 
-def kernel_runner(spec, t, d, e_min):
-    """The kernels, called as the model's integration calls them. Same run() signature as stock_runner."""
+# Decode paths of a v10 build (MANIFEST "kernel_set: v10"), best first. A v10 library also serves the v8 path.
+# stack3 = the v10 w13 kernel + grouped-route w2 (mxk_w2gp / mxk_w2gn) + combine (mxk_w2c / mxk_w2cb); stack2 = the v10
+# w13 kernel + mxk_w2xc (glm, kimi only).
+V10_PATHS = {"glm": ("stack3", "stack2"), "kimi": ("stack3", "stack2"), "dsv41": ("stack3",), "gptoss": ("stack3",)}
+# Per variant: the v10 w13 op, whether it takes x permuted per 512-k chunk, and the grouped-route w2 op
+V10_OPS = {
+    "glm": ("mxk_w13xn", False, "mxk_w2gp"),
+    "kimi": ("mxk_w13xk", True, "mxk_w2gp"),
+    "dsv41": ("mxk_w13xin", False, "mxk_w2gn"),
+    "gptoss": ("mxk_w13xibn", False, "mxk_w2gn"),
+}
+GROUP_Q_MAX, GROUP_I_MAX, GROUP_GMAX = 512, 3072, 2  # mxk_w2gp / mxk_w2c limits and the routes per unit
+
+
+def build_paths(lib_dir, variant):
+    """The decode paths a build serves: ("v8",) plus the variant's v10 paths for a v10 build."""
+    with open(os.path.join(lib_dir, "MANIFEST")) as f:
+        v10 = "kernel_set: v10\n" in f.read()
+    return ("v8",) + (V10_PATHS.get(variant, ()) if v10 else ())
+
+
+def kernel_runner(spec, t, d, e_min, path="v8"):
+    """The kernels, called as the model's integration calls them. Same run() signature as stock_runner.
+    path "v8": mxk_w13x (permuted x) + mxk_w2x; "stack2": the v10 w13 (glm: mxk_w13xn on natural x, kimi:
+    mxk_w13xk on permuted x) + mxk_w2xc; "stack3": the v10 w13 + mxk_w2gp + mxk_w2c within the grouped-route
+    limits, else the stack2 call."""
     import torch
 
     co = torch.ops.custom_op
     topk = d["topk"]
+    if path != "v8" and spec["bias"]:  # gpt-oss: the runtime's v10 call
+        import mxfp4_tpc_moe_rt as rt
+
+        def run_v10_bias(x, ids, tw):
+            return rt.moe_decode_v10(
+                x, ids, tw, t["w13"], t["s13"], t["b13k"], t["w2"], t["s2"], t["b2k"], topk, e_min, ALPHA, LIMIT
+            )
+
+        return run_v10_bias
+    if path != "v8":
+        alpha, limit, beta, ascale = kernel_act_params(spec)
+        e_local, inter = t["w2"].shape[0], t["w2"].shape[2] * 2
+        w13_name, permuted, w2g_name = V10_OPS[spec["name"]]
+        w13_op, w2g_op = getattr(co, w13_name), getattr(co, w2g_name)
+        il = spec["layout"] == "il"
+
+        def run_v10(x, ids, tw):
+            tokens = x.shape[0]
+            ids2, tw2 = ids.reshape(tokens, topk), tw.reshape(tokens, topk)
+            idf = ids2.reshape(-1)
+            xin = permute_x(x) if permuted else x.contiguous()
+            ap = w13_op(xin, idf, t["w13"], t["s13"], topk, e_min, alpha, limit, beta, ascale, il)
+            if path == "stack3" and tokens * topk <= GROUP_Q_MAX and inter <= GROUP_I_MAX:
+                part = w2g_op(ap, ids2, t["w2"], t["s2"], e_min, GROUP_GMAX)
+                return co.mxk_w2c(part, ids2, tw2, e_min, e_local)
+            return co.mxk_w2xc(ap, idf, tw2.reshape(-1), t["w2"], t["s2"], topk, e_min)
+
+        return run_v10
     if spec["bias"]:
         import mxfp4_tpc_moe_rt as rt
 

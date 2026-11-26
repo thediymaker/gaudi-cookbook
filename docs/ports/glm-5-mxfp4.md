@@ -169,7 +169,8 @@ repack (`convert/`), 14 source patches with the fixes contract, the `glm5_hpu` p
 hooks, EP x TP expert layout and placement, decode levers), the bucket file and the GLM-5.3 placement (`serving/`),
 CPU tests and serving gates. The kernels are built from
 [`kernels/mxfp4-moe`](https://github.com/thediymaker/gaudi-cookbook/tree/main/kernels/mxfp4-moe) with
-`--variant glm`. The recipes are [GLM-5.3 (MXFP4)](../recipes/glm-5-3-mxfp4.md) and
+`--variant glm`, which holds both the v8 and the v10 decode kernels; `GLM_MXK_V10=1` turns v10 on
+([v10 decode kernels](../kernels/mxfp4-moe.md#v10-decode-kernels)). The recipes are [GLM-5.3 (MXFP4)](../recipes/glm-5-3-mxfp4.md) and
 [GLM-5.2 (MXFP4)](../recipes/glm-5-2-mxfp4.md).
 
 Both recipes passed their serving gates on that image, run as written on one 8-card node; GLM-5.3 carries one known

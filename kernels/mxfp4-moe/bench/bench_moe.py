@@ -5,7 +5,7 @@
 One implementation per process (lazy-mode legacy custom ops cache recipes by input signature):
 
     bench_moe.py --variant glm --impl stock --json stock.json [--checkpoint <dir>] [--e-local N]
-    bench_moe.py --variant glm --impl ours  --json ours.json  [--lib <build of the variant>]
+    bench_moe.py --variant glm --impl ours  --json ours.json  [--lib <build of the variant>] [--path stack3]
     bench_moe.py --compare stock.json ours.json
 
 Each call is timed inside an HPU graph that chains --chain calls (default 8; each call's output feeds the next
@@ -15,6 +15,9 @@ random top-k routing over all experts ("rand": the local route count is what mat
 worst case); for glm also the prefill unpack path at 256 .. 4096 tokens, timed as ordinary lazy graphs (one call
 per synchronize, host launch included) because its graph break cannot be captured. Weights: one layer of a local
 checkpoint, or random MXFP4 weights of the same shapes (timing does not depend on the values).
+--path picks the decode path of a v10 build (v8, stack2, stack3; default v8). A v10 path has no native op (no host
+permute), and an HPU graph made only of custom ops replays as an empty graph, so each of its calls ends with a
+multiply by 1.0 (one small native node, timed with it).
 """
 
 import argparse
@@ -59,6 +62,7 @@ def main():
     ap.add_argument("--chain", type=int, default=8)
     ap.add_argument("--reps", type=int, default=30)
     ap.add_argument("--json", default="")
+    ap.add_argument("--path", default="v8", help="decode path of a v10 build: v8, stack2, stack3")
     a = ap.parse_args()
     if a.compare:
         compare(*a.compare)
@@ -85,11 +89,18 @@ def main():
         run = H.stock_runner(spec, t_dev, d, e_local, a.e_min)
     else:
         H.load_ops(os.path.abspath(a.lib), a.variant)
-        run = H.kernel_runner(spec, t_dev, d, a.e_min)
+        if a.path not in H.build_paths(os.path.abspath(a.lib), a.variant):
+            sys.exit(f"path {a.path} is not served by the build in {a.lib}")
+        run = H.kernel_runner(spec, t_dev, d, a.e_min, a.path)
+        if a.path != "v8":
+            run_custom_only = run
+
+            def run(x, ids, tw):
+                return run_custom_only(x, ids, tw) * 1.0
 
     out = {
         "variant": a.variant,
-        "impl": a.impl,
+        "impl": a.impl if a.impl == "stock" or a.path == "v8" else f"ours-{a.path}",
         "layer": layer,
         "e_local": e_local,
         "e_min": a.e_min,
@@ -120,7 +131,7 @@ def main():
 
     for t, mode in H.decode_cases(spec):
         bench(f"T{t}/{mode}", run, t, mode, a.chain, a.reps)
-    if spec["prefill"]:
+    if spec["prefill"] and a.path == "v8":
         prun = H.prefill_runner(spec, t_dev, d, e_local, a.e_min, a.impl)
         for t in spec["prefill"]:  # the unpack path has a graph break: timed as lazy graphs, both implementations
             bench(f"prefill T{t}", prun, t, "rand", 1, max(5, a.reps // 3), graph=False)
