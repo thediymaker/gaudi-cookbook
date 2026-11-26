@@ -23,6 +23,10 @@ The fix:
 3. hpu_model_runner.py: with async scheduling a partial-prefill sample is discarded; that call
    gives its step back (as the GPU runner rewinds its generator), so tokens do not depend on how a
    prompt was chunked.
+4. hpu_model_runner.py, compile mode only (PT_HPU_LAZY_MODE=0): a batch with per-request generators
+   runs the uncompiled sampler (the torch.compile wrapper's _orig_mod). dynamo guards on each
+   request's generator object, so the compiled sampler recompiled for every new seeded request until
+   it reached its recompile limit. In lazy mode the sampler is not compiled and this changes nothing.
 
 Seeded outputs stay deterministic but differ from the stock noise stream. vllm-gaudi replaces the
 stock rejection sampler (whose generator loops would meet a CPU generator); the fix refuses to
@@ -162,6 +166,16 @@ RUNNER_GEN_NEW = f"""                # {MARKER} no torch.Generator on the HPU: a
                 generator = HpuSeededGenerator.create(sampling_params.seed)
 """
 
+RUNNER_SAMPLE_OLD = """        sampler_output = self.sampler(logits=logits_device, sampling_metadata=sampling_metadata)
+"""
+RUNNER_SAMPLE_NEW = f"""        sampler = self.sampler
+        if sampling_metadata.generators and hasattr(sampler, "_orig_mod"):
+            # {MARKER} seeded rows run the uncompiled sampler: dynamo guards on each
+            # request's generator, so a compiled sampler recompiles for every new seeded request.
+            sampler = sampler._orig_mod
+        sampler_output = sampler(logits=logits_device, sampling_metadata=sampling_metadata)
+"""
+
 RUNNER_DISCARD_OLD = """        if self.use_async_scheduling:
             self.input_batch.prev_sampled_token_ids = sampled_token_ids.flatten()
 """
@@ -220,6 +234,7 @@ def patch_runner(src: str, ctx: dict[str, str]) -> str:
     for needle in RUNNER_CONTEXT:
         require_present(src, needle, "hpu_model_runner.py")
     src = replace_once(src, RUNNER_GEN_OLD, RUNNER_GEN_NEW, "per-request generator")
+    src = replace_once(src, RUNNER_SAMPLE_OLD, RUNNER_SAMPLE_NEW, "seeded batch on the uncompiled sampler")
     return replace_once(src, RUNNER_DISCARD_OLD, RUNNER_DISCARD_NEW, "discarded partial-prefill step")
 
 
