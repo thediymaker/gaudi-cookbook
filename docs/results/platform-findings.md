@@ -201,6 +201,7 @@ affected, the workaround and how to check. Where the cookbook ships a fix, the s
 - **Who.** Kernel benchmarks and parity tests that wrap custom ops in HPU graphs.
 - **Workaround.** End every captured function with a stock op on the output, for example `z * 1.0`.
 - **How to check.** Compare the replayed output with an eager run on fresh inputs.
+- **More.** The measured case is in [What did not work](../kernels/what-did-not-work.md#a-captured-graph-of-only-custom-ops-replays-nothing).
 
 ## Compiled samplers recompile for every seeded request
 

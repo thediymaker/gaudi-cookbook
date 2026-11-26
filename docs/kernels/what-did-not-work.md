@@ -171,7 +171,8 @@ call** with nothing running.
 **What to do.** End every timed arm with one native op shared by all arms, for example `y * 1.0`, and run parity
 on that output. `kernels/mxfp4-moe/bench/bench_moe.py --path` does this for the v10 paths. Those paths have no host
 permute, so without the multiply they would be graphs of custom ops only. In a model, the surrounding native ops
-keep the graph non-empty.
+keep the graph non-empty. The general form is in
+[Platform findings](../results/platform-findings.md#an-hpu-graph-of-only-custom-ops-replays-nothing).
 
 ## Overlapping the all-reduce with other work in lazy mode
 
