@@ -1,0 +1,10 @@
+# Lint settings of the repository, minus the vendored upstream files (kept byte for byte, see vendor/MANIFEST).
+extend = "../../pyproject.toml"
+extend-exclude = ["vendor"]
+
+[lint.extend-per-file-ignores]
+# The plugin and its device tests keep the code that was gated on hardware; these rules would change it (closures
+# over loop variables that are called inside the loop, zip without strict, long lines in tables and messages).
+"ml4_hpu/**/*.py" = ["B007", "B023", "B905", "E402", "E501", "E741", "F821", "SIM103", "SIM105", "SIM108", "SIM115", "SIM300", "UP024", "UP031", "UP037"]
+"tests/**/*.py" = ["B007", "B023", "B905", "E401", "E402", "E501", "E741", "F401", "SIM108", "SIM115", "SIM300", "UP031"]
+"patches/*.py" = ["E501", "SIM115"]

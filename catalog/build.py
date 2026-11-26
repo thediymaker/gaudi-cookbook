@@ -217,6 +217,13 @@ PORTS = [
         "ports/kimi-k2-7/",
     ),
     (
+        "Mistral Large 4",
+        "1T MoE, experts twice the kernel width, 128K",
+        "Decode step 57.1 → 38.8 ms, tokens identical",
+        "chained same-server A/Bs",
+        "ports/mistral-large-4/",
+    ),
+    (
         "Ripple-65B-Preview",
         "65B dense, NoPE + sliding window, 4 cards",
         "250K prompt 462 → 180 s",

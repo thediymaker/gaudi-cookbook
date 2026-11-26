@@ -1,0 +1,25 @@
+# Frontend and config files of vLLM PR #64534 (https://github.com/vllm-project/vllm/pull/64534) ("[Model] Add Mistral Large 4"), merged onto
+# vLLM v0.30.0 (the releases/v0.30.0 image runs ced6857a = v0.30.0): for each file, `git merge-file` of
+# v0.30.0 (ours), the PR parent 2d40c0609 (base) and the PR head bd4fa2633 (theirs), so the
+# file is v0.30.0 plus exactly the PR's hunks. The conflicts were all at import lines that
+# v0.30.0 spells differently (vllm.entrypoints.chat_utils, not vllm.renderers.chat_utils);
+# they keep v0.30.0's imports and add the PR's (AnyResponseFormat, to_mistral_response_format).
+# Two adaptations to v0.30.0: parser/mistral.py drops one PR line, a check_json_nesting()
+# call (v0.30.0 has no such helper, and its parser had no nesting check either); and in
+# configs/mistral.py the annotations of the PR's new get_mistral_large_4_dspark_config are
+# spelled PretrainedConfig, as v0.30.0 imports it (the PR parent renamed it PreTrainedConfig).
+# Gates: tests/build_gates.py (pr_files).
+#
+# Every file REPLACES a stock v0.30.0 file. One line per file:
+#   <sha256 of vendor/<path>>  <path>  replaces <sha256 of the stock v0.30.0 file>
+# patches/install_pr_files.py installs a file only over the recorded stock bytes (or over its own
+# bytes, a re-run), and refuses anything else.
+# PR head blob sha256 (theirs, for re-vendoring): configs/mistral.py 40a82fb3c72d,
+# tokenizers/mistral.py 135d09e55878, renderers/mistral.py a345f9b40fa1,
+# serve/tokenize/protocol.py 431e8dee56e8, parser/mistral.py c9c3c70abcad.
+source: vllm PR #64534 bd4fa2633e onto v0.30.0 ced6857afa (3-way merge)
+dabe5e119e689e88f2b0941a4f2485bda67d33a831c11d2649f3e1d0fd257cfc  vllm/transformers_utils/configs/mistral.py  replaces 6dec38d6ba1f30fba0dde8e9973bc4ed6aa862d2ffa6ee173ef51da66b4d4889
+7b54c2af563337c3bd765a06b9c779ff8bcb334e4b7f5a773606a3806ea5e56b  vllm/tokenizers/mistral.py  replaces d298280ff0871d306a2eeaa9c179b98ac7ad2c41e393664c0511792a08824180
+7539d8cc3ebe73f92cfe029be636f5af3de5e46f401985c91de33263e6003fbb  vllm/renderers/mistral.py  replaces 586b99a78050d99172b742fa81be535eea91b82967f2837f8c43a8ed6f5434d8
+2e7646868c723e27ce39bc50b055baa79155f07ecc70a24026f8f2bacd800e03  vllm/entrypoints/serve/tokenize/protocol.py  replaces 0bb4ddf2c0b1412e88c9d853e2ef7163f62665df0b8bbef86df5bdbdd9a76e44
+7f5f34897079b605a3f6b0bad89b182436d6103c193dc34fd2cddb77209cb6ce  vllm/parser/mistral.py  replaces 6a425212868227ddbd745b2713880a4f8527da319c3b48296a773ab3f30f8b01

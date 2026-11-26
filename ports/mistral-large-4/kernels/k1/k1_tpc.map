@@ -1,0 +1,9 @@
+{
+  global:
+    GetClangGitVersion; GetKernelGuids; GetKernelISAs; GetKernelNames; GetKernelSupportingDynamicShapeNames;
+    GetLibVersion; GetShapeInference; GetShapeInferenceFunction; GetShapeInferenceLibVersion;
+    GetShapeInferenceUniqueId; GetSuggestedManipulation; GetSuggestedTensorManipulation;
+    GetSuggestedTensorManipulationV2; GetSupportedDataLayouts; GetSupportedLayouts; GetSupportedLayoutsV2;
+    GetVersion; HabanaKernel; HabanaKernelV2; InstantiateTpcKernel; k1_tpc_version;
+  local: *;
+};

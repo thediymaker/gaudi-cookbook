@@ -1,0 +1,1 @@
+r6_ffk r6_ffkf r6_rmsd

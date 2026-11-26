@@ -60,8 +60,9 @@ def run_build(*args):
 
 
 def test_pt2_refuses_lazy_only_builds(tmp_path):
-    r = run_build("--variant", "gptoss", "--pt2", str(tmp_path / "out"))
-    assert r.returncode == 2 and "--pt2" in r.stderr
+    for variant in ("gptoss", "ml4"):
+        r = run_build("--variant", variant, "--pt2", str(tmp_path / "out"))
+        assert r.returncode == 2 and "--pt2" in r.stderr, variant
     extra = tmp_path / "k"
     extra.mkdir()
     for f in ("my_kernel.c", "glue.inc", "op.cpp"):
@@ -69,3 +70,16 @@ def test_pt2_refuses_lazy_only_builds(tmp_path):
     r = run_build("--variant", "glm", "--extra-kernel", str(extra), "--pt2", str(tmp_path / "out"))
     assert r.returncode == 2 and "--extra-kernel" in r.stderr
     assert not (tmp_path / "out").exists()
+
+
+def test_ml4_is_v8_only(tmp_path):
+    r = run_build("--variant", "ml4", "--kernels", "v10", str(tmp_path / "out"))
+    assert r.returncode == 2 and "no v10 kernels" in r.stderr
+    assert not (tmp_path / "out").exists()
+
+
+def test_grouped_ops_share_one_guard_each():
+    lazy = schemas(SRC / "mxk_op_lazy.cpp")
+    for name in ("mxk_w13g", "mxk_w2g"):
+        assert lazy[name][1] == name, lazy[name]
+    assert "Tensor ids" in lazy["mxk_w13g"][0] and "int gmax" in lazy["mxk_w2g"][0]

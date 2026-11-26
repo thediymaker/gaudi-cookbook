@@ -1,0 +1,4 @@
+Build-gate fixtures (tests/build_gates.py), from amd/Mistral-Large-4-1T-A52B-Quark-MXFP4 snapshot d084803a4a2b:
+  amd_params.json.gz        params.json, gzip -9n (original sha256 9695819b92298a644c9f59fe21f8b8e2a68ac7455e1593c7abe6a49ea21d140c)
+  amd_config_noquant.json   config.json without quantization_config (original sha256 76c389e073353bc40718d3e23b92a2d3c24c04841d9147fa1dea6d319d0a87e0);
+                            only its top-level keys matter here: they are the defaults the params.json adapter back-fills

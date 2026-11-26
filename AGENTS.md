@@ -33,7 +33,7 @@ Everything here was run on these components. Treat anything outside them as unte
 | Explain an error, crash or wrong output | the `## Symptom` section of every `fixes/*/README.md` | Search for the error text: `grep -rn -A8 "^## Symptom" fixes/*/README.md`. Each fix lists who is affected and the releases. |
 | Know which fixes a release needs | `python3 fixes/apply_all.py --list` and `docs/fixes/index.md` | The profile for the release covers the generic fixes. Opt-in fixes are named on the command line. |
 | Build a serving image | `docs/getting-started.md` | Follow the build steps. They keep the Habana PyTorch fork. |
-| Speed up MXFP4 MoE decode | `kernels/mxfp4-moe/README.md` and `docs/kernels/mxfp4-moe.md` | Opt-in. gpt-oss uses the hook in `kernels/mxfp4-moe/python/`; GLM-5.x, DeepSeek-V4.1-Flash, Muse Spark Open, Kimi and MiMo-V2.6-Pro use their port. See the rules below. |
+| Speed up MXFP4 MoE decode | `kernels/mxfp4-moe/README.md` and `docs/kernels/mxfp4-moe.md` | Opt-in. gpt-oss uses the hook in `kernels/mxfp4-moe/python/`; GLM-5.x, DeepSeek-V4.1-Flash, Muse Spark Open, Kimi, Mistral Large 4 and MiMo-V2.6-Pro use their port. See the rules below. |
 | Serve a ported model (a recipe with `gaudi.port`) | `ports/<port>/README.md`, then the recipe | Build the port image from the stock image with `ports/<port>/Dockerfile`, then launch as for any recipe. Run `ports/<port>/tests/hpu/run_gates.sh` before serving users. |
 | Port a model that has no vllm-gaudi path | `ports/README.md`, `docs/ports/*.md`, then `docs/results/platform-findings.md` | The port contract says how a port is laid out; the write-ups describe each design and its gates; the platform findings list Gaudi behaviours that break new models (FusedSDPA sinks and windows, fp32 trig, lazy-mode casts). |
 | Serve a model that does not run on vLLM (text-to-speech, EmbeddingGemma 2) | `servers/README.md`, then `servers/<server>/README.md` | Build the server image from its `Dockerfile`, then run `tests/hpu/run_gates.sh` on the device. Orpheus is the exception: its LLM half runs on a stock vllm-gaudi image with fixes. |
@@ -83,13 +83,13 @@ over rebuilding it from the YAML.
   - `hpu-fleet-sweep.sh` is read-only, over SSH.
   - `hpu-resource-audit.py` only reads manifest files.
 - **Treat the kernel as opt-in.** The MXFP4 kernel has one build variant per model family
-  (`build.sh --variant gptoss|glm|dsv41|muse|kimi`); never use one variant for another model. Each
+  (`build.sh --variant gptoss|glm|dsv41|muse|kimi|ml4`); never use one variant for another model. Each
   variant has shape caps (see "Op reference" in `kernels/mxfp4-moe/README.md`), and calls outside
   them must stay on the stock op. Build it inside the serving image (`--kernels v10`, the default for
-  `glm`, `kimi`, `dsv41` and `gptoss`, also holds the v8 kernels; `muse` and `--pt2` builds are v8
+  `glm`, `kimi`, `dsv41` and `gptoss`, also holds the v8 kernels; `muse`, `ml4` and `--pt2` builds are v8
   only), and run `tests/run_parity.sh --variant <name>` and check for `PARITY PASS` and `SIG_DEVICE PASS`
-  before enabling it. On a v10 build the parity run checks every decode path and requires each to be
-  bit-identical to v8. gpt-oss switches with `MXFP4_TPC_MOE=1` (rollback `MXFP4_TPC_MOE=0`) and adds
+  before enabling it. On a v10 build, and for `ml4`'s grouped-route path, the parity run checks every decode
+  path and requires each to be bit-identical to v8. gpt-oss switches with `MXFP4_TPC_MOE=1` (rollback `MXFP4_TPC_MOE=0`) and adds
   v10 with `MXFP4_TPC_MOE_V10=1`; a port names its own switches in its README, and unsetting the v10
   switch goes back to v8. `docs/kernels/what-did-not-work.md` lists the measured dead ends; read it
   before proposing another kernel or decode-step change.

@@ -86,6 +86,7 @@ nav:
       - GLM-5.3-Flash: recipes/glm-5-3-flash.md
       - DeepSeek-V4.1-Flash-1017: recipes/deepseek-v4-1-flash-1017.md
       - "Kimi-K2.7-Code (MXFP4)": recipes/kimi-k2-7-code.md
+      - "Mistral Large 4 (MXFP4)": recipes/mistral-large-4.md
       - MiniMax-M3: recipes/minimax-m3.md
       - MiMo-V2.6-Flash-RL: recipes/mimo-v2-6-flash-rl.md
       - MiMo-V2.6-Pro-RL: recipes/mimo-v2-6-pro-rl.md
@@ -152,6 +153,7 @@ nav:
       - Beam-1.0: ports/beam-1-0.md
       - MiMo-V2.6-Flash: ports/mimo-v2-6-flash.md
       - Kimi-K2.7-Code: ports/kimi-k2-7.md
+      - Mistral Large 4: ports/mistral-large-4.md
       - MiniMax-M3: ports/minimax-m3.md
       - Inkling-Small: ports/inkling-small.md
       - Ripple-65B-Preview: ports/ripple-65b.md

@@ -3,8 +3,8 @@
 TPC kernels that run the routed experts of an MXFP4 mixture-of-experts layer straight from the packed weights
 (E2M1 values + E8M0 scales, the layout vLLM already keeps on the device), with no bf16 unpack round trip. They
 replace the stock `mixture_of_experts.*mxfp4_fused_weights` ops for decode-sized calls, and for GLM-5.x also unpack
-experts once for prefill. One kernel core builds a variant per model family. Each variant except `muse` also has a
-v10 kernel set: faster decode kernels with bit-identical output, built into the same library next to the v8 ones.
+experts once for prefill. One kernel core builds a variant per model family. Each variant has a
+v10 kernel set except `muse` and `ml4`: faster decode kernels with bit-identical output, built into the same library next to the v8 ones.
 Full write-up: [docs/kernels/mxfp4-moe.md](../../docs/kernels/mxfp4-moe.md); measured dead ends:
 [docs/kernels/what-did-not-work.md](../../docs/kernels/what-did-not-work.md).
 
@@ -13,7 +13,7 @@ Full write-up: [docs/kernels/mxfp4-moe.md](../../docs/kernels/mxfp4-moe.md); mea
 | Hardware | Gaudi 2 (`tpc-clang -march=gaudi2`). Gaudi 3 is not built or tested. |
 | Software | Gaudi software 1.24.1, vllm-gaudi `v0.26.0` or `releases/v0.30.0` (same torch and plugin), lazy mode; `torch.compile` mode with the `--pt2` op library |
 | Integration | gpt-oss: [`python/`](python/) here, switch `MXFP4_TPC_MOE=1` (v10: also `MXFP4_TPC_MOE_V10=1`). Other models: their port under [`ports/`](../../ports/README.md) builds a variant and calls the ops. |
-| Scope | Decode: at most 32 tokens (gpt-oss) or 16 tokens (other variants) and 128 routes per call. Prefill keeps the stock op, except the GLM unpack path. |
+| Scope | Decode: at most 32 tokens (gpt-oss) or 16 tokens (other variants) and 128 routes per call; the grouped-route kernels take up to 64 tokens and 512 routes. Prefill keeps the stock op, except the GLM and Mistral Large 4 unpack path. |
 
 ## Variants
 
@@ -26,6 +26,7 @@ Full write-up: [docs/kernels/mxfp4-moe.md](../../docs/kernels/mxfp4-moe.md); mea
 | `dsv41` | DeepSeek-V4.1-Flash | `mxk_w13xi`, `mxk_w2x` (+ the port's `dsv41_sinkhorn`) | `mxk_w13xin`, `mxk_w2gn`, `mxk_w2c` (+ the `mxk_w2gp` ELF) | K 5120, I 2304, top-6 of 384, interleaved w13, 48 local experts (EP8) |
 | `muse` | Muse Spark Open | `mxk_w13x`, `mxk_w2xr` | none: v8 only | K 4096, top-8 of 256, 128 experts x I 1024 (EP2 x TP4) |
 | `kimi` | Kimi-K2.7 (MXFP4) | `mxk_w13xt`, `mxk_w2x` | `mxk_w13xk`, `mxk_w2xc`, `mxk_w2gp`, `mxk_w2c` (+ the `mxk_w2g` ELF) | K 7168, I 2048, top-8 of 384, [gate; up] w13, 48 local experts (EP8) |
+| `ml4` | Mistral Large 4 (MXFP4) | `mxk_w13x`, `mxk_w2x`, `mxk_deq`, plus the grouped-route `mxk_w13g`, `mxk_w2g`, `mxk_w2c` | none: v8 only | K 6144, I 3072 (each expert of I 6144 split into two virtual experts), top-8 of 256, [gate; up] w13, 32 local experts (EP8) |
 | `none` | a port that needs only its own kernel (GLM-5.3-Flash) | the `--extra-kernel` GUIDs only | none | needs at least one `--extra-kernel` |
 
 Every GUID registers a torch op of the same name, except `mxk_w13xi` and `mxk_w13xt`, which run through the
@@ -61,7 +62,14 @@ What the v10 kernels change (details and measurements in
   second node is what keeps the per-token summation order (the sums of a whole step do not fit vector local memory).
   `mxk_w2xc` is the one-node alternative at nch 2.
 
-Not on v10: `muse` (its v10 build was faster at 3 to 4 streams but about 1.6% slower per token at one stream end
+The `ml4` build is v8 plus the grouped-route kernels the Mistral Large 4 port calls for 2 to 64 tokens per call
+(multi-stream decode and speculative verify rows): `mxk_w13g` (the v8 w13 math with the routes of one local expert
+unpacked together, x rows of grouped units read from an SRAM scratch tensor), `mxk_w2g` (fp32 rows per route) and
+`mxk_w2c` (the per-token sum in `mxk_w2x`'s order). Each gives the v8 output bit for bit; the parity run checks the
+`grouped` path against v8 on every case up to 64 tokens, with v8 called in 16-token pieces above 16.
+
+Not on v10: `ml4` (no v10 set; a v10 build for this model was measured at about +1% end to end, inside run-to-run
+noise), `muse` (its v10 build was faster at 3 to 4 streams but about 1.6% slower per token at one stream end
 to end, and was never gated for serving), MiMo-V2.6-Pro (it builds
 `glm` with `--pt2`, and the v10 kernels have no torch.compile ops), and GLM-5.3-Flash (`none`).
 
@@ -76,7 +84,7 @@ first 12 chunks of 512 come from local memory, the rest from the tensor (`MXK8_X
 ## Build interface
 
 ```bash
-kernels/mxfp4-moe/build.sh [--variant gptoss|glm|dsv41|muse|kimi] [--kernels v8|v10] [--extra-kernel DIR]... [--pt2] [OUT_DIR]
+kernels/mxfp4-moe/build.sh [--variant gptoss|glm|dsv41|muse|kimi|ml4] [--kernels v8|v10] [--extra-kernel DIR]... [--pt2] [OUT_DIR]
 ```
 
 `--kernels` defaults to `v10` for every variant that has a v10 set and to `v8` for `muse` and `none`; `--kernels v10`
@@ -172,6 +180,10 @@ mxk_w2cb(part, ids2, tw2, b2k, e_min, e_local)                                  
 - `mxk_w2gp` serves nch 2 with the packed kernel and other I with the `mxk_w2g` ELF; `mxk_w2gn` serves nch 4 and 6
   (1024 < I <= 3072) and, in the dsv41 build, nch 2 with the `mxk_w2gp` ELF. Both need Q = T * topk <= 512, topk <= 16,
   I <= 3072. `gmax` caps the routes of one expert unpacked together; 2 is the gated setting.
+- `mxk_w13g(xp, ids2, w13, s13, e_min, gmax, alpha, limit, beta, ascale) -> ap` and
+  `mxk_w2g(ap, ids2, w2, s2, e_min, gmax) -> part` (the ml4 build) are the grouped-route forms of `mxk_w13x` and of
+  `mxk_w2x`'s first half: Q = T * topk <= 512, topk <= 16, E <= 128, K % 512 == 0 and K <= 6144, I % 512 == 0 and
+  I <= 3072. `mxk_w2g` serves any nch with the plain grouped kernel.
 - `part` is private to the pair: feed it to `mxk_w2c` (or `mxk_w2cb` with the gpt-oss bias) with the same `ids2`.
   `e_local` is the number of local experts (`w2.shape[0]`).
 
@@ -184,6 +196,9 @@ How each model calls them (the port does this in its MoE forward):
 | `dsv41` | scales served with E8M0 + 7 on w13: `ap = mxk_w13x(xp, ids, w13, s13, 6, e_min, 2**-7, 10 * 2**7, 0.0, 2**-14, True)`; `y = mxk_w2x(ap, ids, tw, w2, s2, 6, e_min)` with `tw` unscaled by the stock op's `2**-14` |
 | `muse` | `ap = mxk_w13x(xp, ids, w13, s13, 8, e_min, 1.0, 3.0e38, 0.0, 1.0, False)`; `rows = mxk_w2xr(ap, ids, w2, s2, 1, e_min)` |
 | `kimi` | `ap = mxk_w13x(xp, ids, w13, s13, 8, e_min, 1.0, 3.0e38, 0.0, 1.0, False)`; `y = mxk_w2x(ap, ids, tw, w2, s2, 8, e_min)` |
+| `ml4` (T <= 16) | as `kimi`, on the 32 local virtual experts; 17 to 64 tokens in 16-token pieces |
+| `ml4` grouped (2 <= T <= 64) | `ap = mxk_w13g(xp, ids2, w13, s13, e_min, 2, 1.0, 3.0e38, 0.0, 1.0)`; `y = mxk_w2c(mxk_w2g(ap, ids2, w2, s2, e_min, 2), ids2, tw2, e_min, 32)` |
+| `ml4` prefill (256 to 4096 tokens) | as `glm` prefill |
 | `gptoss` | `python/mxfp4_tpc_moe_rt.moe_decode` |
 | v10 (stack3), glm / kimi / dsv41 | `ap = <v10 w13>(x or xp, ids, w13, s13, ...)` with the v8 activation parameters; `y = mxk_w2c(mxk_w2gp(ap, ids2, w2, s2, e_min, 2), ids2, tw2, e_min, E)` (`mxk_w2gn` for dsv41) |
 | v10 (stack2), glm / kimi | `ap` as above; `y = mxk_w2xc(ap, ids, tw, w2, s2, topk, e_min)`, for calls outside the grouped limits |
@@ -202,6 +217,7 @@ kernel version. `mxfp4_tpc_moe_rt.setup_env` does exactly this for gpt-oss; port
 | `src/mxk_deq.c` | The prefill unpack kernel (GLM) |
 | `src/mxk10_core.h`, `src/mxk10_w13.h`, `src/mxk10_w2core.h`, `src/mxk10_w2.h` | v10 w13 (natural-order staging, carried packed tree) and v10 one-node w2 at nch 2 |
 | `src/mxk9_core.h`, `src/mxk9_pass.h`, `src/mxk9_pass2.h`, `src/mxk9_w2.h`, `src/mxk9_w2q.h`, `src/mxk9_w2n.h` | Grouped-route w2 (expert-outer, per-route fp32 rows) and its combine; the carried packed tree at nch 2 and at nch 4 / 6 |
+| `src/mxk9_w13.h`, `src/mxk9_w13g.c` | Grouped-route w13 + gated activation (ml4 build), per route the v8 output |
 | `src/mxk10_w13xn.c`, `mxk10_w13xk.c`, `mxk10_w13xin.c`, `mxk10_w13xibn.c`, `mxk10_w2xc.c`, `mxk9_w2g.c`, `mxk9_w2gp.c`, `mxk9_w2gn.c`, `mxk9_w2c.c`, `mxk9_w2cb.c` | One file per v10 kernel |
 | `src/mxk_tpc_lib.cpp`, `src/mxk_tpc.map` | Kernel library glue, compiled per variant with `-DMXK_HAS_<guid>`; forwards every stock GUID |
 | `src/mxk_op_lazy.cpp` | The torch ops, compiled per variant the same way |

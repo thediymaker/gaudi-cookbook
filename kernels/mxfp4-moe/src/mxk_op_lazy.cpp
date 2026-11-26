@@ -28,6 +28,12 @@
 //   mxk_w2xc  (as mxk_w2x)                                                           -> bf16 [Q/topk, K]
 //   mxk_w2gp  (ap, ids [T, topk] i32, w, s, e_min, gmax)                             -> part f32 [Q, K]
 //   mxk_w2c   (part, ids [T, topk] i32, tw [T, topk] bf16, e_min, e_local)           -> bf16 [T, K]
+// grouped-route ops of the ml4 build (with mxk_w2c above):
+//   mxk_w13g  (xp [T, K] bf16 permuted, ids [T, topk] i32, w, s, e_min, gmax, alpha, limit, beta, ascale)
+//                                                                                    -> ap bf16 [Q, Ip]
+//   mxk_w2g   (ap, ids [T, topk] i32, w, s, e_min, gmax)                             -> part f32 [Q, K]
+//   mxk_w13g gives mxk_w13x's output bit for bit, mxk_w2g + mxk_w2c mxk_w2x's. ids is 2-D in both, so neither shares
+//   a lazy input signature with a v8 op.
 //   mxk_w2gp / mxk_w2gn + mxk_w2c give mxk_w2x's output bit for bit, mxk_w2gn + mxk_w2cb mxk_w2xb's; each v10 w13 op
 //   gives its v8 twin's (mxk_w13x / mxk_w13xi / mxk_w13xib), mxk_w2xc mxk_w2x's. The v10 w13 ops can have their
 //   v8 twin's input signature (mxk_w2xc has mxk_w2x's): a process calls the v10 ops or the v8 ops for a given
@@ -255,7 +261,7 @@ at::Tensor w2xc(const at::Tensor& ap, const at::Tensor& ids, const at::Tensor& t
 }
 #endif
 
-#if defined(MXK_HAS_mxk_w2gp) || defined(MXK_HAS_mxk_w2gn)
+#if defined(MXK_HAS_mxk_w2gp) || defined(MXK_HAS_mxk_w2gn) || defined(MXK_HAS_mxk_w2g)
 struct GroupParams { int32_t e_min; int32_t gmax; };
 #define MXK_W2G(FN, GUID)                                                                                        \
     at::Tensor FN(const at::Tensor& ap, const at::Tensor& ids, const at::Tensor& w, const at::Tensor& s,         \
@@ -278,6 +284,32 @@ struct GroupParams { int32_t e_min; int32_t gmax; };
 #endif
 #ifdef MXK_HAS_mxk_w2gp
 MXK_W2G(w2gp, "mxk_w2gp")
+#endif
+#ifdef MXK_HAS_mxk_w2g
+MXK_W2G(w2g, "mxk_w2g")
+#endif
+
+#ifdef MXK_HAS_mxk_w13g
+struct W13gParams { int32_t e_min; int32_t gmax; float alpha; float limit; float beta; float ascale; };
+at::Tensor w13g(const at::Tensor& xp, const at::Tensor& ids, const at::Tensor& w, const at::Tensor& s, int64_t e_min,
+                int64_t gmax, double alpha, double limit, double beta, double ascale) {
+    TORCH_CHECK(ids.dim() == 2, "mxk_w13g: ids must be [T, topk]");
+    static std::once_flag f;
+    std::call_once(f, []() {
+        std::vector<OutputDesc> out{OutputDesc{0, c10::ScalarType::BFloat16, [](const at::Stack& st) {
+            auto i = st[1].toTensor();
+            return std::vector<int64_t>{i.size(0) * i.size(1), r512(st[2].toTensor().size(1) / 2)}; }}};
+        auto pf = [](const at::Stack& st, size_t& size) {
+            HPU_PARAMS_STUB(W13gParams);
+            *params = W13gParams{(int32_t)st[4].toInt(), (int32_t)st[5].toInt(), (float)st[6].toDouble(),
+                                 (float)st[7].toDouble(), (float)st[8].toDouble(), (float)st[9].toDouble()};
+            return params;
+        };
+        auto desc = inputs(4, 6);
+        REGISTER_CUSTOM_OP_ATTRIBUTES("custom_op::mxk_w13g", "mxk_w13g", desc, out, pf);
+    });
+    return run("custom_op::mxk_w13g", {xp, ids, w, s, e_min, gmax, alpha, limit, beta, ascale});
+}
 #endif
 #ifdef MXK_HAS_mxk_w2gn
 MXK_W2G(w2gn, "mxk_w2gn")
@@ -371,6 +403,13 @@ TORCH_LIBRARY_FRAGMENT(custom_op, m) {
 #ifdef MXK_HAS_mxk_w2gp
     m.def("mxk_w2gp(Tensor ap, Tensor ids, Tensor w, Tensor s, int e_min, int gmax) -> Tensor");
 #endif
+#ifdef MXK_HAS_mxk_w13g
+    m.def("mxk_w13g(Tensor xp, Tensor ids, Tensor w, Tensor s, int e_min, int gmax, float alpha, float limit, "
+          "float beta, float ascale) -> Tensor");
+#endif
+#ifdef MXK_HAS_mxk_w2g
+    m.def("mxk_w2g(Tensor ap, Tensor ids, Tensor w, Tensor s, int e_min, int gmax) -> Tensor");
+#endif
 #ifdef MXK_HAS_mxk_w2c
     m.def("mxk_w2c(Tensor part, Tensor ids, Tensor tw, int e_min, int e_local) -> Tensor");
 #endif
@@ -420,6 +459,12 @@ TORCH_LIBRARY_IMPL(custom_op, HPU, m) {
 #endif
 #ifdef MXK_HAS_mxk_w2gp
     m.impl("mxk_w2gp", w2gp);
+#endif
+#ifdef MXK_HAS_mxk_w13g
+    m.impl("mxk_w13g", w13g);
+#endif
+#ifdef MXK_HAS_mxk_w2g
+    m.impl("mxk_w2g", w2g);
 #endif
 #ifdef MXK_HAS_mxk_w2c
     m.impl("mxk_w2c", w2c);

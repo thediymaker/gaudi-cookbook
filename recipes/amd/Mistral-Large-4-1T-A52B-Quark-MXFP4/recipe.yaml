@@ -1,0 +1,167 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/mistral-large-4.md
+meta:
+  title: "Mistral Large 4 (MXFP4)"
+  slug: "mistral-large-4"
+  provider: "Mistral AI"
+  description: >-
+    1T-parameter MoE (52B active, MLA with a sparse indexer, 128 experts) served text only from AMD's Quark MXFP4
+    release at 128K tokens per request on one 8-card Gaudi 2 node, through the mistral-large-4 port, with DSpark
+    speculative decoding, an int8 latent KV cache and the ml4 MXFP4 kernels.
+  date_added: 2026-11-26
+  date_updated: 2026-11-26
+  tasks:
+    - text
+  related_recipes:
+    - kimi-k2-7-code
+    - deepseek-v4-1-flash-1017
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "amd/Mistral-Large-4-1T-A52B-Quark-MXFP4"
+  base_model: "mistralai/Mistral-Large-4-1T-A52B"
+  architecture: moe
+  parameter_count: "1T"
+  active_parameters: "52B"
+  context_length: 1048576
+
+features:
+  tool_calling:
+    description: "Tool calls with the mistral parser from the vendored files of vLLM PR #64534."
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "mistral"]
+  reasoning:
+    description: "mistral reasoning parser; reasoning_effort low, medium or high (mistral-common 1.13.0)."
+    args: ["--reasoning-parser", "mistral"]
+  spec_decoding:
+    description: "The checkpoint's DSpark draft head, 3 tokens per step, through the n-gram slot (ML4_SPEC=dspark)."
+    args: ["--speculative-config", '{"method": "ngram", "num_speculative_tokens": 3, "prompt_lookup_max": 2}']
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: mxfp4
+    vram_minimum_gb: 694
+    description: "The AMD Quark MXFP4 checkpoint (578 GB; routed experts MXFP4, the rest as in the FP8 base) loaded as published; experts run W4A16."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 8, tp: 8, ep: true }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  port: mistral-large-4
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "8"                                     # attention TP 8; the plugin places experts EP8 itself
+    - "--dtype"
+    - "bfloat16"
+    - "--config-format"
+    - "mistral"
+    - "--load-format"
+    - "mistral"
+    - "--tokenizer-mode"
+    - "mistral"
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "8"
+    - "--max-num-batched-tokens"
+    - "2048"                                  # one prompt chunk per step
+    - "--num-gpu-blocks-override"
+    - "1900"                                  # 243,200 tokens of int8 latent KV
+    - "--block-size"
+    - "128"
+    - "--enable-prefix-caching"
+    - "--enable-prompt-tokens-details"
+    - "--kv-transfer-config"
+    - '{"kv_connector": "OffloadingConnector", "kv_role": "kv_both", "kv_connector_extra_config": {"cpu_bytes_to_use": 160000000000}}'
+    - "--no-async-scheduling"
+    - "--enforce-eager"                       # the plugin captures its own decode and prompt graphs
+    - "--max-logprobs"
+    - "20"
+    - "--speculative-config"
+    - '{"method": "ngram", "num_speculative_tokens": 3, "prompt_lookup_max": 2}'
+    - "--reasoning-parser"
+    - "mistral"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "mistral"
+  env:
+    ML4_CHECKPOINT: "/data/models/Mistral-Large-4-1T-A52B-Quark-MXFP4"   # local copy, see the page
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"
+    PT_HPU_RECIPE_CACHE_CONFIG: "/data/ml4-recipe-cache,False,32768"
+    VLLM_CONTIGUOUS_PA: "false"
+    VLLM_SKIP_WARMUP: "true"                  # the port's warm-up module compiles the shapes instead
+    VLLM_ENGINE_READY_TIMEOUT_S: "7200"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "3600"
+    MAX_MODEL_LEN: "131072"                   # read by the warm-up module
+    ML4_KV_FP8: "1"                           # quantized latent KV ...
+    ML4_KV_CODEC: "i8-t128-f32"               # ... int8 in 128-wide tiles with fp32 scales
+    ML4_INDEX_U8: "1"                         # indexer keys as bytes, lossless
+    ML4_PLACEMENT: "B"                        # the two halves of each expert on different ranks
+    ML4_MXK_V9G: "1"                          # grouped-route MoE kernel at 2 to 64 tokens; 0 = per-route v8
+    ML4_SPEC: "dspark"                        # DSpark drafts in the n-gram slot; off = no drafting
+    ML4_LAYER_GRAPHS: "1"                     # decode replays HPU graphs of layer groups
+    ML4_LAYER_GROUP: "8"
+    ML4_INDEX_DECODE_FAST: "1"
+    ML4_INDEX_SELECT_BYTES: "536870912"       # tiling caps for long prompts
+    ML4_ATTN_STEP_BYTES: "1073741824"
+    ML4_INDEX_KERNEL: "1"                     # decode-step TPC kernels (kernels/k1 in the port), all exact
+    ML4_ATTN_KERNEL: "1"
+    ML4_NUMERICS_RW: "1"
+    ML4_R5_FF8: "x"
+    ML4_R5_SSL: "f32"
+    ML4_R5_K2FOLD: "1"
+    ML4_R5_RMS: "1"
+    ML4_R5_ROPE: "1"
+    ML4_R5_LAT: "1"
+    ML4_R6_ROPEFMA: "1"
+    ML4_R6_FFK: "x"
+    ML4_R6_DUAL: "nope"
+    ML4_R5_ROUTER: "1"
+    ML4_R5_ROUTER_MODE: "1"                   # never mode 4 (inexact)
+    ML4_LOAD_FAST: "1"
+  setup:
+    - 'mkdir -p "${PT_HPU_RECIPE_CACHE_CONFIG%%,*}"'
+    - 'python3 -m mistral_large4_hpu.warm > /tmp/ml4-warm.log 2>&1 &'
+  serve_model: "$ML4_CHECKPOINT"
+  buckets: null
+  required_fixes:
+    - prompt-order             # prefix caching is on
+    - sampling-rows-refresh    # every request sampled with its own parameters after rows reorder
+    - structured-output-rows   # the mistral parser gives every chat request a grammar
+    - so-row-owners            # grammar masks on the right rows when a long prompt is chunked
+    - bad-words-index          # one request's bad_words can neither stop the engine nor ban tokens elsewhere
+    - logitsprocs-rows         # min_p, logit_bias and min_tokens take effect
+    - resumed-prefill-logits   # a request resumed after preemption must not repeat its output
+    - penalty-shapes           # opt-in: penalty requests without a recompile per step
+    - gather-logprobs-int32    # top_logprobs ids read back corrupted otherwise
+    - logprobs-decode-guard    # a bad logprob id no longer kills the API server
+    - seeded-sampling          # a seeded request segfaults a TP worker otherwise
+    - rank-exception-fatal     # a failed rank stops the engine instead of serving garbage
+  verified:
+    # One 8-card node, install.sh run in a container from the stock releases/v0.30.0 image, this command.
+    # Kernel gates: ports/mistral-large-4/tests/hpu/run_kernel_gates.sh; serving gates: tests/hpu/run_gates.sh.
+    - "install.sh 7/7 steps, build gates 9/9; the ml4 and decode-step kernels have the production libraries' code hashes"
+    - "MoE kernel parity on checkpoint layer 5: PARITY PASS (v8, grouped; grouped bit-identical 10/10), PREFILL PASS, SIG_DEVICE PASS"
+    - "decode-step kernel gates on one card: parity, k1, k2, r5, r6 5/5 PASS (bitwise vs native)"
+    - "golden 12/12 greedy; repeat 12/12 identical; tool call plain and streamed pass"
+    - "needles 12/12 at 8K, 32K, 64K and 127K tokens x 3 depths (127K: 165 to 178 s each)"
+    - "logprobs 100 requests x top 20, 6,400 positions complete; teacher-forced NLL 1.1863 on two runs"
+    - "decode, DSpark on, 256 tokens after a cached prefix: 2K 52.0 tok/s at 1 stream, 27.3 per stream (82.0 aggregate) at 4; 32K 58.2 and 17.1 (48.4)"
+    - "time to first token, uncached 32K prompt: 21.5 s; weights 1,466 s, warm-up 1,178 s"
+  notes:
+    - >-
+      Needs the mistral-large-4 port image: docker build -f ports/mistral-large-4/Dockerfile from the stock
+      releases/v0.30.0 image. The plugin loads the checkpoint from a local directory, so download it first
+      (the page has the command) and point ML4_CHECKPOINT at it.
+    - "Text only: the checkpoint's Pixtral vision tower is not loaded."
+    - >-
+      Mistral Ecosystem Open-Weight License (modified MIT): a Model as a Service business needs a separate
+      commercial licence from Mistral for commercial use; internal use is exempt.

@@ -43,8 +43,8 @@ public images and public checkpoints.
 
     ---
 
-    Seven models that released images cannot serve, brought up on Gaudi 2: Muse
-    Spark Open, GLM-5.3-Flash, DeepSeek-V4.1-Flash, Beam-1.0 and more.
+    Eleven models that released images cannot serve, brought up on Gaudi 2: Muse
+    Spark Open, GLM-5.3-Flash, DeepSeek-V4.1-Flash, Mistral Large 4, Ripple-65B and more.
 
 -   :material-flask-outline: **[Results](results/index.md)**
 
