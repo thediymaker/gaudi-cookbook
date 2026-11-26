@@ -8,8 +8,11 @@ affected, the workaround and how to check. Where the cookbook ships a fix, the s
     - **Stack:** Gaudi 2, Gaudi software 1.24.1, lazy mode, vllm-gaudi v0.26.0 and releases/v0.30.0.
     - **Silent wrong results:** FusedSDPA sinks, windows and fast softmax; fp32 sin/cos; int64 cat with an int32
       cast; `torch.multinomial`; `torch.unique(dim=0)`.
-    - **Crashes:** seeded `exponential_`, SIGPIPE, the FusedSDPA bias workspace, "tensor_data is empty",
-      order-9 host allocations.
+    - **Crashes:** seeded `exponential_`, SIGPIPE, the FusedSDPA bias workspace, "tensor_data is empty" after a
+      device allocation failure, order-9 host allocations, cards that hang at their first collective.
+    - **Reproducibility:** speculative decoding ignores `seed`; compiled samplers recompile per seeded request;
+      a single HPU request is not a reference (only fp32 on the CPU is).
+    - **Benchmarks:** an HPU graph of only custom ops replays nothing.
     - **Throughput:** port-9 re-training. A driver reload took TP8 decode on one node from 7.56 to 15.45 tok/s
       (same-node A/B).
 
@@ -134,13 +137,20 @@ affected, the workaround and how to check. Where the cookbook ships a fix, the s
 - **Workaround and check.**
   [Host memory fragmentation](../kubernetes/health-and-failure.md#host-memory-fragmentation).
 
-## "tensor_data is empty" on a first compile
+## "tensor_data is empty" after a device allocation failure
 
-- **Symptom.** `PT_LAZY ValidateSyncInputTensors: tensor_data is empty` kills the engine on the first compile of
-  a large prefill shape in a TP all-reduce; once in four fresh processes in one test near 190K context.
-- **Who.** TP models compiling long prefill shapes on live traffic.
-- **Workaround.** None confirmed; a restart recovers. Compiling those shapes at warm-up is untested.
-- **How to check.** Search logs for the string after long prompts on fresh pods.
+- **Symptom.** `PT_LAZY ValidateSyncInputTensors: tensor_data is empty` (often after `PT_BRIDGE Exception in Launch
+  thread`) kills the engine. The Python stack points at whatever host sync came next (`sample_tokens`,
+  `take_draft_token_ids`, a `.cpu()` in model code), so deaths seem to come from different places.
+- **Cause.** A graph launch could not allocate device memory, so its outputs were never produced. `HABANA_LOGS`
+  shows `PT_DEVMEM Allocation failed for size N MB` just before. On one model, three deaths on different ranks all
+  failed the same 12 MiB allocation at 24% KV use; the bridge's workspace had grown to 4.13 GiB per card after
+  long prompts and never shrank. The same message also appeared once in four fresh processes on the first
+  compile of a prefill shape near 190K context; that case's runtime logs were not kept.
+- **Who.** TP models serving long prompts, especially with large prefill chunks.
+- **Workaround.** Keep `HABANA_LOGS` on a volume, log memory statistics, and shrink the largest single allocation:
+  [Crash forensics](../kubernetes/health-and-failure.md#crash-forensics).
+- **How to check.** Search `HABANA_LOGS` for `Allocation failed` right before the death.
 
 ## `torch.unique(dim=0)` drops rows above about 500K
 
@@ -148,6 +158,76 @@ affected, the workaround and how to check. Where the cookbook ships a fix, the s
 - **Who.** Sparse 3D pipelines and any large on-device dedup.
 - **Workaround.** Run large `unique` calls on the CPU.
 - **How to check.** Compare row counts with CPU `torch.unique`.
+
+## Speculative decoding ignores the request `seed`
+
+- **Symptom.** The same prompt with the same `seed` and temperature above 0, sent twice, gives different text on
+  models served with MTP or EAGLE drafts: 0 of 6 pairs identical on three such models, against 6 of 6 on models
+  without speculative decoding.
+- **Cause.** On the stock HPU path, the rejection sampler draws its accept tests and recovery tokens from the
+  global RNG. The per-request generator only reaches the sampler that picks the bonus token.
+- **Who.** Speculative decoding with sampling, for clients that rely on `seed` for reproducible output.
+- **Workaround.** Draw the seeded rows' accept and recovery noise from a counter keyed by (seed, step), as
+  [seeded-sampling](../fixes/seeded-sampling.md) does for normal sampling. With that change, 6 of 6 repeats
+  matched on each of two pods. The cookbook does not ship it yet; until then, document that `seed` is not
+  honoured on speculative models.
+- **How to check.** Send the same seeded request six times at low load and compare the texts. Matches between
+  different pods, or at different concurrency, are not expected (see the next section).
+
+## A single HPU request is not a reference
+
+- **Symptom.** The same greedy prompt gives different tokens at C=1 and C=8, or with different prefill chunk
+  sizes, and the difference looks like a bug in batching or chunking.
+- **Cause.** bf16 rounding depends on the shape of each matmul, and in MoE models also on which other tokens
+  share an expert in the step. Where two candidate tokens are nearly tied, any change in batch composition can
+  flip the choice. A single-request, single-chunk, eager HPU run is one more bf16 sample, not ground truth.
+- **Evidence.** On one MoE model with a looped layer stack, every HPU variant (eager, graphs, chunk sizes 512 to
+  2048, single request) sat 0.06 to 0.6 nats from an fp32 CPU reference at the token where they diverged, the
+  same band as the model's own bf16 CPU implementation (0.035 to 0.21). Which variant missed changed from prompt
+  to prompt. Eight copies of one request at the exact C=8 shape stayed in the single-request band; the larger gap
+  at real C=8 came from the other requests' tokens through MoE expert grouping. fp32 residuals and an fp32 router
+  did not close the gap.
+- **Who.** Anyone judging a port or a batching change by comparing HPU outputs with each other.
+- **Workaround.** Compare against fp32 on the CPU. If the HPU differs from fp32 by no more than a bf16 CPU run
+  does, and only at near-ties (a small logit margin between the top two tokens), it is precision, not a bug.
+- **How to check.** Record the top-2 margin at the first differing token; a real bug shows up as a divergence
+  with a large margin or as a wrong answer, not as a flip between two near-equal tokens.
+
+## An HPU graph of only custom ops replays nothing
+
+- **Symptom.** A microbenchmark that captures a custom TPC op in an HPU graph reports impossibly fast replays, and
+  the outputs are stale.
+- **Cause.** A captured graph whose only nodes are custom ops replays as empty.
+- **Who.** Kernel benchmarks and parity tests that wrap custom ops in HPU graphs.
+- **Workaround.** End every captured function with a stock op on the output, for example `z * 1.0`.
+- **How to check.** Compare the replayed output with an eager run on fresh inputs.
+
+## Compiled samplers recompile for every seeded request
+
+- **Symptom.** In compile mode (`PT_HPU_LAZY_MODE=0`), each new request with a `seed` adds about 0.2 s to
+  TTFT (seeded 0.42 s against unseeded 0.19 s on one model), and the log eventually reports the recompile
+  limit for the sampler.
+- **Cause.** Dynamo guards on each request's `torch.Generator` object, so every new seeded request is a new guard
+  and a recompile, until the limit is hit and that function runs eagerly.
+- **Who.** Compile-mode models with seeded requests. Seen on one model on releases/v0.30.0; two compile-mode
+  models on v0.26.0 showed no difference. Lazy mode is not affected, because vllm-gaudi turns `torch.compile`
+  into a no-op there (which also hides the bug from a lazy-mode test).
+- **Workaround.** Run batches that contain seeded rows through the uncompiled sampler (`sampler._orig_mod`). The
+  sampler is a small part of a step: decode speed stayed at 22 to 23 tok/s, and seeded TTFT came back to
+  0.102 s against 0.101 s unseeded.
+- **How to check.** Compare seeded and unseeded TTFT on an idle pod, and search the log for `recompile_limit`.
+
+## Some cards hang at their first collective
+
+- **Symptom.** Every pod placed on the same cards of one node (for example cards 4 to 7) hangs at its first
+  collective and restarts, while the node's other cards and other nodes serve the same model normally. One such
+  node caused 119 restarts of one model in a day; two nodes showed it within a week.
+- **Cause.** A card or baseboard fault on those slots. Single-card tests can pass.
+- **Who.** Any multi-card pod that lands on those cards.
+- **Workaround.** Cordon the node, record the slots (PCI bus ids), and report it as a hardware fault:
+  [Node fault patterns](../kubernetes/health-and-failure.md#node-fault-patterns).
+- **How to check.** Group restarts by node and card set; a crash loop that follows the cards, not the model or the
+  image, is this.
 
 ## Reading the DFA dump of an all-rank "No progress" hang
 
