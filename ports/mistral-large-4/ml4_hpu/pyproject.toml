@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mistral-large4-hpu"
+version = "0.1.0"
+description = "Mistral Large 4 (AMD Quark MXFP4) on Intel Gaudi for vllm-gaudi v0.30"
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+mistral_large4_hpu = "mistral_large4_hpu:register"
+
+# Find packages instead of listing them: an explicit list drops subpackages (ref/) from a
+# non-editable (image) install while the editable dev install still works.
+[tool.setuptools.packages.find]
+include = ["mistral_large4_hpu*"]
