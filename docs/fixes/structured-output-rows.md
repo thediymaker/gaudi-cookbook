@@ -9,7 +9,7 @@ Sample each row of a structured-output step with its own request's sampling para
 | Affects | every model, in any step that has a request with a grammar |
 | Releases | v0.26.0, v0.30.0 |
 | Patches | `vllm_gaudi/v1/worker/hpu_model_runner.py` |
-| Upstream | [vllm-gaudi#1916](https://github.com/vllm-project/vllm-gaudi/pull/1916) (open) |
+| Upstream | [vllm-gaudi#1916](https://github.com/vllm-project/vllm-gaudi/pull/1916) (merged 2026-10-30 as `0464fdc`, after v0.30.0; still needed on both releases) |
 | Test | none (one-expression change; covered by the end-to-end check below) |
 
 ## Problem

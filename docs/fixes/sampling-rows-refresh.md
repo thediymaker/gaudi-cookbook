@@ -10,7 +10,7 @@ request is sampled with its own temperature, top-p, top-k, min-p and penalties.
 | Affects | every model, whenever concurrent requests use different sampling parameters |
 | Releases | v0.26.0, v0.30.0 |
 | Patches | `vllm_gaudi/v1/worker/hpu_input_batch.py` (appended wrapper) |
-| Upstream | not filed yet |
+| Upstream | [vllm-gaudi#1923](https://github.com/vllm-project/vllm-gaudi/pull/1923) (merged 2026-11-03 as `bacf5d5`, after v0.30.0; still needed on both releases) |
 | Test | `test_sampling_rows_refresh.py` (CPU; needs torch and an importable vLLM) |
 
 ## Problem

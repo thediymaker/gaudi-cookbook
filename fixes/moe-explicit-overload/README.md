@@ -8,7 +8,7 @@ layer.
 | Affects | FP8 per-channel MoE models (for example FP8 Qwen3 MoE, GLM and DeepSeek checkpoints) |
 | Releases | v0.26.0, v0.30.0 |
 | Patches | `vllm_gaudi/extension/ops.py` |
-| Upstream | [vllm-gaudi#1921](https://github.com/vllm-project/vllm-gaudi/pull/1921) (open) |
+| Upstream | [vllm-gaudi#1921](https://github.com/vllm-project/vllm-gaudi/pull/1921) (merged 2026-11-05 as `1de5339`, after v0.30.0; still needed on both releases) |
 | Test | none (performance fix; numerics unchanged by construction) |
 
 ## Problem

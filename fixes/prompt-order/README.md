@@ -8,7 +8,7 @@ request that computes it has written it.
 | Affects | every model served with prefix caching (the default) |
 | Releases | v0.26.0, v0.30.0 |
 | Patches | `vllm_gaudi/v1/worker/hpu_model_runner.py` |
-| Upstream | [vllm-gaudi#1918](https://github.com/vllm-project/vllm-gaudi/pull/1918) (open) |
+| Upstream | [vllm-gaudi#1918](https://github.com/vllm-project/vllm-gaudi/pull/1918) (merged 2026-11-17 as `bd8e1f6`, after v0.30.0; still needed on both releases) |
 | Test | `test_prompt_order.py` (stdlib only) |
 
 ## Problem

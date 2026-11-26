@@ -8,7 +8,7 @@ v0.26.0.
 | Affects | models with attention sinks (for example gpt-oss) |
 | Releases | v0.26.0 (decode and prefill), v0.30.0 (decode) |
 | Patches | `vllm_gaudi/extension/ops.py` |
-| Upstream | [vllm-gaudi#1920](https://github.com/vllm-project/vllm-gaudi/pull/1920) (open, decode part) |
+| Upstream | [vllm-gaudi#1920](https://github.com/vllm-project/vllm-gaudi/pull/1920) (decode part; merged 2026-11-13 as `df2c967`, after v0.30.0; still needed on both releases) |
 | Test | `test_sink_once.py` (needs a Gaudi device) |
 
 ## Problem

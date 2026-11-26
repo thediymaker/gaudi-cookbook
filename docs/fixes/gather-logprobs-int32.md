@@ -10,7 +10,7 @@ correctly on HPU.
 | Affects | every model, requests with `logprobs` / `top_logprobs` (and `prompt_logprobs`) |
 | Releases | v0.26.0, v0.30.0 |
 | Patches | `vllm_gaudi/patches.py`, `vllm_gaudi/v1/worker/hpu_model_runner.py` |
-| Upstream | [vllm-gaudi#1823](https://github.com/vllm-project/vllm-gaudi/pull/1823) (open) |
+| Upstream | [vllm-gaudi#1823](https://github.com/vllm-project/vllm-gaudi/pull/1823) (merged 2026-11-04 as `784661c`, after v0.30.0; still needed on both releases) |
 | Test | none (verified on hardware; the change is a dtype reordering) |
 
 ## Problem

@@ -9,7 +9,7 @@ model this was found on, Laguna, which uses sigmoid routing; the fix itself is g
 | Affects | MoE models with sigmoid scoring, an `e_score_correction_bias`, or `renormalize=False` |
 | Releases | v0.26.0, v0.30.0 |
 | Patches | `vllm_gaudi/ops/hpu_fused_moe.py`, `hpu_fp8.py`, `hpu_compressed_tensors.py`, `hpu_mxfp4.py` |
-| Upstream | [vllm-gaudi#1922](https://github.com/vllm-project/vllm-gaudi/pull/1922) (open) |
+| Upstream | [vllm-gaudi#1922](https://github.com/vllm-project/vllm-gaudi/pull/1922) (merged 2026-11-09 as `807fcb0`, after v0.30.0; still needed on both releases) |
 | Test | `test_moe_routing.py` (CPU, needs torch) |
 
 ## Problem

@@ -10,7 +10,7 @@ neither stop the engine nor ban tokens on another request's output.
 | Affects | every model, whenever a request sets `bad_words` |
 | Releases | v0.26.0, v0.30.0 |
 | Patches | `vllm_gaudi/v1/worker/hpu_input_batch.py` |
-| Upstream | [vllm-gaudi#1917](https://github.com/vllm-project/vllm-gaudi/pull/1917) (open) |
+| Upstream | [vllm-gaudi#1917](https://github.com/vllm-project/vllm-gaudi/pull/1917) (merged 2026-10-30 as `1337240`, after v0.30.0; still needed on both releases) |
 | Test | `test_bad_words_index.py` (CPU; needs torch and an importable vLLM) |
 
 ## Problem

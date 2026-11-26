@@ -10,7 +10,7 @@ smaller kernel blocks.
 | Affects | hybrid models (GDN, linear attention or Mamba next to attention), e.g. Qwen3.5 / Qwen3-Next class |
 | Releases | v0.26.0, v0.30.0 |
 | Patches | `vllm_gaudi/v1/worker/hpu_model_runner.py` |
-| Upstream | [vllm-gaudi#1912](https://github.com/vllm-project/vllm-gaudi/pull/1912) (open, same fix in the runner) |
+| Upstream | [vllm-gaudi#1912](https://github.com/vllm-project/vllm-gaudi/pull/1912) (same fix in the runner; merged 2026-11-10 as `57cec1e`, after v0.30.0; still needed on both releases) |
 | Test | `test_hybrid_decode_pad.py` (torch; the source tests need a runner source) |
 
 ## Problem

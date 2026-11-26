@@ -41,28 +41,28 @@ startup step run on its own (`apply.py MODEL OUT_DIR`, then `--tokenizer OUT_DIR
 
 | Fix | Affects | Releases | Profiles | Upstream | Status |
 | --- | --- | --- | --- | --- | --- |
-| [prompt-order](prompt-order.md) | prefix caching (default) | v0.26.0, v0.30.0 | both | [vllm-gaudi#1918](https://github.com/vllm-project/vllm-gaudi/pull/1918) | open |
-| [sampling-rows-refresh](sampling-rows-refresh.md) | concurrent requests with different sampling parameters | v0.26.0, v0.30.0 | both | none | not filed |
-| [structured-output-rows](structured-output-rows.md) | steps with a grammar request | v0.26.0, v0.30.0 | both | [vllm-gaudi#1916](https://github.com/vllm-project/vllm-gaudi/pull/1916) | open |
+| [prompt-order](prompt-order.md) | prefix caching (default) | v0.26.0, v0.30.0 | both | [vllm-gaudi#1918](https://github.com/vllm-project/vllm-gaudi/pull/1918) | merged (main, after v0.30.0) |
+| [sampling-rows-refresh](sampling-rows-refresh.md) | concurrent requests with different sampling parameters | v0.26.0, v0.30.0 | both | [vllm-gaudi#1923](https://github.com/vllm-project/vllm-gaudi/pull/1923) | merged (main, after v0.30.0) |
+| [structured-output-rows](structured-output-rows.md) | steps with a grammar request | v0.26.0, v0.30.0 | both | [vllm-gaudi#1916](https://github.com/vllm-project/vllm-gaudi/pull/1916) | merged (main, after v0.30.0) |
 | [so-row-owners](so-row-owners.md) | grammar requests next to a partial prompt chunk | v0.26.0, v0.30.0 | both | none | not filed |
-| [bad-words-index](bad-words-index.md) | requests with `bad_words` | v0.26.0, v0.30.0 | both | [vllm-gaudi#1917](https://github.com/vllm-project/vllm-gaudi/pull/1917) | open |
+| [bad-words-index](bad-words-index.md) | requests with `bad_words` | v0.26.0, v0.30.0 | both | [vllm-gaudi#1917](https://github.com/vllm-project/vllm-gaudi/pull/1917) | merged (main, after v0.30.0) |
 | [logitsprocs-rows](logitsprocs-rows.md) | requests with `min_p`, `logit_bias`, `min_tokens` | v0.26.0, v0.30.0 | both | none | not filed |
-| [async-inputs](async-inputs.md) | async scheduling | v0.26.0, v0.30.0 | both | [vllm-gaudi#1919](https://github.com/vllm-project/vllm-gaudi/pull/1919) | open |
+| [async-inputs](async-inputs.md) | async scheduling | v0.26.0, v0.30.0 | both | [vllm-gaudi#1919](https://github.com/vllm-project/vllm-gaudi/pull/1919) | merged (main, after v0.30.0) |
 | [async-discard-counter](async-discard-counter.md) | async scheduling with preemption | v0.26.0 | v0.26.0 | [vllm-gaudi#1794](https://github.com/vllm-project/vllm-gaudi/pull/1794), [#1803](https://github.com/vllm-project/vllm-gaudi/pull/1803) | merged (in v0.30.0) |
 | [resumed-prefill-logits](resumed-prefill-logits.md) | prefix caching with preemption | v0.26.0, v0.30.0 | both | [vllm-gaudi#1849](https://github.com/vllm-project/vllm-gaudi/pull/1849) | merged (main, after v0.30.0) |
-| [hybrid-decode-pad](hybrid-decode-pad.md) | hybrid GDN / Mamba / linear-attention models | v0.26.0, v0.30.0 | both | [vllm-gaudi#1912](https://github.com/vllm-project/vllm-gaudi/pull/1912) | open |
+| [hybrid-decode-pad](hybrid-decode-pad.md) | hybrid GDN / Mamba / linear-attention models | v0.26.0, v0.30.0 | both | [vllm-gaudi#1912](https://github.com/vllm-project/vllm-gaudi/pull/1912) | merged (main, after v0.30.0) |
 | [gdn-prefix-cache](gdn-prefix-cache.md) | prefix caching on GDN hybrids (Qwen3.5 / Qwen3.6 class) | v0.26.0, v0.30.0 | opt-in | none (upstream has the non-compact path: [vllm-gaudi#1827](https://github.com/vllm-project/vllm-gaudi/pull/1827), [#1842](https://github.com/vllm-project/vllm-gaudi/pull/1842)) | not filed (design discussion) |
 | [penalty-shapes](penalty-shapes.md) | requests with penalties (performance) | v0.26.0, v0.30.0 | opt-in | none | not filed |
 | [logits-empty-guard](logits-empty-guard.md) | tensor parallel with sync scheduling | v0.26.0, v0.30.0 | both | none | not filed |
-| [gather-logprobs-int32](gather-logprobs-int32.md) | requests with `logprobs` / `top_logprobs` | v0.26.0, v0.30.0 | both | [vllm-gaudi#1823](https://github.com/vllm-project/vllm-gaudi/pull/1823) | open |
+| [gather-logprobs-int32](gather-logprobs-int32.md) | requests with `logprobs` / `top_logprobs` | v0.26.0, v0.30.0 | both | [vllm-gaudi#1823](https://github.com/vllm-project/vllm-gaudi/pull/1823) | merged (main, after v0.30.0) |
 | [prompt-logprobs](prompt-logprobs.md) | requests with `prompt_logprobs` | v0.26.0, v0.30.0 | both | [vllm-gaudi#1839](https://github.com/vllm-project/vllm-gaudi/pull/1839) (crash part) | merged (main, after v0.30.0); value fixes not filed |
 | [logprobs-decode-guard](logprobs-decode-guard.md) | requests with `logprobs` / `top_logprobs` | v0.26.0, v0.30.0 | both | none (vLLM) | not filed |
 | [seeded-sampling](seeded-sampling.md) | requests with `seed` and temperature > 0 | v0.26.0, v0.30.0 | both | none | not filed |
 | [topk-subset-sampler](topk-subset-sampler.md) | requests with `top_k` (performance) | v0.26.0, v0.30.0 | opt-in | none | not filed |
-| [sink-once](sink-once.md) | models with attention sinks (gpt-oss) | v0.26.0, v0.30.0 (decode part) | both | [vllm-gaudi#1920](https://github.com/vllm-project/vllm-gaudi/pull/1920) (decode part) | open |
+| [sink-once](sink-once.md) | models with attention sinks (gpt-oss) | v0.26.0, v0.30.0 (decode part) | both | [vllm-gaudi#1920](https://github.com/vllm-project/vllm-gaudi/pull/1920) (decode part) | merged (main, after v0.30.0) |
 | [swa-decode-window](swa-decode-window.md) | gpt-oss | v0.26.0, v0.30.0 | both | none | not filed |
-| [moe-explicit-overload](moe-explicit-overload.md) | FP8 per-channel MoE models (performance) | v0.26.0, v0.30.0 | both | [vllm-gaudi#1921](https://github.com/vllm-project/vllm-gaudi/pull/1921) | open |
-| [laguna-moe-sigmoid-routing](laguna-moe-sigmoid-routing.md) | MoE with sigmoid scoring, correction bias or `renormalize=False` | v0.26.0, v0.30.0 | both | [vllm-gaudi#1922](https://github.com/vllm-project/vllm-gaudi/pull/1922) | open |
+| [moe-explicit-overload](moe-explicit-overload.md) | FP8 per-channel MoE models (performance) | v0.26.0, v0.30.0 | both | [vllm-gaudi#1921](https://github.com/vllm-project/vllm-gaudi/pull/1921) | merged (main, after v0.30.0) |
+| [laguna-moe-sigmoid-routing](laguna-moe-sigmoid-routing.md) | MoE with sigmoid scoring, correction bias or `renormalize=False` | v0.26.0, v0.30.0 | both | [vllm-gaudi#1922](https://github.com/vllm-project/vllm-gaudi/pull/1922) | merged (main, after v0.30.0) |
 | [fp8-moe-gather](fp8-moe-gather.md) | FP8 MoE decode at low batch (performance) | v0.26.0 | opt-in | [vllm-gaudi#1731](https://github.com/vllm-project/vllm-gaudi/pull/1731) | merged (in v0.30.0) |
 | [moe-router-weight-on-input](moe-router-weight-on-input.md) | Llama 4 MoE | v0.26.0, v0.30.0 | opt-in | none | not filed |
 | [mm-merge-idxcopy](mm-merge-idxcopy.md) | vision-language models | v0.26.0, v0.30.0 | both | none | not filed |

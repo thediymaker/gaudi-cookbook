@@ -10,7 +10,7 @@ request that sat out a step does not read a stale token.
 | Affects | every model served with async scheduling |
 | Releases | v0.26.0, v0.30.0 |
 | Patches | `vllm_gaudi/v1/worker/hpu_model_runner.py` |
-| Upstream | [vllm-gaudi#1919](https://github.com/vllm-project/vllm-gaudi/pull/1919) (open) |
+| Upstream | [vllm-gaudi#1919](https://github.com/vllm-project/vllm-gaudi/pull/1919) (merged 2026-11-05 as `902e389`, after v0.30.0; still needed on both releases) |
 | Test | none (host-side input preparation; covered by the end-to-end check below) |
 
 ## Problem
