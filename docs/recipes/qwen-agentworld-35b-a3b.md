@@ -126,6 +126,34 @@ include time to first token).
 | Cold prompt of 131K tokens (needle) | 33 to 46 s to the answer |
 | Cold prompt of 244K tokens (needle) | 72 to 85 s to the answer |
 
+## FP8 (not a recipe)
+
+There is no public FP8 checkpoint of this model, so this section is a measured result, not a
+recipe: it cannot be reproduced from public files, and it is not verified in this repository.
+
+- **How the experts were quantized.** Data-free (no calibration set): only the routed experts went
+  to FP8, in 128 x 128 blocks with BF16 scales, one tensor per expert, the same layout as Qwen's own
+  block FP8 releases (Qwen3.6-35B-A3B-FP8). Attention, the Gated DeltaNet projections and the shared
+  expert stayed BF16. The result is 44 GB, against 82 GB in BF16. Sampled experts reconstructed at a
+  cosine of 0.9996 or better.
+- **How it was served.** One card (TP 1) instead of two, on `v0.26.0` with the
+  [`fp8-moe-gather`](../fixes/fp8-moe-gather.md) fix and `VLLM_HPU_MOE_GATHER=1`, the gather path
+  limited to `tokens x top_k <= 64` (8 decode tokens), `--max-num-seqs 8`, otherwise this page's
+  settings. KV pool 1,568,382 tokens on one card.
+
+| Check | FP8 experts, 1 card | Measured as |
+| --- | --- | --- |
+| Teacher-forced top-1 agreement with the BF16 model | 98.49% (BF16 against itself 98.91%) | a few thousand positions of fixed text |
+| Decode per stream (aggregate), 4K prompt, 768 tokens out | 54.0 at 1 stream, 33.8 (165) at 4, 20.4 (208) at 8 | one card, warm |
+| Needles at 64K, 128K and 250K, 3 depths, cold and from the cache | 9/9 | |
+| 4 requests of 128K at once | 4/4, no preemptions | |
+| Recall test, 24 agent cases | 18/24 (BF16 19/24) | same prompts |
+
+The BF16 numbers under [Performance](#performance) were measured end to end with another tool on
+two cards, so they do not compare directly with this table. Raising
+`--max-num-seqs` to 16 (with the gather limit at 16 tokens) gave 14.2 tokens/s per stream at 16 streams for
+22% more aggregate, because the gather then reads close to all 256 experts; 8 sequences was kept.
+
 ## Known issues
 
 - Offered a calculator tool, the model often works out easy arithmetic itself instead of calling
