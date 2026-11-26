@@ -24,7 +24,7 @@ otherwise; none has been run on Gaudi 3.
 | [Qwen3-Embedding-8B](qwen3-embedding-8b.md) | 1 | BF16 | v0.26.0 | embeddings, Matryoshka | verified, no fixes |
 | [Qwen3-Embedding-4B](qwen3-embedding-4b.md) | 1 | BF16 | v0.26.0 | embeddings, Matryoshka | verified, no fixes |
 | [Qwen3-VL-Embedding-8B](qwen3-vl-embedding-8b.md) | 1 | BF16 | releases/v0.30.0 | embeddings, vision | verified |
-| [Gemma 4 E2B IT](gemma-4-e2b-it.md) | 1 | BF16 | releases/v0.30.0 | tools | verified |
+| [Gemma 4 E2B IT](gemma-4-e2b-it.md) | 1 | BF16 | releases/v0.30.0 | tools, 128K | verified |
 | [Qwen-AgentWorld-35B-A3B](qwen-agentworld-35b-a3b.md) | 2 (TP 2) | BF16 | v0.26.0 | tools, reasoning, 256K | verified |
 | [Ornith-1.0-35B](ornith-1-0-35b.md) | 2 (TP 2) | BF16 | v0.26.0 | tools, reasoning, vision, 256K | verified |
 | [Qwen3-VL-32B-Instruct-FP8](qwen3-vl-32b-instruct-fp8.md) | 2 (TP 2) | FP8 | releases/v0.30.0 | tools, vision | verified |
