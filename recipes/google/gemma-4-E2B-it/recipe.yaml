@@ -66,7 +66,7 @@ gaudi:
     VLLM_ENGINE_ITERATION_TIMEOUT_S: "3600"
     VLLM_RPC_TIMEOUT: "3600000"
   setup:
-    - "unset VLLM_SKIP_WARMUP"                # warm-up must run; vllm-gaudi reads any non-empty value as true
+    - "unset VLLM_SKIP_WARMUP"                # warm-up must run; do not inherit a skip from the environment
   buckets: null
   required_fixes:
     - sampling-rows-refresh         # device sampling rows stale after batch reorders

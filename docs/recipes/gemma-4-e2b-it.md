@@ -24,7 +24,7 @@ checkpoint's full 131,072-token context.
 export PT_HPU_LAZY_MODE=1
 export VLLM_ENGINE_ITERATION_TIMEOUT_S=3600
 export VLLM_RPC_TIMEOUT=3600000
-unset VLLM_SKIP_WARMUP   # warm-up must run; vllm-gaudi reads any non-empty value as true
+unset VLLM_SKIP_WARMUP   # warm-up must run; do not inherit a skip from the environment
 
 # Fixes: the v0.30.0 profile plus this recipe's opt-in fixes, in the pack's order.
 # Stops with a non-zero exit code if the image does not match.
@@ -52,7 +52,8 @@ vllm serve google/gemma-4-E2B-it \
   flag does not work on HPU. vLLM rejects `prompt_logprobs` requests while the flag is on.
   Measured cost and gain are under [Performance](#performance).
 - Warm-up runs. Without it, decode shapes compile in the middle of traffic and the first-token gain
-  disappears. `VLLM_SKIP_WARMUP=false` still skips it, so the variable must be unset.
+  disappears. Unset the variable (or set it to `false`) so a value inherited from the image or
+  the pod spec cannot skip it.
 - `--no-enable-prefix-caching`: a prompt with a cache hit takes the full 35-layer path (correct, no
   speed-up), and the recipe's checks ran without caching.
 - Text only: the image and audio encoders load but are not used. The vision and audio paths have
@@ -167,7 +168,7 @@ batch caps and the comparison with published A100 figures.
 
 ## What not to do
 
-- Do not set `VLLM_SKIP_WARMUP` to anything, including `false`.
+- Do not set `VLLM_SKIP_WARMUP=true`.
 - Do not raise `VLLM_PROMPT_BS_BUCKET_MAX` if you need outputs that do not depend on which prompts
   arrive together. Several prompts in one prefill forward change the bf16 rounding of the prompt
   K/V with or without fast prefill, and long greedy outputs then drift. It is faster (see

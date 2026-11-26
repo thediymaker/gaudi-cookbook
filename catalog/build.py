@@ -211,9 +211,9 @@ PORTS = [
     ),
     (
         "Kimi-K2.7-Code",
-        "1T MoE, TP 16 over two nodes",
-        "FP8 experts about 3x MXFP4 at 8 streams",
-        "different conditions, named on the page",
+        "1T MoE, one node in MXFP4 with the kernels",
+        "44.5 vs 17.9 tok/s at one stream",
+        "same-pod A/B, kernels off and on",
         "ports/kimi-k2-7/",
     ),
     (
