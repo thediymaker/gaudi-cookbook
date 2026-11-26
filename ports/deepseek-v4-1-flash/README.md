@@ -103,6 +103,7 @@ the plugin runs its reference path.
 | `DSV41_WOA_LINEAR` | 0 | 1 | Decode: the grouped output projection as one batched linear |
 | `DSV41_MXK` | 0 | 1 | MXFP4 decode kernels and the Sinkhorn kernel; 0 = stock ops |
 | `DSV41_MXK_LIB` | `/opt/mxfp4-moe/lib` | | Where install.sh put the kernel build |
+| `DSV41_MXK_V10` | 0 | | With `DSV41_MXK=1`: the v10 decode kernels (`mxk_w13xin`, `mxk_w2gn`, `mxk_w2c`), same output bit for bit as the v8 kernels; unset to roll back |
 | `DSV41_TAG_CHECK` | mask | mask | Cache-row ownership check: `mask`, `count` (also counts violations, for the gates) or `off` |
 
 The warm-up reads `DSV41_WARMUP` (1 = on), `DSV41_WARMUP_MAX_SEQS` (the serve `--max-num-seqs`), `DSV41_WARMUP_MAX_S`

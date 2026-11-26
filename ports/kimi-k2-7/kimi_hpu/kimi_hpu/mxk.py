@@ -31,10 +31,22 @@ vllm_gaudi/ops/hpu_mxfp4.py. With the switch on it sets:
 If the libraries are missing or a layer does not match the kernels, that layer keeps the stock op and the log says
 so once.
 
+KIMI_MXK_V10=1 (with KIMI_MXK=1 and the v10 library, the default of build.sh --variant kimi) runs the same calls on
+the v10 kernels, chosen once from the ops the library registers:
+
+    stack3   x -> permute -> mxk_w13xk -> mxk_w2gp (per-route fp32 rows) -> mxk_w2c
+    stack2   x -> permute -> mxk_w13xk -> mxk_w2xc
+
+stack3 serves a call when T * top_k <= 512 and I <= 3072 (else stack2); layers with K above 7168 keep the v8
+kernels. Both give the v8 kernels' output bit for bit. KIMI_MXK_V10_W2=w2xc forces stack2. A library without the
+v10 ops keeps the v8 kernels and logs it. One path per process: lazy-mode custom ops are cached by input signature,
+and mxk_w13xk / mxk_w2xc have the signatures of mxk_w13x / mxk_w2x. Rollback: unset KIMI_MXK_V10.
+
 Environment:
   KIMI_MXK=1               turn the kernels on (default 0)
   KIMI_MXK_MAX_TOKENS=N    per-call token cap, 1..16 (default 16: covers decode at --max-num-seqs 8)
   KIMI_MXK_LIB=DIR         directory with the two libraries (default /opt/gaudi-cookbook-kimi/mxk)
+  KIMI_MXK_V10=1           v10 decode kernels (default 0); KIMI_MXK_V10_W2=w2xc forces the stack2 w2 kernel
 """
 
 from __future__ import annotations
@@ -48,6 +60,14 @@ STOCK = "/usr/lib/habanalabs/libtpc_kernels.so"
 MAX_ROUTES = 128  # kernel limit on T * top_k per call
 W13_OP = "mxk_w13x"  # the kimi build registers its K = 7168 kernel (mxk_w13xt) under this op name
 W2_OP = "mxk_w2x"
+V10 = os.environ.get("KIMI_MXK_V10", "0") == "1"
+V10_W2 = os.environ.get("KIMI_MXK_V10_W2", "auto")  # auto | w2xc
+OPS_STACK2 = ("mxk_w13xk", "mxk_w2xc")
+OPS_STACK3 = ("mxk_w13xk", "mxk_w2gp", "mxk_w2c")
+V10_K_MAX = 7168  # mxk_w13xk stages 12 chunks in VLM and reads the last chunk pair from memory
+GROUP_Q_MAX = 512  # mxk_w2gp / mxk_w2c: Q = T * top_k routes
+GROUP_I_MAX = 3072  # mxk_w2gp: I
+GROUP_GMAX = 2  # routes of one expert unpacked together by mxk_w2gp
 TAG = "[kimi-mxk]"
 INF = 3.0e38
 _installed = False
@@ -137,6 +157,24 @@ def layer_reason(w13_shape, s13_shape, w2_shape, s2_shape, dtypes_ok: bool, has_
     return None
 
 
+def pick_v10_path(have, w2_mode: str = V10_W2) -> str | None:
+    """The v10 decode path a library serves, from its registered op names: "stack3", "stack2" or None (v8)."""
+    if all(n in have for n in OPS_STACK3) and w2_mode != "w2xc":
+        return "stack3"
+    if all(n in have for n in OPS_STACK2):
+        return "stack2"
+    return None
+
+
+def v10_call_path(path: str | None, tokens: int, topk: int, k: int, inter: int) -> str | None:
+    """Per call: None (v8) above the v10 K cap; stack3 only inside the grouped-route limits, else stack2."""
+    if path is None or k > V10_K_MAX:
+        return None
+    if path == "stack3" and (tokens * topk > GROUP_Q_MAX or inter > GROUP_I_MAX):
+        return "stack2"
+    return path
+
+
 def covers(tokens: int, topk: int) -> bool:
     return 1 <= tokens <= MAX_TOKENS and tokens * topk <= MAX_ROUTES
 
@@ -165,6 +203,12 @@ def install() -> None:
         return
     w13_op = getattr(torch.ops.custom_op, W13_OP)
     w2_op = getattr(torch.ops.custom_op, W2_OP)
+    co = torch.ops.custom_op
+    v10 = None
+    if V10:
+        v10 = pick_v10_path({n for n in set(OPS_STACK2) | set(OPS_STACK3) if hasattr(co, n)})
+        if v10 is None:
+            log.warning("%s KIMI_MXK_V10=1 but %s has no v10 ops: v8 decode kernels kept", TAG, op_lib())
 
     method = hpu_mxfp4.HPUGptOssMxfp4MoEMethod
     orig_pwal = method.process_weights_after_loading
@@ -218,14 +262,25 @@ def install() -> None:
             if tw.dtype != torch.bfloat16:
                 tw = tw.to(torch.bfloat16)
             # plain silu(gate) * up: alpha 1, no clamp, beta 0, activation scale 1; rows [gate; up]
+            p = v10_call_path(v10, t, topk, hidden_states.shape[1], w2.shape[2] * 2)
+            if p is not None:
+                act = co.mxk_w13xk(
+                    permute(hidden_states), ids, w13, s13, topk, self.experts_min, 1.0, INF, 0.0, 1.0, False
+                )
+                if p == "stack3":
+                    ids2, tw2 = ids.reshape(t, topk), tw.reshape(t, topk)
+                    part = co.mxk_w2gp(act, ids2, w2, s2, self.experts_min, GROUP_GMAX)
+                    return co.mxk_w2c(part, ids2, tw2, self.experts_min, w2.shape[0])
+                return co.mxk_w2xc(act, ids, tw, w2, s2, topk, self.experts_min)
             act = w13_op(permute(hidden_states), ids, w13, s13, topk, self.experts_min, 1.0, INF, 0.0, 1.0, False)
             return w2_op(act, ids, tw, w2, s2, topk, self.experts_min)
         return orig_forward(self, hidden_states, expert_routing_table, router_weights, permuted_weights, activation)
 
     op_cls.forward = forward
     log.info(
-        "%s installed: GC_KERNEL_PATH=%s MXK_TPC_FWD_LIB=%s PT_HPU_RECIPE_CACHE_CONFIG=%s",
+        "%s installed: decode %s, GC_KERNEL_PATH=%s MXK_TPC_FWD_LIB=%s PT_HPU_RECIPE_CACHE_CONFIG=%s",
         TAG,
+        f"v10 {v10}" if v10 else "v8",
         os.environ.get("GC_KERNEL_PATH"),
         os.environ.get("MXK_TPC_FWD_LIB"),
         os.environ.get("PT_HPU_RECIPE_CACHE_CONFIG"),

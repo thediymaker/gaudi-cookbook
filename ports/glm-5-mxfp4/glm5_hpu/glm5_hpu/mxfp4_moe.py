@@ -20,6 +20,17 @@ Switches (both off by default; off means the stock ``mxfp4_fused_weights`` op ru
     The stock op instead unpacks every touched expert to bf16 in memory before tiny GEMMs. The kernels accumulate
     in fp32, so greedy outputs are close to the stock op but not bit-identical.
 
+``GLM_MXK_V10=1`` (needs ``GLM_MXK=1`` and the v10 library, the default of ``build.sh --variant glm``)
+    The same decode calls run the v10 kernels, chosen once from the ops the library registers::
+
+        stack3  x (natural order, no permute node) -> mxk_w13xn -> mxk_w2gp (per-route fp32 rows) -> mxk_w2c
+        stack2  x (natural order)                  -> mxk_w13xn -> mxk_w2xc
+
+    stack3 serves a call when T * topk <= 512 and I_slice <= 3072, otherwise the call takes stack2. Both give the
+    v8 kernels' output bit for bit. ``GLM_MXK_V10_W2=w2xc`` forces stack2. A library without the v10 ops keeps the
+    v8 kernels and logs it. One path per process: lazy-mode custom ops are cached by input signature, and
+    ``mxk_w13xn`` / ``mxk_w2xc`` have the signatures of ``mxk_w13x`` / ``mxk_w2x``. Rollback: unset the switch.
+
 ``GLM_MXK_PREFILL=1`` (needs ``GLM_MXK=1``)
     Calls of 256 to 4096 tokens unpack each local expert to bf16 with the ``mxk_deq`` kernel, break the lazy graph
     and run the stock bf16 ``mixture_of_experts`` op. That is the unpack the stock MXFP4 op does internally,
@@ -36,6 +47,13 @@ import os
 
 ENABLED = os.environ.get("GLM_MXK", "0") == "1"
 PREFILL = os.environ.get("GLM_MXK_PREFILL", "0") == "1"
+V10 = os.environ.get("GLM_MXK_V10", "0") == "1"
+V10_W2 = os.environ.get("GLM_MXK_V10_W2", "auto")  # auto | w2xc
+OPS_STACK2 = ("mxk_w13xn", "mxk_w2xc")
+OPS_STACK3 = ("mxk_w13xn", "mxk_w2gp", "mxk_w2c")
+GROUP_Q_MAX = 512  # mxk_w2gp / mxk_w2c: Q = T * topk routes
+GROUP_I_MAX = 3072  # mxk_w2gp: I_slice
+GROUP_GMAX = 2  # routes of one expert unpacked together by mxk_w2gp
 LIB_DIR = "/opt/gaudi-cookbook-glm5/mxk"
 TPC_LIB = "libmxk_tpc.so"
 OP_LIB = "libmxk_op_lazy.so"
@@ -60,6 +78,22 @@ def lib_version(path=None):
     if i < 0:
         return None
     return data[i : data.index(b"\0", i)].decode(errors="replace")
+
+
+def pick_v10_path(have, w2_mode=V10_W2):
+    """The v10 decode path a library serves, from its registered op names: "stack3", "stack2" or None (v8)."""
+    if all(n in have for n in OPS_STACK3) and w2_mode != "w2xc":
+        return "stack3"
+    if all(n in have for n in OPS_STACK2):
+        return "stack2"
+    return None
+
+
+def v10_call_path(path, tokens, topk, inter):
+    """Per call: stack3 only inside the grouped-route limits, else stack2."""
+    if path == "stack3" and (tokens * topk > GROUP_Q_MAX or inter > GROUP_I_MAX):
+        return "stack2"
+    return path
 
 
 def setup_env():
@@ -120,6 +154,11 @@ def install():
     if PREFILL and not prefill:
         log.warning("%s GLM_MXK_PREFILL=1 but the op library has no mxk_deq: prefill keeps the stock op", TAG)
     inf = 3.0e38
+    v10 = None
+    if V10:
+        v10 = pick_v10_path({n for n in set(OPS_STACK2) | set(OPS_STACK3) if hasattr(co, n)})
+        if v10 is None:
+            log.warning("%s GLM_MXK_V10=1 but the op library has no v10 ops: v8 decode kernels kept", TAG)
 
     method = hpu_mxfp4.HPUGptOssMxfp4MoEMethod
     orig_pwal = method.process_weights_after_loading
@@ -177,6 +216,16 @@ def install():
             tw = router_weights.reshape(-1)
             if tw.dtype != torch.bfloat16:
                 tw = tw.to(torch.bfloat16)
+            if v10 is not None:
+                p = v10_call_path(v10, t, topk, w2.shape[2] * 2)
+                ids2, tw2 = ids.reshape(t, topk), tw.reshape(t, topk)
+                # natural-order x: the kernel stages it in its own order, no permute node
+                x = hidden_states.contiguous()
+                ap = torch.ops.custom_op.mxk_w13xn(x, ids, w13, s13, topk, self.experts_min, 1.0, inf, 0.0, 1.0, False)
+                if p == "stack3":
+                    part = torch.ops.custom_op.mxk_w2gp(ap, ids2, w2, s2, self.experts_min, GROUP_GMAX)
+                    return torch.ops.custom_op.mxk_w2c(part, ids2, tw2, self.experts_min, w2.shape[0])
+                return torch.ops.custom_op.mxk_w2xc(ap, ids, tw, w2, s2, topk, self.experts_min)
             # lane i of sub-vector p of 512-chunk b holds k = 512 b + 4 i + p (the kernel's nibble-plane order)
             xp = hidden_states.reshape(t, k // 512, 128, 4).transpose(-1, -2).reshape(t, k)
             # plain silu(gate) * up: alpha 1, no clamp, beta 0, activation scale 1; rows are [gate; up]
@@ -208,9 +257,10 @@ def install():
 
     op_cls.forward = forward
     log.info(
-        "%s installed: %s, prefill %s, GC_KERNEL_PATH=%s MXK_TPC_FWD_LIB=%s PT_HPU_RECIPE_CACHE_CONFIG=%s",
+        "%s installed: %s, decode %s, prefill %s, GC_KERNEL_PATH=%s MXK_TPC_FWD_LIB=%s PT_HPU_RECIPE_CACHE_CONFIG=%s",
         TAG,
         lib_version(),
+        f"v10 {v10} (mxk_w13xn + {'mxk_w2gp + mxk_w2c' if v10 == 'stack3' else 'mxk_w2xc'})" if v10 else "v8",
         "on" if prefill else "stock",
         os.environ.get("GC_KERNEL_PATH"),
         os.environ.get("MXK_TPC_FWD_LIB"),

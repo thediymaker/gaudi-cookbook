@@ -11,7 +11,7 @@ has a native MXFP4 MoE method with Kimi's routing. The port adds what is missing
 | `patches/mxfp4_fused_load.py` | Lets the DeepSeek loader load fused MXFP4 experts under expert parallelism (each rank copies its block of the 384 experts). |
 | `kimi_hpu/` + `patches/mxk_hooks.py` | The MXFP4 decode kernel hook, behind `KIMI_MXK`: decode-sized MoE calls run on the `kimi` build of [`kernels/mxfp4-moe`](../../kernels/mxfp4-moe/README.md) instead of the stock op. Off (`KIMI_MXK=0`) is the stock op. |
 | `convert/mxfp4_to_fp8.py`, `convert/validate_fp8.py` | The two-node alternative: an exact re-encoding of the MXFP4 experts as per-channel FP8 (compressed-tensors), and an independent checker. See [Two nodes, FP8 experts](#two-nodes-fp8-experts). |
-| `install.sh`, `Dockerfile` | The image build: checks the release commits, applies the two patches, installs `kimi_hpu`, builds the `kimi` kernel variant into `/opt/gaudi-cookbook-kimi/mxk`. |
+| `install.sh`, `Dockerfile` | The image build: checks the release commits, applies the two patches, installs `kimi_hpu`, builds the `kimi` kernel variant (v8 + v10 kernels) into `/opt/gaudi-cookbook-kimi/mxk`. |
 | `tests/` | CPU tests of the FP8 encoding (`pytest ports/kimi-k2-7/tests`); `tests/hpu/run_gates.sh` runs the serving gates against a running server. |
 
 Generic fixes come from [`fixes/`](../../fixes/README.md): the recipe applies the `v0.30.0` profile at launch.
@@ -34,7 +34,7 @@ docker build -f ports/kimi-k2-7/Dockerfile --build-arg BASE=<your-vllm-gaudi-v0.
 ```
 
 `install.sh` prints one line per step and stops at the first one that does not apply. The kernel build ends with
-`mxk_tpc kimi-v8-<hash>: ... PASS` and `[mxk-op-gate] PASS`.
+`mxk_tpc kimi-v10-<hash>: ... PASS` and `[mxk-op-gate] PASS`.
 
 ## 3. Check the kernels on one card
 
@@ -67,11 +67,13 @@ argument: golden and teacher-forced results are then compared too.
 | `KIMI_MXK` | `0` | `1` runs MoE calls of at most `KIMI_MXK_MAX_TOKENS` tokens (and at most 128 routes) on the kernels |
 | `KIMI_MXK_MAX_TOKENS` | `16` | per-call token cap, 1 to 16; covers decode at `--max-num-seqs 8` |
 | `KIMI_MXK_LIB` | `/opt/gaudi-cookbook-kimi/mxk` | where `install.sh` put `libmxk_tpc.so` and `libmxk_op_lazy.so` |
+| `KIMI_MXK_V10` | `0` | with `KIMI_MXK=1`: `1` runs the same calls on the v10 kernels (`mxk_w13xk`, then `mxk_w2gp` + `mxk_w2c`, or `mxk_w2xc` with `KIMI_MXK_V10_W2=w2xc`). Same output bit for bit as `KIMI_MXK=1` alone. Rollback: unset it |
 
 With the switch on, every vLLM process registers the kernel library with the graph compiler before it opens a
 device (`GC_KERNEL_PATH`, with every stock kernel forwarded), moves the recipe cache to a directory named after the
 kernel build, and sets `PT_HPU_LAZY_ACC_PAR_MODE=0`. The engine log shows `[kimi-mxk] installed` and
-`[kimi-mxk] enabled: mxk_tpc kimi-v8-<hash>, E_local=48 K=7168 I=2048`. Anything unexpected (libraries missing, a
+`[kimi-mxk] enabled: mxk_tpc kimi-v10-<hash>, E_local=48 K=7168 I=2048` (the library holds the v8 and the v10
+kernels; `installed: decode v8` or `decode v10 stack3` says which run). Anything unexpected (libraries missing, a
 layer of another shape) keeps the stock op for that layer and logs why. Prefill keeps the stock op.
 
 ## Two nodes, FP8 experts

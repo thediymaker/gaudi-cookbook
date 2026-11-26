@@ -143,6 +143,7 @@ class DSV41MoEHPU(nn.Module):
         )
         self.moe_op = None
         self._mxk = None
+        self._mxk_v10 = False
         self.layer_id = layer_id
 
     def finalize(self) -> None:
@@ -206,6 +207,17 @@ class DSV41MoEHPU(nn.Module):
             )
         if why is None:
             mxk.load_ops()
+            if mxk.V10:
+                v10_why = mxk.v10_reason(self.I, k)
+                self._mxk_v10 = v10_why is None
+                if not getattr(DSV41MoEHPU, "_mxk_v10_logged", False):
+                    DSV41MoEHPU._mxk_v10_logged = True
+                    logger.warning(
+                        "dsv41: DSV41_MXK_V10=1, decode %s",
+                        "on the v10 kernels (mxk_w13xin + mxk_w2gn + mxk_w2c)"
+                        if v10_why is None
+                        else "keeps the v8 kernels: " + v10_why,
+                    )
             self._mxk = (
                 self.w13_weight.data,
                 s13,
@@ -242,10 +254,17 @@ class DSV41MoEHPU(nn.Module):
             # the routing weights go in unscaled (the 2^-2k is the kernel's ascale)
             w13, s13, w2, s2, prm = self._mxk
             idf = ids.reshape(T * self.topk).to(torch.int32)
-            ap = torch.ops.custom_op.mxk_w13x(mxk.permute(flat), idf, w13, s13, self.topk, self.e0, *prm, True)
-            routed = torch.ops.custom_op.mxk_w2x(
-                ap, idf, w.reshape(T * self.topk).to(flat.dtype), w2, s2, self.topk, self.e0
-            )
+            tw = w.reshape(T * self.topk).to(flat.dtype)
+            if self._mxk_v10:
+                # DSV41_MXK_V10=1: x in natural order, w2 per route then the routing-weighted sum; the same bits
+                co = torch.ops.custom_op
+                ids2, tw2 = idf.reshape(T, self.topk), tw.reshape(T, self.topk)
+                ap = co.mxk_w13xin(flat, idf, w13, s13, self.topk, self.e0, *prm, True)
+                part = co.mxk_w2gn(ap, ids2, w2, s2, self.e0, mxk.V10_GMAX)
+                routed = co.mxk_w2c(part, ids2, tw2, self.e0, self.n_local)
+            else:
+                ap = torch.ops.custom_op.mxk_w13x(mxk.permute(flat), idf, w13, s13, self.topk, self.e0, *prm, True)
+                routed = torch.ops.custom_op.mxk_w2x(ap, idf, tw, w2, s2, self.topk, self.e0)
         else:
             routed = self.moe_op(flat, ids.to(torch.int32), (w * self._wscale).to(flat.dtype))
         gu = self.shared_w13(flat)[0]

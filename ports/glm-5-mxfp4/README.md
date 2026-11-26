@@ -19,8 +19,11 @@ Gaudi software 1.24.1, lazy mode). The design and its history are in
 | `tests/hpu/` | serving gates: `run_gates.sh` prints one PASS or FAIL line per gate |
 
 The kernels come from [`kernels/mxfp4-moe`](../../kernels/mxfp4-moe/README.md): `install.sh` runs
-`build.sh --variant glm /opt/gaudi-cookbook-glm5/mxk` (decode kernels `mxk_w13x`, `mxk_w2x` and the prefill unpack
-`mxk_deq`).
+`build.sh --variant glm --kernels v10 /opt/gaudi-cookbook-glm5/mxk`: one library with the v8 decode kernels
+(`mxk_w13x`, `mxk_w2x`), the prefill unpack (`mxk_deq`) and the v10 decode kernels (`mxk_w13xn`, `mxk_w2xc`,
+`mxk_w2gp`, `mxk_w2c`). `GLM_MXK=1` alone runs the v8 kernels; `GLM_MXK_V10=1` on top switches decode to v10,
+which gives the same output bit for bit and is faster at 2 to 4 sequences (see
+[the kernel page](../../docs/kernels/mxfp4-moe.md#v10-decode-kernels)).
 
 ### Patches
 
@@ -45,13 +48,15 @@ model.
 
 ## Switches
 
-Every switch is off by default; off runs the stock vllm-gaudi path. The recipes turn all of them on.
+Every switch is off by default; off runs the stock vllm-gaudi path. The recipes turn all of them on except
+`GLM_MXK_V10`, which is newer than the recipe runs (it gives the same tokens; turn it on with `GLM_MXK=1`).
 
 | Variable | Effect | Greedy output vs off |
 | --- | --- | --- |
 | `VLLM_HPU_FSDPA_SOFTMAX_MODE=None` | accurate FusedSDPA softmax in prefill | different (fixes long prompts) |
 | `GLM_DSA_SPARSE=1` | top-2048 sparse attention above 32K keys | identical below 32K keys |
 | `GLM_MXK=1` | MXFP4 decode kernels (calls of at most 16 tokens) | close, not identical (fp32 accumulation) |
+| `GLM_MXK_V10=1` | v10 decode kernels (needs `GLM_MXK=1`; `GLM_MXK_V10_W2=w2xc` forces the stack2 w2 kernel). Rollback: unset it | identical to `GLM_MXK=1` alone |
 | `GLM_MXK_PREFILL=1` | prefill unpack kernel (calls of 256 to 4096 tokens) | identical |
 | `GLM_MOE_TP=2` | EP 4 x TP 2 expert layout | close, not identical (bf16 rounding of the split down projection) |
 | `GLM_MOE_PLACEMENT=<json>` | per-layer expert placement (GLM-5.3 file in `serving/`) | identical routing; layout as above |

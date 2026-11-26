@@ -13,6 +13,15 @@ in memory first. The kernels run on the scales finalize() serves (E8M0 +7): alph
 ascale 2^-14 is the exact V4.1 clamp (min(g, 10) * sigmoid(min(g, 10)) * clamp(u, +-10)). The routing weights go in
 unscaled (the stock op takes them x 2^-14). The shared expert and the all-reduce are unchanged.
 
+DSV41_MXK_V10=1 (with DSV41_MXK=1 and the v10 library, the default of build.sh --variant dsv41) runs the same calls
+on the v10 kernels, with the same output bit for bit:
+  x [T, D] natural order -> mxk_w13xin (no permute node; carried w13 reduction tree)
+                         -> mxk_w2gn   (w2 GEMV per route, fp32 rows, carried reduction tree at nch 4 / 6)
+                         -> mxk_w2c    (routing-weighted sum per token) -> bf16 [T, D]
+The choice is made once per process (mxk_w13xin has mxk_w13xi's input signature and lazy custom ops are cached by
+signature, so a process never mixes them). A library without the v10 ops, or a layer outside their limits
+(I <= 3072, MAX_TOKENS x top-k <= 512), keeps the v8 kernels and says why. Rollback: unset DSV41_MXK_V10.
+
 The same kernel library carries the port's mHC Sinkhorn kernel (kernels/dsv41_sinkhorn, DSV41_HC_SINKHORN=kernel), so
 DSV41_MXK=0 turns both off.
 
@@ -41,6 +50,9 @@ LIB_DIR = os.environ.get("DSV41_MXK_LIB", "/opt/mxfp4-moe/lib")
 STOCK = "/usr/lib/habanalabs/libtpc_kernels.so"
 MAX_ROUTES = 128  # kernel limit on T * top_k per call
 MAX_K = 6144  # kernel limit on the w13 GEMV input width (x row staged in vector local memory)
+V10 = os.environ.get("DSV41_MXK_V10", "0") == "1"
+V10_OPS = ("mxk_w13xin", "mxk_w2gn", "mxk_w2c")
+V10_GMAX = 2  # routes of one expert unpacked together by mxk_w2gn
 _ops_loaded = False
 
 
@@ -122,6 +134,20 @@ def permute(x):
     """x [R, K] bf16 -> the kernels' per-512-k-chunk layout: xp[kc + 128 p + i] = x[kc + 4 i + p]. K % 512 == 0."""
     R, K = x.shape
     return x.reshape(R, K // 512, 128, 4).transpose(-1, -2).reshape(R, K)
+
+
+def v10_reason(inter: int, k: int) -> str | None:
+    """None if the v10 kernels serve a layer the v8 kernels serve (and their ops are loaded); otherwise why not."""
+    import torch
+
+    missing = [n for n in V10_OPS if not hasattr(torch.ops.custom_op, n)]
+    if missing:
+        return f"{op_lib()} has no {', '.join(missing)}"
+    if inter > 3072:
+        return f"intermediate {inter} > 3072 (mxk_w2gn)"
+    if MAX_TOKENS * k > 512:
+        return f"{MAX_TOKENS} tokens x top-{k} > 512 routes (mxk_w2gn / mxk_w2c)"
+    return None
 
 
 def supported(n: int, K: int, inter: int, k: int) -> str | None:

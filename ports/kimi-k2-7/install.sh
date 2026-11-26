@@ -13,7 +13,8 @@
 #   1. a check that the installed vllm-gaudi and vLLM are the commits it was written against
 #   2. patches/mxfp4_fused_load.py: load the converted checkpoint's fused MXFP4 experts under expert parallelism
 #   3. the kimi_hpu package and patches/mxk_hooks.py: the MXFP4 decode kernel hook (switch KIMI_MXK, off = stock)
-#   4. the kernel build: kernels/mxfp4-moe/build.sh --variant kimi into /opt/gaudi-cookbook-kimi/mxk
+#   4. the kernel build: kernels/mxfp4-moe/build.sh --variant kimi --kernels v10 into /opt/gaudi-cookbook-kimi/mxk
+#      (the v8 kernels plus the v10 decode kernels: KIMI_MXK=1 runs v8, KIMI_MXK_V10=1 adds v10)
 #   5. a final check that every patch reports "applied" and the hook module imports
 # Generic fixes are not applied here: the recipe runs fixes/apply_all.py at launch.
 set -euo pipefail
@@ -65,8 +66,8 @@ PIP_NO_INDEX=1 pip install --no-deps --no-build-isolation --no-cache-dir "$BUILD
 rm -rf "$BUILD"
 python3 "$PORT/patches/mxk_hooks.py"
 
-step "4/5 MXFP4 decode kernels (variant kimi)"
-bash "$COOKBOOK/kernels/mxfp4-moe/build.sh" --variant kimi "$KERNEL_DIR"
+step "4/5 MXFP4 decode kernels (variant kimi, v8 + v10)"
+bash "$COOKBOOK/kernels/mxfp4-moe/build.sh" --variant kimi --kernels v10 "$KERNEL_DIR"
 
 step "5/5 checks"
 python3 "$PORT/patches/mxfp4_fused_load.py" --check
