@@ -126,7 +126,7 @@ vllm serve "$KIMI_MXFP4_DIR" \
   graphs captured later under traffic overflow it; on an older vllm-gaudi build that stopped the engine
   (`tensor_data is empty` after repeated defragmentation).
 - `VLLM_SKIP_WARMUP=false`: warm-up compiles and captures all 54 prompt and 80 decode buckets before the server
-  takes requests (18 minutes in the run below, 3.5 GiB of graphs per card), so no graph is compiled or captured
+  takes requests (18 minutes in the run below, about 3.5 GiB of graphs per card), so no graph is compiled or captured
   in the middle of traffic.
 - `VLLM_LONG_PREFILL_SHARE=0.5` with the [`vllm-long-prefill-share`](../fixes/vllm-long-prefill-share.md) fix:
   while a prompt of 32,768 tokens or more prefills, the other running requests keep decoding for at least half of
@@ -155,18 +155,20 @@ for DeepSeek-style MXFP4 checkpoints) and the two hooks that install the kernel 
 ## Verified
 
 Pod with 8 Gaudi 2 cards on one node, the port installed by `install.sh` on the stock `releases/v0.30.0` image
-(kernel build `kimi-v8-f4b38ebce384`), the checkpoint converted by `repack_quark_mxfp4.py` (`--verify`:
-`VERIFY_OK`, 24 experts, 0 mismatches), and the Launch block above run as written.
+(kernel build `kimi-v10-729451f0749d`; with `KIMI_MXK=1` alone the log shows `installed: decode v8`), the
+checkpoint converted by `repack_quark_mxfp4.py` (`--verify`: `VERIFY_OK`, 24 experts, 0 mismatches), and the
+Launch block above run as written. The same checks passed on a second pod with the build before the v10 kernels
+(`kimi-v8-f4b38ebce384`), with the same results within a few percent.
 
 | Check | Result |
 | --- | --- |
-| Kernel parity (`run_parity.sh --variant kimi`), before the server started | PARITY PASS, SIG_DEVICE PASS |
+| Kernel parity (`run_parity.sh --variant kimi`), before the server started | PARITY PASS (paths v8, stack2, stack3), SIG_DEVICE PASS on each |
 | Golden answers, 12 prompts, greedy | 12/12 |
 | Tool call, `kimi_k2` parser, streaming and not | pass |
 | Needles, 3 depths at 32K, 64K and 120K | 9/9 |
 | `top_logprobs=20` soak with CJK and emoji output, 200 requests | 200/200 clean |
-| Teacher-forced NLL, 8,885 positions of code | 1.2524 (recorded) |
-| Warm-up | 54 prompt and 80 decode buckets in 1,090 s; 3.5 GiB of graphs per card |
+| Teacher-forced NLL, 9,707 positions of this repository's code | 1.2913 (recorded) |
+| Warm-up | 54 prompt and 80 decode buckets in 1,091 s; 3.6 GiB of graphs per card |
 | Server health after all checks, including a 109K prompt next to a running stream | healthy, 0 tracebacks, no defragmentation |
 
 KV pool at start-up: 260,480 tokens.
@@ -191,7 +193,8 @@ once with `KIMI_MXK=0` (stock MXFP4 op), then with `KIMI_MXK=1`.
 
 The Launch block above against this recipe's previous settings (2,048-token chunks, query buckets up to 2,048,
 context buckets in 256-block steps, warm-up skipped, no long-prefill share), on the same pod and server build,
-one after the other. Measured as: one 8-card node, `KIMI_MXK=1`, `kimi_gates.py ttft` (median of 3 uncached
+one after the other, on the build before the v10 kernels (the v10 build gave 1.47 / 7.54 / 31.9 s, 40.7 / 23.4 tok/s
+and 21.2 tok/s on the same measurements). Measured as: one 8-card node, `KIMI_MXK=1`, `kimi_gates.py ttft` (median of 3 uncached
 prompts; the previous settings' first run of each length compiled and is left out of the median),
 `kimi_gates.py sweep 16000 1,4`, and a decode stream of 6,000 tokens measured while one uncached 109K-token prompt
 prefills next to it.

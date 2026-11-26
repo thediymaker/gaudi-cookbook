@@ -117,7 +117,7 @@ gaudi:
     - rank-exception-fatal     # a failed rank stops the engine instead of serving garbage
     - vllm-long-prefill-share  # opt-in: other streams keep decoding while a long prompt prefills
   verified:
-    - "kernel parity, kimi build on real layer-3 experts, T 1 to 16: PARITY PASS, SIG_DEVICE PASS"
+    - "kernel parity, kimi build (v10 library) on real layer-3 experts, T 1 to 16: PARITY PASS on paths v8, stack2, stack3; SIG_DEVICE PASS"
     - "golden answers 12/12; tool call through kimi_k2, streaming and non-streaming: pass"
     - "needles 9/9 at 32K, 64K and 120K tokens"
     - "top_logprobs=20 soak, 200 requests with CJK and emoji output: 200/200 clean"
