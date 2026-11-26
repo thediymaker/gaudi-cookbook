@@ -77,6 +77,7 @@ nav:
       - Llama 4 Scout 17B-16E Instruct: recipes/llama-4-scout-17b-16e-instruct.md
       - Laguna-S-2.1: recipes/laguna-s-2-1.md
       - MiniMax-M2.7: recipes/minimax-m2-7.md
+      - Ripple-65B-Preview: recipes/ripple-65b-preview.md
       - Qwen3.5-397B-A17B-FP8: recipes/qwen3-5-397b-a17b-fp8.md
       - Beam-1.0-501B-A23B-FP8: recipes/beam-1-0-501b-a23b-fp8.md
       - Muse Spark Open: recipes/muse-spark-open.md
@@ -152,6 +153,7 @@ nav:
       - Kimi-K2.7-Code: ports/kimi-k2-7.md
       - MiniMax-M3: ports/minimax-m3.md
       - Inkling-Small: ports/inkling-small.md
+      - Ripple-65B-Preview: ports/ripple-65b.md
   - Results:
       - results/index.md
       - Platform findings: results/platform-findings.md

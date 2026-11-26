@@ -18,6 +18,7 @@ number says how it was measured: a same-pod or same-node A/B, chained A/Bs, or d
 | [Kimi-K2.7-Code](kimi-k2-7.md) (1T MoE) | Too large for one node in FP8: an exact MXFP4 to FP8 expert conversion for two nodes, then a one-node MXFP4 build with the `kimi` kernels | 8 cards, one node (two-node FP8 documented) | One node with the kernels 44.5 tok/s at one stream vs 17.9 on the stock op (same pod) and 36.4 to 38.2 on two nodes in FP8 (different conditions) |
 | [MiniMax-M3](minimax-m3.md) (427B MoE) | gpt-oss's clamped SwiGLU in a model the stock FP8 kernel cannot run; an exact MXFP4 to FP8 expert re-encoding | 8 cards, one node | FP8 experts 24.7 tok/s at one stream vs 22.1 on the fused MXFP4 kernel and 11.5 unpacked (different conditions) |
 | [Inkling-Small](inkling-small.md) (276B MoE) | No RoPE: a learned relative-position logit per head and short convolutions with state, CUDA-only kernels upstream | 8 cards, one node | 256K tokens per request; 43.9 tok/s at one stream, 21.7 per stream at 16 (single run) |
+| [Ripple-65B-Preview](ripple-65b.md) (65B dense) | NoPE full layers among 1024-token sliding windows, gated attention and value residuals, added to vLLM after v0.30.0; long prompts dominated by fp32 softmax | 4 cards | Full-depth fp32 oracle NLL within 0.06%; 250K prompt about 180 s instead of 462 s (same pod); 5x the KV tokens with window-sized KV |
 
 ## What the ports have in common
 

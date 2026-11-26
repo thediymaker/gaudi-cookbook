@@ -65,6 +65,8 @@ Agents: read AGENTS.md first. It maps tasks to files and gives the rules: check 
   - [poolside/Laguna-S-2.1 recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/poolside/Laguna-S-2.1/recipe.yaml)
 - [MiniMax-M2.7](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/minimax-m2-7.md): 229B MoE (sigmoid routing, 256 experts) reasoning and agent model, official FP8 checkpoint, 128K context on four Gaudi 2 cards.
   - [MiniMaxAI/MiniMax-M2.7 recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/MiniMaxAI/MiniMax-M2.7/recipe.yaml)
+- [Ripple-65B-Preview](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/ripple-65b-preview.md): 65B dense model with 64 sliding-window and 16 NoPE full-attention layers, BF16, 128K context on 4 Gaudi 2 cards, through the ripple-65b port.
+  - [ricursiveAI/Ripple-65B-Preview recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/ricursiveAI/Ripple-65B-Preview/recipe.yaml)
 - [Qwen3.5-397B-A17B-FP8](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/qwen3-5-397b-a17b-fp8.md): 397B MoE (17B active) hybrid (Gated DeltaNet + attention) reasoning model, FP8, native 256K context, text only, on one 8-card Gaudi 2 node.
   - [Qwen/Qwen3.5-397B-A17B-FP8 recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/Qwen/Qwen3.5-397B-A17B-FP8/recipe.yaml)
 - [Beam-1.0-501B-A23B-FP8](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/beam-1-0-501b-a23b-fp8.md): 501B MoE (23B active) reasoning and coding model, compressed-tensors FP8, 256K context on one 8-card Gaudi 2 node, through the beam-1-0 port.
@@ -158,6 +160,7 @@ Agents: read AGENTS.md first. It maps tasks to files and gives the rules: check 
 - [Kimi-K2.7-Code on Gaudi 2](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/ports/kimi-k2-7.md): Kimi-K2.7-Code is a 1T-parameter multimodal MoE model: a DeepSeek-V3-style text tower (61 layers, 384 routed experts, MLA attention) plus a vision tower.
 - [MiniMax-M3 with FP8 experts on Gaudi 2](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/ports/minimax-m3.md): MiniMax-M3 is a 427B-parameter multimodal MoE (23B active): 60 layers, 128 routed experts with top-4 sigmoid routing and a score correction bias, one shared expert, and gpt-oss's SwiGLU-OAI activation (clamp to 7, alpha 1.702).
 - [Inkling-Small on Gaudi 2](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/ports/inkling-small.md): Inkling-Small is a 276B-parameter mixture-of-experts model (12B active) from Thinking Machines.
+- [Ripple-65B-Preview on Gaudi 2](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/ports/ripple-65b.md): Ripple-65B-Preview is a 65B dense model with 80 layers: 64 use a 1024-token sliding window with RoPE and 16 (layers 4, 9, ..., 79) use full attention without positional encoding (NoPE).
 
 ## Results
 
