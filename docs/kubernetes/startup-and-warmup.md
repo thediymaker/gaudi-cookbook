@@ -112,6 +112,56 @@ size cap in MB, not the model length.
 - The cache is per node, so a pod on a fresh node compiles again. Its first long prompts
   are slow until the shapes it sees are compiled.
 
+### Seed the cache for skip-warm-up models
+
+A model that runs with `VLLM_SKIP_WARMUP=true` compiles every new shape on live traffic.
+On a node it has never run on, that can make a new pod useless for a long time: one
+compile-mode model had 213 bucket shapes (143 prompt, 70 decode) at 2 to 6 minutes each on
+one compile thread, with every request on the pod waiting behind it. A rollout to fresh
+nodes stalled at about 0 tok/s with requests waiting and was rolled back. Canary checks run on a warm
+node did not show it; gate a rollout on a fresh-node start with the production flags.
+
+A kept cache works: on a restart with the same directory, shapes compiled before came back
+in about 1 s each (7 shapes in 7 s). Only shapes never seen still compile, about 1.75 to 4
+minutes each on that model. So build the cache once and give every pod a copy:
+
+1. **Fill a seed on one pod.** Run one canary with `VLLM_SKIP_WARMUP=false` (and a long
+   enough startup probe), or drive it with representative traffic, so it compiles the
+   shapes production sees. Only that one pod writes the seed.
+2. **Copy complete pairs only.** Each cached graph is a `.recipe` file with a `.metadata`
+   file. Copy a pair only when both exist and neither is empty, the `.recipe` before its
+   `.metadata`. A zero-byte `.metadata` is an unfinished compile, and a `.metadata`
+   without its recipe fails the bridge's recipe check.
+3. **Serve from a local copy.** Mount the seed read-only, and at start copy it into a
+   pod-local directory (node-local disk or an `emptyDir`) that `PT_HPU_RECIPE_CACHE_CONFIG`
+   points at with `delete_on_start=False`. Fail open: a missing seed means a cold start,
+   not a failed pod.
+
+Never point several pods at one writable cache on a network filesystem: a pod can read a
+`.metadata` file another node is still writing, and the bridge then dies with
+`std::bad_alloc`. That caused most of one model's restarts over several days.
+
+Measured on that model (2 cards, compile mode, warm-up skipped in production), a fresh node
+replaying production-shaped traffic:
+
+| Start | First request | Replay |
+| --- | --- | --- |
+| No seed, cache wiped at start | 1,200 s | 1 request finished in 30 minutes |
+| Seed from a full bucket warm-up | 233 s | TTFT p50 1.15 s, p90 2.2 to 3.0 s; 892 requests in 20 minutes |
+| Seed topped up with shapes real traffic adds, plus a short local warm-up before Ready | 0.4 s | TTFT p50 1.1 to 1.3 s, p90 2.7 to 3.6 s |
+
+Filling the seed with a full bucket warm-up took 5.5 hours on one pod. Real traffic adds
+graph variants the bucket warm-up does not build (prefix-cache paths, sampling settings),
+so top the seed up from a fresh test pod's cache after a replay (704, then 741 recipes,
+654 MiB in all). Even with every recipe seeded, the first requests a compile-mode process
+serves trace each compiled region once (219 s for the first prefill on that model), which
+is why the last row also sends a few local requests before the pod reports Ready (see
+[Warm-up](#warm-up)); that pod was Ready 5.5 minutes after it started.
+
+Shapes outside the seed still compile on first use. Rebuild the seed, under a new key,
+whenever the image, tensor parallel size, `--max-model-len`, `--max-num-batched-tokens`,
+`--max-num-seqs` or bucket settings change.
+
 ## Warm-up
 
 `VLLM_SKIP_WARMUP=false` makes vLLM compile the configured bucket shapes before the server

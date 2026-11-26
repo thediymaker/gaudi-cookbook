@@ -51,6 +51,104 @@ see this.
 
 When every pod is full, fall back to the shortest queue.
 
+### Check what the router believes
+
+A saturation filter is only as good as its inputs. Two ways it went wrong on a live fleet,
+both silent:
+
+- **max-num-seqs read from the wrong place.** The router took each model's
+  `--max-num-seqs` from the pod's container command, and on two models it matched a flag
+  inside a shell comment (`2`) instead of the real argument (`4`). Every pod with two
+  requests running looked full, so 52% of that model's routing decisions found every pod
+  saturated and fell back to least-request, with no prefix awareness at all. Give the
+  router the value explicitly (for example a pod label or annotation rendered from the
+  same variable as the flag) rather than parsing the command line; when you must parse
+  it, strip comments and let the last occurrence win, as the argument parser does. Check
+  it against the `max_num_seqs` the engine prints in its startup arguments.
+- **A lifetime in-flight counter that drifts.** The router's own count of in-flight
+  requests per pod sat at 37 to 41 on one model while vLLM reported at most 8 running.
+  Every pod read as full, about 90% of decisions went to the "all saturated" fallback, and
+  the pod with the lowest count (a newly started one) took nearly all traffic, with 16
+  running and 20 or more waiting for hours while older pods idled. Restarting the gateway
+  reset the counts. Base the filter on scraped `num_requests_running` and
+  `num_requests_waiting`, plus a short-lived count of requests routed since the last
+  scrape, rather than a counter that only ever adds and subtracts.
+
+Log the router's decision type per request (prefix hit, filtered as full, all saturated)
+and alert when "all saturated" becomes a large share while the pods themselves report free
+slots.
+
+### One prefix index per gateway replica
+
+A prefix-aware router remembers which pod served which prefix, but each gateway replica
+keeps its own index unless they share state. A conversation whose second turn reaches a
+different gateway replica is routed as if new, often to a pod without its cache. On one
+long-prompt model, turn 1 went through one gateway replica and turn 2 through another, to
+a different pod, and the turn prefilled cold (75 s).
+
+To check, compare the pod chosen for consecutive turns of one conversation in the gateway
+logs before suspecting vLLM's cache. Fixes: share the index between gateway replicas, or
+route on a stable conversation key that every replica computes the same way (a session
+header, or a hash of the system prompt and first user message) with rendezvous hashing over
+the ready pods, and spill to another pod only when the home pod is full. In a replay of real
+agent traffic on one model this raised the cache hit rate from 0.44 to 0.79; on a test
+deployment, 0.52 to 0.80, with the same pod for 99% of turns (was 33%) and median TTFT 4.3
+to 3.4 s.
+
+**When capacity is the limit, routing does not help.** Two weeks later the same model ran
+at its replica ceiling with about half its pods at max-num-seqs. A canary of the anchored
+router kept only 31% of turns on their home pod (the rest spilled because home was full),
+and the hit rate was unchanged at about 0.5. Check occupancy first: if most pods are full,
+add capacity before tuning the router.
+
+### Cap runaway generations
+
+A client that sends no `max_tokens` (or a huge one) to a model whose generation config has
+no cap can generate until `--max-model-len`. On one model, prompts of about 1.1K tokens
+produced 18K to 130K tokens each; the longest ran 55 minutes. Each such request held up to
+64% of a pod's KV cache, made vLLM preempt the other requests on that pod (about 100
+preemptions in 30 minutes on one pod), and queued its users for 27 to 57 minutes.
+
+How it shows: KV use high while running requests are few, preemptions climbing on one pod,
+and a 99th percentile of generation tokens far above the median
+(`vllm:request_generation_tokens`).
+
+Cap it in the engine, per model:
+
+```bash
+--override-generation-config '{"max_new_tokens": 32768}'
+```
+
+In vLLM 0.26 this cap is applied as a hard minimum over the client's `max_tokens`: a
+request asking for 100000 tokens got 32768. After the cap rolled, running requests on that
+model fell from about 50 to 2 and its autoscaler went from 12 replicas to 4. Pick the cap
+from the longest legitimate outputs (reasoning models need more), and say it in the
+model's documentation, since clients see a `length` finish at the cap.
+
+## Bulk traffic
+
+Batch and bulk clients compete with interactive users in a way that a gateway queue does
+not show. A model's slots fill with long prompts, their prefill chunks interleave with
+every stream's decode, and everyone's tokens per second drop while nobody waits at the
+gateway. On one model, a single client sending about 100,000 requests a day of about 13K
+tokens each took the median speed of long replies from 20 to 30 tok/s down to about 7,
+and interactive chat on the same model to 6 to 10 tok/s.
+
+Admission ideas that apply to any gateway in front of vLLM:
+
+- **Cap the share of slots** (`pods x max-num-seqs`) that background work may hold, for
+  example half.
+- **Weight background requests by prompt size**: hold `max(1, ceil(prompt_tokens / 4096))`
+  slots per request, clamped to the background cap, so a 40K-token prompt counts as ten.
+  With 24 prompts of about 10K tokens sent as a batch against a cap of 12 slots, 4 ran at a
+  time instead of 12, the rest queued, all completed, and an interactive request sent
+  meanwhile answered in 0.4 s.
+- **Bulk traffic sent as interactive** (a script on a normal API key) bypasses both. Spot
+  it per key: request rate, prompt size and one-request sessions. Give such keys a
+  background class or a per-key concurrency limit.
+- Dashboards that count requests rather than weighted slots will show a queue of
+  background work next to "idle" capacity. That is the weighting working; label it.
+
 ## What least-request cannot see
 
 A least-request router counts only the requests **it** has in flight per pod.

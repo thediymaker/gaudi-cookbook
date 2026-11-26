@@ -68,6 +68,19 @@ Also worth alerting on, from other components: the gateway's count of upstream r
 the response started (cut streams, usually from missing drain), idle-timeout cuts, and any
 fatal-error gauge exported by custom HPU services.
 
+**Key saturation alerts on queue time, and group them by model.** An alert on "average
+waiting requests above 1" fired for about 28 hours a week on one model whose 95th
+percentile queue time was a few seconds; people learned to ignore it. Alert on the queue
+time percentile with a minimum request count (for example p95 above 10 s with at least 300
+requests in 30 minutes, held for an hour) instead.
+
+In Alertmanager, a per-model alert grouped only by `alertname` puts every model in one
+group. Each model that starts or stops firing re-sends the whole group, and the title names
+whichever model sorts first, so one long-firing model appears to re-alert every 10 to 30
+minutes. Group per-model alerts by `[alertname, model_name]`, set `keep_firing_for` (for
+example 30m) on rules that flap around their threshold, and repeat warnings daily rather
+than every few hours.
+
 ## Logs
 
 **Habana log volume.** With `ENABLE_CONSOLE=true` and `LOG_LEVEL_ALL=3`, the runtime prints

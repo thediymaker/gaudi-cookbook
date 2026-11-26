@@ -94,6 +94,107 @@ replay of a common shape) points at the graph memory pool. Raising
 `VLLM_GRAPH_RESERVED_MEM` gives graphs more room at the cost of KV cache; log
 `torch.hpu.memory_stats()` periodically to see the trend before changing it.
 
+## Crash forensics
+
+**The Python stack points at the wrong line.** Device work runs asynchronously: a graph is
+handed to a launch thread and the host carries on. When the launch fails, Python only
+learns of it at the next point where the host waits for the device, and the traceback names
+that line. In vLLM that is usually `sample_tokens`, `take_draft_token_ids` (speculative
+decoding), or any `.cpu()`, `.item()` or `.tolist()` in model code. On one model, deaths
+over a week pointed at three different stack sites, which looked like three bugs; the
+runtime logs showed one cause.
+
+**Keep the runtime logs past a restart.** The failing operation is named only in the files
+under `HABANA_LOGS` (for example `pytorch_log*.txt`). Set `HABANA_LOGS=/var/log/habana_logs`
+and mount a volume there:
+
+- an `emptyDir` survives the container restarts that liveness probes and engine deaths
+  cause, which is enough to read the logs of the last death with
+  `kubectl exec <pod> -- ls /var/log/habana_logs`;
+- a per-pod `hostPath` directory (`subPathExpr: $(POD_NAME)`, as in the template) also
+  survives deletion of the pod.
+
+Check that the launch script does not override `HABANA_LOGS`. At the default log level the
+bridge writes critical messages only, so add a periodic memory line of your own (below) to
+have allocator state before a death.
+
+**`PT_DEVMEM Allocation failed`, then "tensor_data is empty".** This pair is a device memory
+(HBM) allocation failure at graph launch, not a compile or model bug:
+
+```text
+PT_DEVMEM Allocation failed for size::12582912 (12)MB            # in HABANA_LOGS
+PT_BRIDGE Exception in Launch thread ...                         # in the container log
+PT_LAZY ValidateSyncInputTensors tensor_data is empty            # at the next host sync
+```
+
+The graph whose output memory could not be allocated never runs, so the next graph that
+reads its output finds an empty tensor. On one model, three deaths on different ranks and at
+pod ages from 18 to 47 hours all failed the same 12 MiB allocation under light load (2
+requests running, KV cache 24% used): HBM was short, not KV.
+
+**Workspace memory only grows.** The bridge keeps one workspace buffer sized for the
+largest graph (recipe) run so far. It never shrinks, so one very long prompt raises it for
+the life of the process. Walking prompt length from 16K to 125K tokens on one model took
+the workspace from 1.20 to 4.43 GiB per card; `PT_ENABLE_WORKSPACE_MEMORY_SHRINK=1` was read
+by the process but did not shrink it. Long prompts drive it: that model's deaths tracked
+its long-prompt volume, up to 57 restarts across about 20 pods on a day with 64,000
+requests above 20K tokens. What helped, in order of preference:
+
+1. **Make the largest single allocation smaller.** In lazy mode, a loop over chunks of a
+   tensor (head groups, query slices) can be fused into one graph whose workspace holds all
+   chunks at once. A `mark_step` after each chunk keeps them separate. On the model above
+   that cut the workspace from 4.13 to 1.25 GiB and the largest allocation from 4,222 to
+   1,020 MiB (measured as one card, a 4096-token chunk against 131K context), with
+   bit-identical results and no loss of speed.
+2. **Smaller prefill chunks** (`--max-num-batched-tokens` or
+   `--long-prefill-token-threshold` 2048 instead of 4096) halved the workspace (4.13 to
+   2.06 GiB) but raised warm TTFT by 19 to 49% on 62K to 125K-token prompts.
+3. **More headroom** (`VLLM_GRAPH_RESERVED_MEM`, a lower `--gpu-memory-utilization`)
+   costs KV cache on every pod, all the time.
+
+To see it coming, log `torch.hpu.memory_stats()` every few minutes from the worker
+(between steps, on the worker thread): bytes in use, peak, limit, the largest free chunk,
+and the number of defragmentation runs. Free memory of 2.5 GiB with a largest free chunk
+of 200 MiB is fragmentation; a workspace that has stepped up is the long-prompt ratchet.
+
+**Segfaults with only native frames.** When a worker dies on `SIGSEGV`, the Habana handler
+prints C++ frames only, and the engine core reports `RuntimeError: cancelled` because a
+worker vanished. Set `PYTHONFAULTHANDLER=1` in the pod environment so the next crash also
+prints the Python stack of every thread. One model whose TP workers segfaulted in
+`mark_step` about once per 5 million generated tokens showed only
+`habana_lazy::HbExecutionContext::MarkTensorExecuting` frames without it.
+
+## Profiling a stuck or slow engine
+
+- **Profile the worker, not the engine core.** With the multiprocess executor the engine
+  core sits at 100% CPU in a busy-wait on the shared-memory queue to its workers. That is
+  normal. The work happens in the worker processes; take rank 0 (process title
+  `VLLM::Worker_TP0`).
+- **Use repeated dumps.** `py-spy record` at 50 Hz or more falls behind on a busy worker
+  and drops samples. Take 20 to 30 `py-spy dump --nonblocking --pid <pid>` snapshots a
+  second apart and count where they land, or record at `-r 5`.
+- **Anchor `pgrep`.** `pgrep -f "VLLM::Worker_TP0"` also matches the shell running your
+  command; use `pgrep -f "^VLLM::Worker_TP0"`. Do not `pkill -f "py-spy record"` in the same
+  shell command that started it, for the same reason.
+- py-spy needs `SYS_PTRACE` in the target's PID namespace: run it on the node, or from an
+  ephemeral container (`kubectl debug -it <pod> --target=<container> --profile=sysadmin
+  --image=<image with py-spy>`).
+
+**Decode running uncaptured.** A model that decodes at 2 to 5 tok/s per stream at low load,
+with steps of about 700 ms, idle cards and one busy host thread, is replaying no HPU graph
+for that shape: the host records every operation of every step. In the dumps, the model
+runner's graph wrapper calls the original forward instead of replaying a graph. One cause is
+a capped graph cache: with `VLLM_HPU_MAX_GRAPHS` set and `VLLM_SKIP_WARMUP=true`, the first
+N shapes seen since the pod started (prefill shapes included) are kept forever, and decode
+shapes that appear later (more concurrent streams than before) never get a graph. Measured
+on one model with a cap of 64 after weeks of uptime: 6 of 10 pods at 675 to 923 ms per
+decode step, the other 4 at 79 to 83 ms, at the same load. Replacing the first-come cache
+with a least-recently-used one (the `hpu-graph-lru` fix) brought inter-token latency to 45
+to 55 ms on every pod (it had ranged from 60 to 563 ms). Without such a fix, do not cap the
+graph count on a model that skips warm-up. To find affected pods, compare each pod's
+inter-token latency with its siblings over an hour: a pod that is slow at the same load is
+the one to dump.
+
 ## Host memory fragmentation
 
 Symptom: a pod dies at start with `Device acquire failed`, and the node's kernel log shows
@@ -130,6 +231,7 @@ buckets:
 | Stale capacity | The Node advertises cards it no longer has | Removing a device plugin does not clear an extended resource; patch the Node status to zero it |
 | Leaked allocations | Pods in `Failed` or `Unknown` on the node with card requests | Delete them after confirming ownership; [`hpu-acquire-check.sh`](https://github.com/thediymaker/gaudi-cookbook/blob/main/kubernetes/tools/hpu-acquire-check.sh) lists them |
 | Degraded under concurrency | Single-process tests pass, multi-process acquire fails | `hpu-acquire-check.sh -n <node> -p 8`; rule out fragmentation first |
+| Some cards hang at the first collective | Every pod placed on the same cards of one node (for example cards 4 to 7) hangs at its first collective and restarts; pods on the other cards of that node, and on other nodes, are fine | Cordon the node, record the card slots and report a card or baseboard fault. One such node caused 119 restarts of one model in a day before it was cordoned |
 | Scale-out links dead but "up" | Multi-node replicas fail or hang; ports report link up with carrier | Ping every scale-out port to its peers on a timer; bounce only ports that reach no peer |
 
 A node that has lost one card is still useful: keep it in service on the remaining cards
