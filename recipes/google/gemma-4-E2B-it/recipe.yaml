@@ -3,7 +3,7 @@ meta:
   title: "Gemma 4 E2B IT"
   slug: "gemma-4-e2b-it"
   provider: "Google"
-  description: "Small Gemma 4 instruct model (2.3B effective, 20 KV-shared layers) with KV-sharing fast prefill, BF16, text only, native 128K context on one Gaudi 2 card."
+  description: "Small Gemma 4 instruct model (2.3B effective, 20 KV-shared layers) with KV-sharing fast prefill, BF16, text only, 128K, one Gaudi 2 card."
   date_added: 2026-10-24
   date_updated: 2026-11-26
   tasks:
@@ -91,7 +91,8 @@ gaudi:
     - "Tool reliability, 3 cases x 40 sampled: 120/120"
     - "Served first-token median 0.76-0.77 s with fast prefill, 1.00-1.01 s without (same card, 64 concurrent, warmed)"
     - "At 131,072 served: needles 12/12 at 32K, 64K, 100K and 126K tokens, 3 depths each"
-    - "At 131,072 served: tool call streamed and not, 6/6; JSON schema; top_logprobs=20 soak 200/200 clean; known-answer prompts 11/12 (one string reversal wrong)"
+    - "At 131,072 served: tool call streamed and not 6/6; JSON schema; top_logprobs=20 soak 200/200 clean"
+    - "At 131,072 served: known-answer prompts 11/12 (one string reversal wrong)"
   notes:
     - "The fast-prefill comparisons and the 120-call tool check ran at 32,768; the 131,072 run re-checked tools, logprobs, long-context recall and speed."
     - "Prompt batch cap (VLLM_PROMPT_BS_BUCKET_MAX) stays at the default 1: several prompts per prefill forward change the bf16 rounding of the prompt K/V."
