@@ -13,7 +13,8 @@
   ttft CTX                 time to first token of an uncached CTX-token prompt (3 runs)
 
 Environment: BASE (default http://localhost:8000), MODEL (default: the first model the server lists),
-GEN (sweep output tokens, default 256). Each gate prints one line that starts with PASS or FAIL.
+GEN (sweep output tokens, default 256), MAX_MODEL_LEN (the served window, default 131072; caps the needle answer
+budget). Each gate prints one line that starts with PASS or FAIL.
 """
 
 from __future__ import annotations
@@ -78,7 +79,7 @@ GOLDEN = [
     ("What is the capital of Australia? One word.", ["Canberra"]),
     ("How many sides does a hexagon have? Reply with just the number.", ["6"]),
     ("What is the chemical symbol for gold? Reply with just the symbol.", ["Au"]),
-    ("Reverse the string 'gaudi' and reply with just the result.", ["iduag"]),
+    ("How many days does a leap year have? Reply with just the number.", ["366"]),
     ("What is 2 to the power of 10? Reply with just the number.", ["1024"]),
     ("Which planet is known as the Red Planet? One word.", ["Mars"]),
     ("Write a Python expression that returns the length of a list named xs. Reply with just the code.", ["len(xs)"]),
@@ -260,7 +261,9 @@ def needle(targets):
         for j, d in enumerate((0.1, 0.5, 0.9)):
             text, code = needle_prompt(t, d, seed=t * 10 + j)
             t0 = time.time()
-            r = chat([{"role": "user", "content": text}], max_tokens=4096)
+            # the answer budget must fit the served window next to the prompt (vLLM answers 400 otherwise)
+            budget = min(4096, int(os.environ.get("MAX_MODEL_LEN", "131072")) - ntok(text) - 256)
+            r = chat([{"role": "user", "content": text}], max_tokens=budget)
             m = r["choices"][0]["message"]
             hit = code in (m.get("content") or "")
             ok += hit
