@@ -19,6 +19,7 @@ otherwise; none has been run on Gaudi 3.
 | [Qwen3-Coder-30B-A3B-Instruct](qwen3-coder-30b-a3b-instruct.md) | 1 | BF16 | v0.26.0 | tools | verified |
 | [Qwen3.5-27B-FP8](qwen3-5-27b-fp8.md) | 1 | FP8 | v0.26.0 | tools, reasoning, vision, 256K | verified |
 | [Qwen3.8-27B](qwen3-8-27b.md) | 1 | BF16 | v0.26.0 | tools, reasoning, vision, 256K | verified |
+| [Qwen3.8-27B-FP8](qwen3-8-27b-fp8.md) | 1 | FP8 | v0.26.0 | tools, reasoning, vision, 256K | verified |
 | [Qwen3.6-27B-FP8](qwen3-6-27b-fp8.md) | 1 | FP8 | v0.26.0 | tools, reasoning, vision, 256K | verified |
 | [Qwen3.6-35B-A3B-FP8](qwen3-6-35b-a3b-fp8.md) | 1 | FP8 | v0.26.0 | tools, reasoning, vision, 256K | verified |
 | [Qwen3-Embedding-8B](qwen3-embedding-8b.md) | 1 | BF16 | v0.26.0 | embeddings, Matryoshka | verified, no fixes |

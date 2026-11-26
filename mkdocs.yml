@@ -57,6 +57,7 @@ nav:
       - Qwen3-Coder-30B-A3B-Instruct: recipes/qwen3-coder-30b-a3b-instruct.md
       - Qwen3.5-27B-FP8: recipes/qwen3-5-27b-fp8.md
       - Qwen3.8-27B: recipes/qwen3-8-27b.md
+      - Qwen3.8-27B-FP8: recipes/qwen3-8-27b-fp8.md
       - Qwen3.6-27B-FP8: recipes/qwen3-6-27b-fp8.md
       - Qwen3.6-35B-A3B-FP8: recipes/qwen3-6-35b-a3b-fp8.md
       - Qwen3-Embedding-8B: recipes/qwen3-embedding-8b.md
