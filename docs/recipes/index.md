@@ -29,7 +29,7 @@ otherwise; none has been run on Gaudi 3.
 | [Qwen-AgentWorld-35B-A3B](qwen-agentworld-35b-a3b.md) | 2 (TP 2) | BF16 | v0.26.0 | tools, reasoning, 256K | verified |
 | [Ornith-1.0-35B](ornith-1-0-35b.md) | 2 (TP 2) | BF16 | v0.26.0 | tools, reasoning, vision, 256K | verified |
 | [Qwen3-VL-32B-Instruct-FP8](qwen3-vl-32b-instruct-fp8.md) | 2 (TP 2) | FP8 | releases/v0.30.0 | tools, vision | verified |
-| [GLM-4.5V-FP8](glm-4-5v-fp8.md) | 2 (TP 2) | FP8 | releases/v0.30.0 | tools, reasoning, vision | verified |
+| [GLM-4.5V-FP8](glm-4-5v-fp8.md) | 2 (TP 2) | FP8 | releases/v0.30.0 | tools, reasoning, vision, 64K | verified |
 | [Muse Glimmer 30B](muse-glimmer-30b.md) | 2 (TP 2) | BF16 | releases/v0.30.0 | tools, reasoning, vision | verified, port |
 | [Qwen3-235B-A22B-Instruct-2507-FP8](qwen3-235b-a22b-2507-fp8.md) | 4 (TP 4) | FP8 | v0.26.0 | tools | verified |
 | [Qwen3-235B-A22B-Thinking-2507-FP8](qwen3-235b-a22b-2507-fp8.md) | 4 (TP 4) | FP8 | v0.26.0 | tools, reasoning | verified |
