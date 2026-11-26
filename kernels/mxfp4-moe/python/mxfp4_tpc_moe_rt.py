@@ -19,6 +19,17 @@ Prefill and any call with more tokens keep the stock ``bias_mxfp4_fused_weights`
 copied; only the biases are re-laid out once at load time (f32, about 0.8 MB per layer and rank for gpt-oss-120b at
 32 local experts).
 
+With ``MXFP4_TPC_MOE_V10=1`` as well (and a v10 build, the default of ``build.sh``), the same calls run the v10
+kernels instead, with the same output bit for bit:
+
+    x (natural order, no pad, no permute)
+      -> mxk_w13xibn (w13 GEMV + bias + SwiGLU-OAI, packed reduction tree carried into the next pass)
+      -> mxk_w2gn    (w2 GEMV per route, fp32 rows, carried reduction tree)
+      -> mxk_w2cb    (bias + routing-weight sum per token, bf16 out)
+
+The v10 path is chosen once per process (a process never mixes the v8 and v10 ops). A library without the v10 ops,
+or a layer outside their limits (1024 < I <= 3072), keeps the v8 kernels and says so once. Rollback: unset it.
+
 Anything unexpected keeps the stock op: libraries missing, a layer without biases, other dtypes or shapes, an
 exception while preparing a layer. Each of these is logged once.
 
@@ -26,6 +37,7 @@ Environment:
     MXFP4_TPC_MOE=1                 turn the kernels on (default 0)
     MXFP4_TPC_MOE_MAX_TOKENS=N      per-call token cap, at most 32 (default 32)
     MXFP4_TPC_MOE_LIB=DIR           directory with libmxk_tpc.so and libmxk_op_lazy.so (default /opt/mxfp4-moe/lib)
+    MXFP4_TPC_MOE_V10=1             the v10 decode kernels (default 0; needs MXFP4_TPC_MOE=1)
 """
 
 import os
@@ -37,6 +49,9 @@ STOCK = "/usr/lib/habanalabs/libtpc_kernels.so"
 TPC_LIB = "libmxk_tpc.so"
 OP_LIB = "libmxk_op_lazy.so"
 LOG_TAG = "[mxfp4-tpc-moe]"
+V10 = os.environ.get("MXFP4_TPC_MOE_V10", "0") == "1"
+V10_OPS = ("mxk_w13xibn", "mxk_w2gn", "mxk_w2cb")
+V10_GMAX = 2  # routes of one expert unpacked together by mxk_w2gn
 _installed = False
 
 
@@ -107,6 +122,24 @@ def moe_decode(x, ids, tw, w13, s13, b13k, w2, s2, b2k, topk, e_min, alpha, limi
     idf = ids.reshape(-1)
     ap = torch.ops.custom_op.mxk_w13xib(xp, idf, w13, s13, b13k, topk, e_min, float(alpha), float(limit), 1.0, 1.0)
     return torch.ops.custom_op.mxk_w2xb(ap, idf, tw.reshape(-1), w2, s2, b2k, topk, e_min)
+
+
+def moe_decode_v10(x, ids, tw, w13, s13, b13k, w2, s2, b2k, topk, e_min, alpha, limit):
+    """:func:`moe_decode` on the v10 kernels, same arguments and the same output bit for bit. x stays in natural
+    order and unpadded; ids / tw [T, topk]."""
+    import torch
+
+    co = torch.ops.custom_op
+    tokens = x.shape[0]
+    ids2, tw2 = ids.reshape(tokens, topk), tw.reshape(tokens, topk)
+    ap = co.mxk_w13xibn(x, ids2.reshape(-1), w13, s13, b13k, topk, e_min, float(alpha), float(limit), 1.0, 1.0)
+    part = co.mxk_w2gn(ap, ids2, w2, s2, e_min, V10_GMAX)
+    return co.mxk_w2cb(part, ids2, tw2, b2k, e_min, w2.shape[0])
+
+
+def v10_supported(inter):
+    """mxk_w2gn serves nch 4 / 6 only: 1024 < I <= 3072."""
+    return 1024 < inter <= 3072
 
 
 def supported(e, k, inter, topk, tokens):
@@ -235,6 +268,9 @@ def install():
         log.warning("MXFP4 TPC MoE NOT installed (stock MoE op kept): %s has no mxk_w13xib / mxk_w2xb", OP_LIB)
         return
     ver = lib_version(os.path.join(LIB_DIR, TPC_LIB))
+    v10 = V10 and all(hasattr(torch.ops.custom_op, n) for n in V10_OPS)
+    if V10 and not v10:
+        log.warning("MXFP4_TPC_MOE_V10=1 but %s has no %s: v8 decode kernels kept", OP_LIB, " / ".join(V10_OPS))
 
     method_cls = hpu_mxfp4.HPUGptOssMxfp4MoEMethod
     orig_pwal = method_cls.process_weights_after_loading
@@ -247,6 +283,7 @@ def install():
         except Exception as e:  # any surprise keeps the stock op for this layer
             mx, why = None, f"{type(e).__name__}: {e}"
         op._mxk = mx
+        op._mxk_v10 = v10 and mx is not None and v10_supported(mx[8])
         if not getattr(method_cls, "_mxk_logged", False):
             method_cls._mxk_logged = True
             if mx is not None:
@@ -282,16 +319,18 @@ def install():
                 tw = router_weights
                 if tw.dtype != torch.bfloat16:
                     tw = tw.to(torch.bfloat16)
-                return moe_decode(
+                decode = moe_decode_v10 if getattr(self, "_mxk_v10", False) else moe_decode
+                return decode(
                     hidden_states, ids, tw, w13, s13, b13k, w2, s2, b2k, topk, self.experts_min, self.alpha, self.limit
                 )
         return orig_fwd(self, hidden_states, expert_routing_table, router_weights, permuted_weights, activation)
 
     op_cls.forward = forward
     log.info(
-        "MXFP4 TPC MoE installed: %s, <= %d tokens, GC_KERNEL_PATH=%s MXK_TPC_FWD_LIB=%s "
+        "MXFP4 TPC MoE installed: %s, decode %s, <= %d tokens, GC_KERNEL_PATH=%s MXK_TPC_FWD_LIB=%s "
         "PT_HPU_LAZY_ACC_PAR_MODE=%s PT_HPU_RECIPE_CACHE_CONFIG=%s",
         ver,
+        "v10 (mxk_w13xibn + mxk_w2gn + mxk_w2cb)" if v10 else "v8 (mxk_w13xib + mxk_w2xb)",
         MAX_TOKENS,
         os.environ.get("GC_KERNEL_PATH"),
         os.environ.get("MXK_TPC_FWD_LIB"),

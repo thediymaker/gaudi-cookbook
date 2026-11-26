@@ -18,6 +18,20 @@
 //              beta, ascale) -> ap bf16 [Q, Ip]                                        (gpt-oss, bias13 layout)
 //   mxk_w2xb  (ap, ids, tw, w, s, b [E, 2, K/2] f32, topk, e_min) -> bf16 [Q/topk, K]  (gpt-oss, bias2 layout)
 //   mxk_deq   (w [E, N, K/2] or [N, K/2] u8, s [.., N, K/32] u8, rowperm=0) -> bf16 [.., N, K]
+// v10 ops (the glm, kimi, dsv41 and gptoss builds):
+//   mxk_w13xn (x [T, K] bf16 in NATURAL order, then as mxk_w13x; interleaved=False) -> ap bf16 [Q, Ip]   (glm)
+//   mxk_w13xk (as mxk_w13x, permuted x, K up to 7168; interleaved=False)            -> ap bf16 [Q, Ip]   (kimi)
+//   mxk_w13xin (x in NATURAL order, then as mxk_w13x; interleaved=True)             -> ap bf16 [Q, Ip]   (dsv41)
+//   mxk_w13xibn (x [T, K] in NATURAL order, unpadded, then as mxk_w13xib)           -> ap bf16 [Q, Ip]   (gptoss)
+//   mxk_w2gn  (as mxk_w2gp, nch 4 / 6)                                              -> part f32 [Q, K]
+//   mxk_w2cb  (part, ids [T, topk], tw [T, topk], b [E, 2, K/2] f32, e_min, e_local) -> bf16 [T, K]       (gptoss)
+//   mxk_w2xc  (as mxk_w2x)                                                           -> bf16 [Q/topk, K]
+//   mxk_w2gp  (ap, ids [T, topk] i32, w, s, e_min, gmax)                             -> part f32 [Q, K]
+//   mxk_w2c   (part, ids [T, topk] i32, tw [T, topk] bf16, e_min, e_local)           -> bf16 [T, K]
+//   mxk_w2gp / mxk_w2gn + mxk_w2c give mxk_w2x's output bit for bit, mxk_w2gn + mxk_w2cb mxk_w2xb's; each v10 w13 op
+//   gives its v8 twin's (mxk_w13x / mxk_w13xi / mxk_w13xib), mxk_w2xc mxk_w2x's. The v10 w13 ops can have their
+//   v8 twin's input signature (mxk_w2xc has mxk_w2x's): a process calls the v10 ops or the v8 ops for a given
+//   weight shape, never both (see the lazy-mode note below).
 //
 // Lazy-mode legacy custom ops are cached by input signature, not by GUID: a second op with the same input shapes in
 // one process returns the first op's result. Within each variant the ops differ in tensor count or shapes, and each
@@ -185,6 +199,131 @@ at::Tensor deq(const at::Tensor& w, const at::Tensor& s, int64_t rowperm) {
     return run("custom_op::mxk_deq", {w, s, rowperm});
 }
 #endif
+#if defined(MXK_HAS_mxk_w13xn) || defined(MXK_HAS_mxk_w13xk) || defined(MXK_HAS_mxk_w13xin)
+// one GUID per op, mxk_w13x's schema; each kernel is built for one row layout (IL)
+#define MXK_W13_V10(FN, GUID, IL)                                                                                \
+    at::Tensor FN(const at::Tensor& x, const at::Tensor& ids, const at::Tensor& w, const at::Tensor& s, int64_t topk, \
+                  int64_t e_min, double alpha, double limit, double beta, double ascale, bool interleaved) {    \
+        TORCH_CHECK(interleaved == IL, GUID ": built for interleaved=" #IL " only");                            \
+        static std::once_flag f;                                                                                \
+        std::call_once(f, []() {                                                                                \
+            auto desc = inputs(4, 7);                                                                           \
+            auto outs = w13Out();                                                                               \
+            auto pf = W13_PARAMS(4);                                                                            \
+            REGISTER_CUSTOM_OP_ATTRIBUTES("custom_op::" GUID, GUID, desc, outs, pf);                           \
+        });                                                                                                     \
+        return run("custom_op::" GUID, {x, ids, w, s, topk, e_min, alpha, limit, beta, ascale, interleaved});   \
+    }
+#endif
+#ifdef MXK_HAS_mxk_w13xn
+MXK_W13_V10(w13xn, "mxk_w13xn", false)
+#endif
+#ifdef MXK_HAS_mxk_w13xk
+MXK_W13_V10(w13xk, "mxk_w13xk", false)
+#endif
+#ifdef MXK_HAS_mxk_w13xin
+MXK_W13_V10(w13xin, "mxk_w13xin", true)
+#endif
+
+#ifdef MXK_HAS_mxk_w13xibn
+at::Tensor w13xibn(const at::Tensor& x, const at::Tensor& ids, const at::Tensor& w, const at::Tensor& s,
+                   const at::Tensor& b, int64_t topk, int64_t e_min, double alpha, double limit, double beta,
+                   double ascale) {
+    static std::once_flag f;
+    std::call_once(f, []() {
+        auto desc = inputs(5, 6);
+        auto outs = w13Out();
+        auto pf = W13_PARAMS(5);
+        REGISTER_CUSTOM_OP_ATTRIBUTES("custom_op::mxk_w13xibn", "mxk_w13xibn", desc, outs, pf);
+    });
+    return run("custom_op::mxk_w13xibn", {x, ids, w, s, b, topk, e_min, alpha, limit, beta, ascale});
+}
+#endif
+
+#ifdef MXK_HAS_mxk_w2xc
+at::Tensor w2xc(const at::Tensor& ap, const at::Tensor& ids, const at::Tensor& tw, const at::Tensor& w,
+                const at::Tensor& s, int64_t topk, int64_t e_min) {
+    static std::once_flag f;
+    std::call_once(f, []() {
+        std::vector<OutputDesc> out{OutputDesc{0, c10::ScalarType::BFloat16, [](const at::Stack& st) {
+            return std::vector<int64_t>{st[1].toTensor().size(0) / st[5].toInt(), st[3].toTensor().size(1)}; }}};
+        auto desc = inputs(5, 2);
+        auto pf = W2_PARAMS(5);
+        REGISTER_CUSTOM_OP_ATTRIBUTES("custom_op::mxk_w2xc", "mxk_w2xc", desc, out, pf);
+    });
+    return run("custom_op::mxk_w2xc", {ap, ids, tw, w, s, topk, e_min});
+}
+#endif
+
+#if defined(MXK_HAS_mxk_w2gp) || defined(MXK_HAS_mxk_w2gn)
+struct GroupParams { int32_t e_min; int32_t gmax; };
+#define MXK_W2G(FN, GUID)                                                                                        \
+    at::Tensor FN(const at::Tensor& ap, const at::Tensor& ids, const at::Tensor& w, const at::Tensor& s,         \
+                  int64_t e_min, int64_t gmax) {                                                                \
+        TORCH_CHECK(ids.dim() == 2, GUID ": ids must be [T, topk]");                                            \
+        static std::once_flag f;                                                                                \
+        std::call_once(f, []() {                                                                                \
+            std::vector<OutputDesc> out{OutputDesc{0, c10::ScalarType::Float, [](const at::Stack& st) {         \
+                return std::vector<int64_t>{st[0].toTensor().size(0), st[2].toTensor().size(1)}; }}};           \
+            auto pf = [](const at::Stack& st, size_t& size) {                                                   \
+                HPU_PARAMS_STUB(GroupParams);                                                                   \
+                *params = GroupParams{(int32_t)st[4].toInt(), (int32_t)st[5].toInt()};                          \
+                return params;                                                                                  \
+            };                                                                                                  \
+            auto desc = inputs(4, 2);                                                                           \
+            REGISTER_CUSTOM_OP_ATTRIBUTES("custom_op::" GUID, GUID, desc, out, pf);                            \
+        });                                                                                                     \
+        return run("custom_op::" GUID, {ap, ids, w, s, e_min, gmax});                                          \
+    }
+#endif
+#ifdef MXK_HAS_mxk_w2gp
+MXK_W2G(w2gp, "mxk_w2gp")
+#endif
+#ifdef MXK_HAS_mxk_w2gn
+MXK_W2G(w2gn, "mxk_w2gn")
+#endif
+
+#if defined(MXK_HAS_mxk_w2c) || defined(MXK_HAS_mxk_w2cb)
+struct CombineParams { int32_t e_min; int32_t e_local; };
+#endif
+#ifdef MXK_HAS_mxk_w2c
+at::Tensor w2c(const at::Tensor& part, const at::Tensor& ids, const at::Tensor& tw, int64_t e_min, int64_t e_local) {
+    TORCH_CHECK(ids.dim() == 2 && tw.dim() == 2, "mxk_w2c: ids and tw must be [T, topk]");
+    static std::once_flag f;
+    std::call_once(f, []() {
+        std::vector<OutputDesc> out{OutputDesc{0, c10::ScalarType::BFloat16, [](const at::Stack& st) {
+            return std::vector<int64_t>{st[1].toTensor().size(0), st[0].toTensor().size(1)}; }}};
+        auto pf = [](const at::Stack& st, size_t& size) {
+            HPU_PARAMS_STUB(CombineParams);
+            *params = CombineParams{(int32_t)st[3].toInt(), (int32_t)st[4].toInt()};
+            return params;
+        };
+        auto desc = inputs(3, 2);
+        REGISTER_CUSTOM_OP_ATTRIBUTES("custom_op::mxk_w2c", "mxk_w2c", desc, out, pf);
+    });
+    return run("custom_op::mxk_w2c", {part, ids, tw, e_min, e_local});
+}
+#endif
+
+#ifdef MXK_HAS_mxk_w2cb
+at::Tensor w2cb(const at::Tensor& part, const at::Tensor& ids, const at::Tensor& tw, const at::Tensor& b, int64_t e_min,
+                int64_t e_local) {
+    TORCH_CHECK(ids.dim() == 2 && tw.dim() == 2, "mxk_w2cb: ids and tw must be [T, topk]");
+    static std::once_flag f;
+    std::call_once(f, []() {
+        std::vector<OutputDesc> out{OutputDesc{0, c10::ScalarType::BFloat16, [](const at::Stack& st) {
+            return std::vector<int64_t>{st[1].toTensor().size(0), st[0].toTensor().size(1)}; }}};
+        auto pf = [](const at::Stack& st, size_t& size) {
+            HPU_PARAMS_STUB(CombineParams);
+            *params = CombineParams{(int32_t)st[4].toInt(), (int32_t)st[5].toInt()};
+            return params;
+        };
+        auto desc = inputs(4, 2);
+        REGISTER_CUSTOM_OP_ATTRIBUTES("custom_op::mxk_w2cb", "mxk_w2cb", desc, out, pf);
+    });
+    return run("custom_op::mxk_w2cb", {part, ids, tw, b, e_min, e_local});
+}
+#endif
 }  // namespace
 
 TORCH_LIBRARY_FRAGMENT(custom_op, m) {
@@ -218,6 +357,37 @@ TORCH_LIBRARY_FRAGMENT(custom_op, m) {
 #ifdef MXK_HAS_mxk_deq
     m.def("mxk_deq(Tensor w, Tensor s, int rowperm) -> Tensor");
 #endif
+#ifdef MXK_HAS_mxk_w13xn
+    m.def("mxk_w13xn(Tensor x, Tensor ids, Tensor w, Tensor s, int topk, int e_min, float alpha, float limit, "
+          "float beta, float ascale, bool interleaved) -> Tensor");
+#endif
+#ifdef MXK_HAS_mxk_w13xk
+    m.def("mxk_w13xk(Tensor xp, Tensor ids, Tensor w, Tensor s, int topk, int e_min, float alpha, float limit, "
+          "float beta, float ascale, bool interleaved) -> Tensor");
+#endif
+#ifdef MXK_HAS_mxk_w2xc
+    m.def("mxk_w2xc(Tensor ap, Tensor ids, Tensor tw, Tensor w, Tensor s, int topk, int e_min) -> Tensor");
+#endif
+#ifdef MXK_HAS_mxk_w2gp
+    m.def("mxk_w2gp(Tensor ap, Tensor ids, Tensor w, Tensor s, int e_min, int gmax) -> Tensor");
+#endif
+#ifdef MXK_HAS_mxk_w2c
+    m.def("mxk_w2c(Tensor part, Tensor ids, Tensor tw, int e_min, int e_local) -> Tensor");
+#endif
+#ifdef MXK_HAS_mxk_w13xin
+    m.def("mxk_w13xin(Tensor x, Tensor ids, Tensor w, Tensor s, int topk, int e_min, float alpha, float limit, "
+          "float beta, float ascale, bool interleaved) -> Tensor");
+#endif
+#ifdef MXK_HAS_mxk_w13xibn
+    m.def("mxk_w13xibn(Tensor x, Tensor ids, Tensor w, Tensor s, Tensor b, int topk, int e_min, float alpha, "
+          "float limit, float beta, float ascale) -> Tensor");
+#endif
+#ifdef MXK_HAS_mxk_w2gn
+    m.def("mxk_w2gn(Tensor ap, Tensor ids, Tensor w, Tensor s, int e_min, int gmax) -> Tensor");
+#endif
+#ifdef MXK_HAS_mxk_w2cb
+    m.def("mxk_w2cb(Tensor part, Tensor ids, Tensor tw, Tensor b, int e_min, int e_local) -> Tensor");
+#endif
 }
 
 TORCH_LIBRARY_IMPL(custom_op, HPU, m) {
@@ -238,5 +408,32 @@ TORCH_LIBRARY_IMPL(custom_op, HPU, m) {
 #endif
 #ifdef MXK_HAS_mxk_deq
     m.impl("mxk_deq", deq);
+#endif
+#ifdef MXK_HAS_mxk_w13xn
+    m.impl("mxk_w13xn", w13xn);
+#endif
+#ifdef MXK_HAS_mxk_w13xk
+    m.impl("mxk_w13xk", w13xk);
+#endif
+#ifdef MXK_HAS_mxk_w2xc
+    m.impl("mxk_w2xc", w2xc);
+#endif
+#ifdef MXK_HAS_mxk_w2gp
+    m.impl("mxk_w2gp", w2gp);
+#endif
+#ifdef MXK_HAS_mxk_w2c
+    m.impl("mxk_w2c", w2c);
+#endif
+#ifdef MXK_HAS_mxk_w13xin
+    m.impl("mxk_w13xin", w13xin);
+#endif
+#ifdef MXK_HAS_mxk_w13xibn
+    m.impl("mxk_w13xibn", w13xibn);
+#endif
+#ifdef MXK_HAS_mxk_w2gn
+    m.impl("mxk_w2gn", w2gn);
+#endif
+#ifdef MXK_HAS_mxk_w2cb
+    m.impl("mxk_w2cb", w2cb);
 #endif
 }

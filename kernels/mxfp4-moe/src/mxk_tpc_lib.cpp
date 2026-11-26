@@ -137,7 +137,8 @@ static void w2Scalars(HabanaKernelInstantiation* out, uint64_t I, const MoeParam
 // ------------------------------------------------------------------------------------------------ kernel families
 // Size limits common to all MoE kernels: Q <= 128 routes, E <= 128 local experts, Q a multiple of topk.
 
-#if defined(MXK_HAS_mxk_w13x) || defined(MXK_HAS_mxk_w13xi) || defined(MXK_HAS_mxk_w13xt)
+#if defined(MXK_HAS_mxk_w13x) || defined(MXK_HAS_mxk_w13xi) || defined(MXK_HAS_mxk_w13xt) || defined(MXK_HAS_mxk_w13xk) || \
+    defined(MXK_HAS_mxk_w13xin)
 // mxk_w13x (il 0) / mxk_w13xi (il 1): K % 512 == 0 and K <= kmax: 6144 (the route's x row is staged in 12 KB of
 // vector local memory), 8192 for mxk_w13xt (chunks past 6144 are read from the tensor); I % 512 == 0 for
 // [gate; up] rows, I % 256 == 0 interleaved (the padding rows are written as zeros); I <= 3072 (at most 1536 row
@@ -193,11 +194,12 @@ static GlueCodeReturn instW2(HabanaKernelParams* in, HabanaKernelInstantiation* 
 }
 #endif
 
-#ifdef MXK_HAS_mxk_w13xib
+#if defined(MXK_HAS_mxk_w13xib) || defined(MXK_HAS_mxk_w13xibn)
 // mxk_w13xib (gpt-oss): K <= 3072 and I <= 3072 (x row staged in 6 chunks of VLM), K % 32 == 0 (whole scale
 // groups), I % 32 == 0 (also makes the interleaved row pairs all-real or all-padding), T = Q / topk <= 32.
-static GlueCodeReturn instW13xib(HabanaKernelParams* in, HabanaKernelInstantiation* out, unsigned char* b,
-                                 unsigned char* e) {
+// x is [T, Kp] zero-padded and permuted; for mxk_w13xibn (natural 1) it is [T, K] in natural order.
+static GlueCodeReturn instW13xib(HabanaKernelParams* in, HabanaKernelInstantiation* out, int natural,
+                                 unsigned char* b, unsigned char* e) {
     if (in->inputTensorNr != 5) { in->inputTensorNr = 5; return GLUE_INCOMPATIBLE_INPUT_COUNT; }
     if (in->outputTensorNr != 1) { in->outputTensorNr = 1; return GLUE_INCOMPATIBLE_OUTPUT_COUNT; }
     static const TensorDataType ti[5] = {DATA_BF16, DATA_I32, DATA_U8, DATA_U8, DATA_F32};
@@ -215,7 +217,7 @@ static GlueCodeReturn instW13xib(HabanaKernelParams* in, HabanaKernelInstantiati
     if (ss[0] != K / 32 || ss[1] != 2 * I || ss[2] != E || bs[0] != Ip / 2 || bs[1] != 4 || bs[2] != E)
         return GLUE_INCOMPATIBLE_INPUT_SIZE;
     if (in->outputTensors[0].geometry.maxSizes[0] != Ip || in->outputTensors[0].geometry.maxSizes[1] != Q ||
-        in->inputTensors[0].geometry.maxSizes[0] != Kp)
+        in->inputTensors[0].geometry.maxSizes[0] != (natural ? K : Kp))
         return GLUE_INCOMPATIBLE_INPUT_SIZE;
     uint32_t npts = tpcPoints(in, Ip / 2);
     setIndexSpace(in, out, npts);
@@ -281,6 +283,98 @@ static GlueCodeReturn instDeq(HabanaKernelParams* in, HabanaKernelInstantiation*
 }
 #endif
 
+#if defined(MXK_HAS_mxk_w2gp) || defined(MXK_HAS_mxk_w2gn) || defined(MXK_HAS_mxk_w2c) || defined(MXK_HAS_mxk_w2cb)
+// v10 w2 in two kernels (grouped routes):
+//   mxk_w2gp: in ap bf16 [Q, Ip], ids i32 [T, topk], w u8 [E, K, I/2], s u8 [E, K, I/32]; out part f32 [Q, K], the
+//             fp32 w2 row sums of every local route; params {int e_min; int gmax;} (gmax 1..4 caps the routes of
+//             one expert unpacked together)
+//   mxk_w2gn: mxk_w2gp's contract at nch 4 / 6 (1024 < I <= 3072, I % 32 == 0)
+//   mxk_w2c : in part f32 [Q, K], ids i32 [T, topk], tw bf16 [T, topk]; out bf16 [T, K], the routing-weighted sum
+//             per token in mxk_w2x's order; params {int e_min; int e_local;}
+//   mxk_w2cb: mxk_w2c plus b f32 [E, 2, K/2] (the mxk_w2xb bias layout): mxk_w2xb's output
+// Together they give mxk_w2x's output bit for bit. Limits: Q = T * topk <= 512 (route lists in scalar local
+// memory), topk <= 16, E <= 128; mxk_w2gp I % 256 == 0, I <= 3072, K % 4 == 0.
+struct MoeGroupParams { int32_t e_min; int32_t gmax; };
+struct MoeCombineParams { int32_t e_min; int32_t e_local; };
+
+static bool groupedRoutesOk(const HabanaKernelParams* in, unsigned ids_at, uint64_t Q) {
+    const uint64_t* is = in->inputTensors[ids_at].geometry.maxSizes;
+    const uint64_t topk = is[0], T = is[1];
+    return topk >= 1 && topk <= 16 && T >= 1 && T * topk == Q && Q <= 512;
+}
+#endif
+
+#if defined(MXK_HAS_mxk_w2gp) || defined(MXK_HAS_mxk_w2gn)
+// imod: the multiple of 256 (mxk_w2gp, mxk_w2g) or of 32 (mxk_w2gn) that I must be
+static GlueCodeReturn instW2g(HabanaKernelParams* in, HabanaKernelInstantiation* out, uint64_t imod, unsigned char* b,
+                              unsigned char* e) {
+    if (in->inputTensorNr != 4) { in->inputTensorNr = 4; return GLUE_INCOMPATIBLE_INPUT_COUNT; }
+    if (in->outputTensorNr != 1) { in->outputTensorNr = 1; return GLUE_INCOMPATIBLE_OUTPUT_COUNT; }
+    static const TensorDataType ti[4] = {DATA_BF16, DATA_I32, DATA_U8, DATA_U8};
+    static const TensorDataType to[1] = {DATA_F32};
+    if (!checkTypes(in, ti, to)) return GLUE_INCOMPATIBLE_DATA_TYPE;
+    const uint64_t* ws = in->inputTensors[2].geometry.maxSizes;
+    const uint64_t* ss = in->inputTensors[3].geometry.maxSizes;
+    uint64_t I = ws[0] * 2, K = ws[1], E = ws[2];
+    const uint64_t* os = in->outputTensors[0].geometry.maxSizes;
+    uint64_t Q = os[1];
+    MoeGroupParams prm{0, 4};
+    if (in->nodeParams.nodeParams && in->nodeParams.nodeParamsSize >= sizeof(MoeGroupParams))
+        memcpy(&prm, in->nodeParams.nodeParams, sizeof(MoeGroupParams));
+    if (!groupedRoutesOk(in, 1, Q) || E == 0 || E > 128 || K % 4 || I % imod || I > 3072) return GLUE_INCOMPATIBLE_INPUT_SIZE;
+    if (ss[0] != I / 32 || ss[1] != K || ss[2] != E) return GLUE_INCOMPATIBLE_INPUT_SIZE;
+    if (prm.gmax < 1 || prm.gmax > 4) return GLUE_INCOMPATIBLE_INPUT_SIZE;
+    const uint64_t* as = in->inputTensors[0].geometry.maxSizes;
+    if (as[0] != (I + 511) / 512 * 512 || as[1] != Q || os[0] != K) return GLUE_INCOMPATIBLE_INPUT_SIZE;
+    uint32_t npts = tpcPoints(in, K / 4);
+    setIndexSpace(in, out, npts);
+    out->kernel.scalarParams[0] = (uint32_t)I;
+    out->kernel.scalarParams[1] = (uint32_t)prm.e_min;
+    out->kernel.scalarParams[2] = npts;
+    out->kernel.scalarParams[3] = (uint32_t)prm.gmax;
+    out->kernel.paramsNr = 4;
+    return copyElf(out, b, e);
+}
+#endif
+
+#if defined(MXK_HAS_mxk_w2c) || defined(MXK_HAS_mxk_w2cb)
+// bias 0: mxk_w2c (3 inputs); 1: mxk_w2cb (a 4th input, the bias f32 [E, 2, K/2])
+static GlueCodeReturn instW2c(HabanaKernelParams* in, HabanaKernelInstantiation* out, int bias, unsigned char* b,
+                              unsigned char* e) {
+    const unsigned nin = bias ? 4 : 3;
+    if (in->inputTensorNr != nin) { in->inputTensorNr = nin; return GLUE_INCOMPATIBLE_INPUT_COUNT; }
+    if (in->outputTensorNr != 1) { in->outputTensorNr = 1; return GLUE_INCOMPATIBLE_OUTPUT_COUNT; }
+    static const TensorDataType ti[4] = {DATA_F32, DATA_I32, DATA_BF16, DATA_F32};
+    static const TensorDataType to[1] = {DATA_BF16};
+    if (!checkTypes(in, ti, to)) return GLUE_INCOMPATIBLE_DATA_TYPE;
+    const uint64_t* ps = in->inputTensors[0].geometry.maxSizes;
+    const uint64_t* is = in->inputTensors[1].geometry.maxSizes;
+    const uint64_t* ts = in->inputTensors[2].geometry.maxSizes;
+    const uint64_t* os = in->outputTensors[0].geometry.maxSizes;
+    uint64_t K = ps[0], Q = ps[1];
+    MoeCombineParams prm{0, 0};
+    if (in->nodeParams.nodeParams && in->nodeParams.nodeParamsSize >= sizeof(MoeCombineParams))
+        memcpy(&prm, in->nodeParams.nodeParams, sizeof(MoeCombineParams));
+    if (!groupedRoutesOk(in, 1, Q) || K % 4 || ts[0] != is[0] || ts[1] != is[1] || os[0] != K || os[1] != is[1])
+        return GLUE_INCOMPATIBLE_INPUT_SIZE;
+    if (prm.e_local < 1 || prm.e_local > 128) return GLUE_INCOMPATIBLE_INPUT_SIZE;
+    if (bias) {
+        const uint64_t* bs = in->inputTensors[3].geometry.maxSizes;
+        if (bs[0] != K / 2 || bs[1] != 2 || bs[2] < (uint64_t)prm.e_local) return GLUE_INCOMPATIBLE_INPUT_SIZE;
+    }
+    uint32_t npts = tpcPoints(in, K / 4);  // the same blocks as mxk_w2gp
+    setIndexSpace(in, out, npts);
+    out->kernel.scalarParams[0] = (uint32_t)prm.e_min;
+    out->kernel.scalarParams[1] = (uint32_t)prm.e_local;
+    out->kernel.scalarParams[2] = npts;
+    out->kernel.paramsNr = 3;
+    return copyElf(out, b, e);
+}
+#endif
+
+// nch = I rounded up to 512, in chunks of 512, rounded up to even: the v10 w2 kernels specialise nch == 2
+static inline uint64_t w2Nch(uint64_t I) { return ((I + 511) / 512 + 1) & ~(uint64_t)1; }
+
 // ------------------------------------------------------------------------------------------------ kernel table
 typedef GlueCodeReturn (*InstFn)(HabanaKernelParams*, HabanaKernelInstantiation*);
 struct KEntry { const char* name; InstFn fn; };
@@ -306,7 +400,7 @@ static GlueCodeReturn inst_mxk_w13xt(HabanaKernelParams* in, HabanaKernelInstant
 #ifdef MXK_HAS_mxk_w13xib
 DECL_ELF(mxk_w13xib)
 static GlueCodeReturn inst_mxk_w13xib(HabanaKernelParams* in, HabanaKernelInstantiation* out) {
-    return instW13xib(in, out, ELF(mxk_w13xib));
+    return instW13xib(in, out, 0, ELF(mxk_w13xib));
 }
 #endif
 #ifdef MXK_HAS_mxk_w2x
@@ -331,6 +425,83 @@ static GlueCodeReturn inst_mxk_w2xb(HabanaKernelParams* in, HabanaKernelInstanti
 DECL_ELF(mxk_deq)
 static GlueCodeReturn inst_mxk_deq(HabanaKernelParams* in, HabanaKernelInstantiation* out) {
     return instDeq(in, out, ELF(mxk_deq));
+}
+#endif
+#ifdef MXK_HAS_mxk_w13xn
+// mxk_w13x's contract and limits, x in natural order
+DECL_ELF(mxk_w13xn)
+static GlueCodeReturn inst_mxk_w13xn(HabanaKernelParams* in, HabanaKernelInstantiation* out) {
+    return instW13(in, out, 0, 6144, ELF(mxk_w13xn));
+}
+#endif
+#ifdef MXK_HAS_mxk_w13xk
+// mxk_w13x's contract (permuted x), K <= 7168: chunks 0-11 in VLM, the last chunk pair from global memory
+DECL_ELF(mxk_w13xk)
+static GlueCodeReturn inst_mxk_w13xk(HabanaKernelParams* in, HabanaKernelInstantiation* out) {
+    return instW13(in, out, 0, 7168, ELF(mxk_w13xk));
+}
+#endif
+#ifdef MXK_HAS_mxk_w2xc
+// mxk_w2x's contract and limits; the v10 kernel at nch == 2, the variant's mxk_w2x ELF for any other I
+DECL_ELF(mxk_w2xc)
+static GlueCodeReturn inst_mxk_w2xc(HabanaKernelParams* in, HabanaKernelInstantiation* out) {
+    if (in->inputTensorNr == 5 && w2Nch(in->inputTensors[3].geometry.maxSizes[0] * 2) != 2)
+        return instW2(in, out, 0, ELF(mxk_w2x));
+    return instW2(in, out, 0, ELF(mxk_w2xc));
+}
+#endif
+#ifdef MXK_HAS_mxk_w2gp
+// the v10 kernel at nch == 2, the plain grouped-route kernel (mxk_w2g ELF, no GUID of its own) for any other I
+DECL_ELF(mxk_w2gp)
+DECL_ELF(mxk_w2g)
+static GlueCodeReturn inst_mxk_w2gp(HabanaKernelParams* in, HabanaKernelInstantiation* out) {
+    if (in->inputTensorNr == 4 && w2Nch(in->inputTensors[2].geometry.maxSizes[0] * 2) != 2)
+        return instW2g(in, out, 256, ELF(mxk_w2g));
+    return instW2g(in, out, 256, ELF(mxk_w2gp));
+}
+#endif
+#ifdef MXK_HAS_mxk_w2gn
+// the general-nch kernel at nch 4 / 6; at nch 2 the tuned mxk_w2gp ELF when the build carries it (MXK_ELF_mxk_w2gp,
+// no GUID of its own), otherwise refused
+DECL_ELF(mxk_w2gn)
+#ifdef MXK_ELF_mxk_w2gp
+DECL_ELF(mxk_w2gp)
+#endif
+static GlueCodeReturn inst_mxk_w2gn(HabanaKernelParams* in, HabanaKernelInstantiation* out) {
+    if (in->inputTensorNr == 4 && w2Nch(in->inputTensors[2].geometry.maxSizes[0] * 2) == 2) {
+#ifdef MXK_ELF_mxk_w2gp
+        return instW2g(in, out, 256, ELF(mxk_w2gp));
+#else
+        return GLUE_INCOMPATIBLE_INPUT_SIZE;
+#endif
+    }
+    return instW2g(in, out, 32, ELF(mxk_w2gn));
+}
+#endif
+#ifdef MXK_HAS_mxk_w2c
+DECL_ELF(mxk_w2c)
+static GlueCodeReturn inst_mxk_w2c(HabanaKernelParams* in, HabanaKernelInstantiation* out) {
+    return instW2c(in, out, 0, ELF(mxk_w2c));
+}
+#endif
+#ifdef MXK_HAS_mxk_w2cb
+DECL_ELF(mxk_w2cb)
+static GlueCodeReturn inst_mxk_w2cb(HabanaKernelParams* in, HabanaKernelInstantiation* out) {
+    return instW2c(in, out, 1, ELF(mxk_w2cb));
+}
+#endif
+#ifdef MXK_HAS_mxk_w13xin
+// mxk_w13xi's contract and limits, x in natural order
+DECL_ELF(mxk_w13xin)
+static GlueCodeReturn inst_mxk_w13xin(HabanaKernelParams* in, HabanaKernelInstantiation* out) {
+    return instW13(in, out, 1, 6144, ELF(mxk_w13xin));
+}
+#endif
+#ifdef MXK_HAS_mxk_w13xibn
+// mxk_w13xib's contract and limits, x [T, K] in natural order and unpadded
+DECL_ELF(mxk_w13xibn)
+static GlueCodeReturn inst_mxk_w13xibn(HabanaKernelParams* in, HabanaKernelInstantiation* out) {
+    return instW13xib(in, out, 1, ELF(mxk_w13xibn));
 }
 #endif
 
@@ -368,6 +539,33 @@ static const KEntry g_kernels[] = {
 #endif
 #ifdef MXK_HAS_mxk_deq
     MXK_ENTRY(mxk_deq)
+#endif
+#ifdef MXK_HAS_mxk_w13xn
+    MXK_ENTRY(mxk_w13xn)
+#endif
+#ifdef MXK_HAS_mxk_w13xk
+    MXK_ENTRY(mxk_w13xk)
+#endif
+#ifdef MXK_HAS_mxk_w13xin
+    MXK_ENTRY(mxk_w13xin)
+#endif
+#ifdef MXK_HAS_mxk_w13xibn
+    MXK_ENTRY(mxk_w13xibn)
+#endif
+#ifdef MXK_HAS_mxk_w2xc
+    MXK_ENTRY(mxk_w2xc)
+#endif
+#ifdef MXK_HAS_mxk_w2gp
+    MXK_ENTRY(mxk_w2gp)
+#endif
+#ifdef MXK_HAS_mxk_w2gn
+    MXK_ENTRY(mxk_w2gn)
+#endif
+#ifdef MXK_HAS_mxk_w2c
+    MXK_ENTRY(mxk_w2c)
+#endif
+#ifdef MXK_HAS_mxk_w2cb
+    MXK_ENTRY(mxk_w2cb)
 #endif
     MXK_EXTRA_KERNELS
 };

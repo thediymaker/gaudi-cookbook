@@ -7,9 +7,11 @@ implementations with identical inputs must not share a process). ``run_parity.sh
 
     parity_hpu.py --variant V --impl ref    CPU fp32 reference (no device needed)
     parity_hpu.py --variant V --impl stock  the stock op as the model serves it
-    parity_hpu.py --variant V --impl ours   the kernels (--lib DIR: a build of variant V)
+    parity_hpu.py --variant V --impl ours   the kernels (--lib DIR: a build of variant V), --path v8
+    parity_hpu.py --variant V --impl ours --path P   each v10 decode path of a v10 build (glm: stack3, stack2)
     parity_hpu.py --variant V --impl sig    every op of the variant twice with identical input shapes and different
-                                            data in ONE lazy graph, per T = 1 .. the variant's token cap
+                                            data in ONE lazy graph, per T = 1 .. the variant's token cap, for
+                                            each decode path of the build (--path)
     parity_hpu.py --variant V --impl cmp    compare the saved outputs; exit 1 on a failed check
 
 Shapes are the per-rank shapes the model serves (mxk_harness.VARIANTS). Weights: random MXFP4 weights of those
@@ -18,7 +20,8 @@ The glm variant also runs its prefill unpack path at 256, 1024 and 4096 tokens.
 
 Pass criteria (cmp):
   decode   for every case the kernel's rel_l2 against the fp32 reference is below --max-rel (default 3e-3) and not
-           above the stock op's                                                            -> PARITY PASS
+           above the stock op's, for every decode path of the build; each v10 path's outputs are bit-identical
+           to the v8 path's                                                                -> PARITY PASS
   prefill  the unpack is bit-exact against the CPU unpack, and the unpack path's rel_l2 against the reference is
            within 2% of the stock op's, with rel_l2 to the stock op below 1e-3              -> PREFILL PASS
   sig      results inside one graph are bit-identical to the same calls alone, and the two calls differ
@@ -39,7 +42,8 @@ import mxk_harness as H  # noqa: E402
 def parse():
     ap = argparse.ArgumentParser(description="MXFP4 MoE kernel parity (one Gaudi 2 card)")
     ap.add_argument("--variant", default="gptoss", choices=sorted(H.VARIANTS))
-    ap.add_argument("--impl", required=True, choices=["ref", "stock", "ours", "sig", "cmp"])
+    ap.add_argument("--impl", required=True, choices=["ref", "stock", "ours", "sig", "cmp", "paths"])
+    ap.add_argument("--path", default="v8", help="decode path of a v10 build: v8 (default), stack2, stack3")
     ap.add_argument("--checkpoint", default="", help="local checkpoint (default: random weights)")
     ap.add_argument("--layer", type=int, default=None, help="checkpoint layer (default: the variant's)")
     ap.add_argument("--e-local", type=int, default=None, help="local experts on this card (default: as served)")
@@ -85,22 +89,35 @@ def compare(a):
     ref = torch.load(files["ref"], weights_only=False)
     ours = torch.load(files["ours"], weights_only=False)
     stock = torch.load(files["stock"], weights_only=False) if "stock" in files else {"cases": {}, "prefill": {}}
+    paths = [("v8", ours)] + [
+        (k.split("-", 1)[1], torch.load(files[k], weights_only=False)) for k in sorted(files) if k.startswith("ours-")
+    ]
     print(f"[{a.variant}] decode: K {ref['k']} I {ref['inter']} E_local {a.e_local} top-{ref['topk']}")
-    print(f"{'case':18s}{'local':>6s}{'ours rel':>11s}{'stock rel':>11s}{'ours vs stock':>15s}  result")
     bad = 0
-    for key, r in ref["cases"].items():
-        o, s = ours["cases"].get(key), stock["cases"].get(key)
-        if o is None:
-            print(f"{key:18s} missing in ours  FAIL")
-            bad += 1
-            continue
-        ro = H.rel_l2(o["y"], r["y"])
-        rs = H.rel_l2(s["y"], r["y"]) if s else float("nan")
-        os_ = H.rel_l2(o["y"], s["y"]) if s else float("nan")
-        ok = ro <= a.max_rel and (s is None or ro <= rs)
-        bad += 0 if ok else 1
-        print(f"{key:18s}{r['local']:6d}{ro:11.2e}{rs:11.2e}{os_:15.2e}  {'ok' if ok else 'FAIL'}")
-    print(f"[{a.variant}] PARITY", "PASS" if bad == 0 else f"FAIL ({bad} cases)")
+    for path, res in paths:
+        print(f"path {path}")
+        print(f"{'case':18s}{'local':>6s}{'ours rel':>11s}{'stock rel':>11s}{'ours vs stock':>15s}  result")
+        same = 0
+        for key, r in ref["cases"].items():
+            o, s = res["cases"].get(key), stock["cases"].get(key)
+            if o is None:
+                print(f"{key:18s} missing in ours  FAIL")
+                bad += 1
+                continue
+            ro = H.rel_l2(o["y"], r["y"])
+            rs = H.rel_l2(s["y"], r["y"]) if s else float("nan")
+            os_ = H.rel_l2(o["y"], s["y"]) if s else float("nan")
+            ok = ro <= a.max_rel and (s is None or ro <= rs)
+            if path != "v8":  # a v10 path must give the v8 path's output bit for bit
+                ident = key in ours["cases"] and torch.equal(o["y"], ours["cases"][key]["y"])
+                same += int(ident)
+                ok = ok and ident
+            bad += 0 if ok else 1
+            print(f"{key:18s}{r['local']:6d}{ro:11.2e}{rs:11.2e}{os_:15.2e}  {'ok' if ok else 'FAIL'}")
+        if path != "v8":
+            print(f"[{a.variant}] path {path}: bit-identical to v8 in {same}/{len(ref['cases'])} cases")
+    names = ", ".join(p for p, _ in paths)
+    print(f"[{a.variant}] PARITY", f"PASS (paths {names})" if bad == 0 else f"FAIL ({bad} cases)")
     pbad = 0
     if ref.get("prefill"):
         print(f"{'prefill':18s}{'local':>6s}{'ours rel':>11s}{'stock rel':>11s}{'ours vs stock':>15s}  result")
@@ -171,13 +188,16 @@ def sig(a, d, run, t_dev):
         la = int(((ida >= lo) & (ida < hi)).sum())
         why = "" if ok else f": in one graph != alone: {diff}, equal pairs: {same}"
         extra = ", + 4 unpacks" if deq else ""
-        print(f"[{a.variant}] T={t}: {'ok' if ok else 'MISMATCH'} (local routes {la}{extra}){why}")
-    print(f"[{a.variant}] SIG_DEVICE", "PASS" if bad == 0 else f"FAIL ({bad})")
+        print(f"[{a.variant}] {a.path} T={t}: {'ok' if ok else 'MISMATCH'} (local routes {la}{extra}){why}")
+    print(f"[{a.variant}] SIG_DEVICE", f"PASS (path {a.path})" if bad == 0 else f"FAIL ({bad}, path {a.path})")
     sys.exit(0 if bad == 0 else 1)
 
 
 def main():
     a = parse()
+    if a.impl == "paths":
+        print(" ".join(H.build_paths(os.path.abspath(a.lib), a.variant)))
+        return
     os.makedirs(a.out, exist_ok=True)
     if a.impl == "cmp":
         compare(a)
@@ -211,7 +231,9 @@ def main():
         run = H.stock_runner(a.spec, t_dev, d, a.e_local, a.e_min)
     else:
         H.load_ops(os.path.abspath(a.lib), a.variant)
-        run = H.kernel_runner(a.spec, t_dev, d, a.e_min)
+        if a.path not in H.build_paths(os.path.abspath(a.lib), a.variant):
+            sys.exit(f"path {a.path} is not served by the build in {a.lib}")
+        run = H.kernel_runner(a.spec, t_dev, d, a.e_min, a.path)
     if a.impl == "sig":
         sig(a, d, run, t_dev)
 
@@ -224,7 +246,7 @@ def main():
         x, ids, tw = H.make_case(a.spec, d, t, m, xs, a.e_min, a.e_local)
         res["cases"][f"x{xs}/T{t}/{m}"] = {"y": call(run, x, ids, tw)}
         print(f"{a.impl} x{xs}/T{t}/{m}: done", flush=True)
-    if prefill:
+    if prefill and a.path == "v8":
         prun = H.prefill_runner(a.spec, t_dev, d, a.e_local, a.e_min, a.impl)
         for t, m in prefill:
             x, ids, tw = H.make_case(a.spec, d, t, m, 1.0, a.e_min, a.e_local)
@@ -237,7 +259,8 @@ def main():
                     y = torch.ops.custom_op.mxk_deq(t_dev["w" + w][e], t_dev["s" + w][e], 0).cpu()
                     want = H.dequant(d["w" + w][e], d["s" + w][e]).to(torch.bfloat16)
                     res["deq_exact"][f"w{w}[{e}]"] = bool(torch.equal(y, want))
-    torch.save(res, os.path.join(a.out, f"{a.impl}_{tag(a)}.pt"))
+    name = a.impl if a.path == "v8" else f"{a.impl}-{a.path}"
+    torch.save(res, os.path.join(a.out, f"{name}_{tag(a)}.pt"))
 
 
 if __name__ == "__main__":
