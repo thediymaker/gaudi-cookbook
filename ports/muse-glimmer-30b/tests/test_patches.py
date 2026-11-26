@@ -106,6 +106,13 @@ def test_swa_patch_text():
         mod.patch(f"a = {mod.OLD}\n")
 
 
+def test_swa_patch_after_generic_fix():
+    mod = load("swa_window_blocks.py")
+    src = f"a = x  # {mod.GENERIC_FIX}\nb = y and x  # {mod.GENERIC_FIX}\n"
+    out = mod.patch(src)
+    assert out.startswith(src.rstrip("\n")) and mod.MARKER in out and mod.OLD not in out
+
+
 def helpers_namespace():
     """Run the helper block the patch appends, with a stand-in for vllm.sampling_params."""
     mod = load("forced_tool_grammar.py")

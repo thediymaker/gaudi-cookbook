@@ -8,7 +8,8 @@ interleaved model (Muse Glimmer has 39 sliding layers with a 2,048-token window 
 hands the sliding layers the full context block list and a window mask as wide as the whole context.
 On a long prompt that is chunked into 8K pieces, each chunk then attends over the full context in all
 52 layers instead of 13. The patch widens the two gates to ("gemma4", "muse_glimmer"); every other
-model keeps the stock path.
+model keeps the stock path. If the generic swa-window-context fix already dropped the condition, the patch only
+records that and changes nothing else.
 
 Usage: swa_window_blocks.py [--check] [--root SITE_PACKAGES]
 """
@@ -29,6 +30,9 @@ OLD = 'self.interleaved_sliding_window and self._get_model_type() == "gemma4"'
 NEW = 'self.interleaved_sliding_window and self._get_model_type() in ("gemma4", "muse_glimmer")'
 SITES = 2  # the window block list for chunked prefill, and its padded device copy
 NOTE = f"\n# {MARKER} the interleaved sliding-window prefill gates also cover muse_glimmer.\n"
+# The generic fix that drops the model_type condition for every interleaved model; with it applied, the gates
+# already cover muse_glimmer.
+GENERIC_FIX = "[gaudi-fix:swa-window-context]"
 
 
 class Drift(Exception):
@@ -36,6 +40,8 @@ class Drift(Exception):
 
 
 def patch(src: str) -> str:
+    if GENERIC_FIX in src and OLD not in src:
+        return src.rstrip("\n") + "\n" + NOTE
     n = src.count(OLD)
     if n != SITES or NEW in src:
         raise Drift(f"gemma4 window gate found {n} times, expected {SITES}")

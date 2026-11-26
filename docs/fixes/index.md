@@ -57,11 +57,13 @@ startup step run on its own (`apply.py MODEL OUT_DIR`, then `--tokenizer OUT_DIR
 | [gather-logprobs-int32](gather-logprobs-int32.md) | requests with `logprobs` / `top_logprobs` | v0.26.0, v0.30.0 | both | [vllm-gaudi#1823](https://github.com/vllm-project/vllm-gaudi/pull/1823) | open |
 | [prompt-logprobs](prompt-logprobs.md) | requests with `prompt_logprobs` | v0.26.0, v0.30.0 | both | [vllm-gaudi#1839](https://github.com/vllm-project/vllm-gaudi/pull/1839) (crash part) | merged (main, after v0.30.0); value fixes not filed |
 | [logprobs-decode-guard](logprobs-decode-guard.md) | requests with `logprobs` / `top_logprobs` | v0.26.0, v0.30.0 | both | none (vLLM) | not filed |
-| [seeded-sampling](seeded-sampling.md) | requests with `seed` and temperature > 0 | v0.26.0, v0.30.0 | both | none | not filed |
+| [seeded-sampling](seeded-sampling.md) | requests with `seed` and temperature > 0 (crash; recompiles in compile mode) | v0.26.0, v0.30.0 | both | none | not filed |
 | [topk-subset-sampler](topk-subset-sampler.md) | requests with `top_k` (performance) | v0.26.0, v0.30.0 | opt-in | none | not filed |
 | [sink-once](sink-once.md) | models with attention sinks (gpt-oss) | v0.26.0, v0.30.0 (decode part) | both | [vllm-gaudi#1920](https://github.com/vllm-project/vllm-gaudi/pull/1920) (decode part) | open |
 | [swa-decode-window](swa-decode-window.md) | gpt-oss | v0.26.0, v0.30.0 | both | none | not filed |
+| [swa-window-context](swa-window-context.md) | interleaved sliding-window models other than Gemma 4, long prompts | v0.26.0, v0.30.0 | opt-in | none | not filed |
 | [moe-explicit-overload](moe-explicit-overload.md) | FP8 per-channel MoE models (performance) | v0.26.0, v0.30.0 | both | [vllm-gaudi#1921](https://github.com/vllm-project/vllm-gaudi/pull/1921) | open |
+| [fp8-scale-lut](fp8-scale-lut.md) | FP8 checkpoints on Gaudi 2, load time (performance) | v0.26.0, v0.30.0 | opt-in | none | not filed |
 | [laguna-moe-sigmoid-routing](laguna-moe-sigmoid-routing.md) | MoE with sigmoid scoring, correction bias or `renormalize=False` | v0.26.0, v0.30.0 | both | [vllm-gaudi#1922](https://github.com/vllm-project/vllm-gaudi/pull/1922) | open |
 | [fp8-moe-gather](fp8-moe-gather.md) | FP8 MoE decode at low batch (performance) | v0.26.0 | opt-in | [vllm-gaudi#1731](https://github.com/vllm-project/vllm-gaudi/pull/1731) | merged (in v0.30.0) |
 | [moe-router-weight-on-input](moe-router-weight-on-input.md) | Llama 4 MoE | v0.26.0, v0.30.0 | opt-in | none | not filed |
@@ -71,6 +73,8 @@ startup step run on its own (`apply.py MODEL OUT_DIR`, then `--tokenizer OUT_DIR
 | [glm4-moe-3d-input](glm4-moe-3d-input.md) | GLM-4.5 family MoE (`glm4_moe.py`), GLM-4.5V | v0.26.0, v0.30.0 | opt-in | none | not filed |
 | [rope-cpu-cache](rope-cpu-cache.md) | RoPE models at long context | v0.26.0 | v0.26.0 | [vllm-gaudi#1816](https://github.com/vllm-project/vllm-gaudi/pull/1816) | merged (in v0.30.0) |
 | [rank-exception-fatal](rank-exception-fatal.md) | tensor parallel with the multiprocessing executor | v0.26.0, v0.30.0 | both | none (vLLM) | not filed |
+| [hpu-graph-lru](hpu-graph-lru.md) | lazy mode with many shapes or a graph cap (performance) | v0.26.0, v0.30.0 | opt-in | none | not filed |
+| [load-threads-cgroup](load-threads-cgroup.md) | containers with a CPU limit, load time (performance) | v0.26.0, v0.30.0 | opt-in | none | not filed |
 | [vllm-long-prefill-share](vllm-long-prefill-share.md) | very long prompts next to other streams (scheduler feature) | v0.26.0, v0.30.0 | opt-in | none | not filed |
 | [pipeline-parallel](pipeline-parallel.md) | `--pipeline-parallel-size` > 1, stages on different nodes over the host network (feature) | v0.26.0, v0.30.0 | opt-in | none (vllm-gaudi has no pipeline path) | not filed |
 | [structured-outputs-auto-whitespace](structured-outputs-auto-whitespace.md) | `disable_any_whitespace` with the `auto` backend | v0.26.0, v0.30.0 | both | [vllm#63430](https://github.com/vllm-project/vllm/pull/63430) | open |
@@ -96,11 +100,11 @@ the order on its command line. If you run the scripts yourself, keep that order.
 
 | File | Fixes, in order |
 | --- | --- |
-| `vllm_gaudi/v1/worker/hpu_model_runner.py` | prompt-order, structured-output-rows, so-row-owners, async-inputs, hybrid-decode-pad, gdn-prefix-cache, gather-logprobs-int32, prompt-logprobs, seeded-sampling, swa-decode-window, pipeline-parallel |
+| `vllm_gaudi/v1/worker/hpu_model_runner.py` | prompt-order, structured-output-rows, so-row-owners, async-inputs, hybrid-decode-pad, gdn-prefix-cache, gather-logprobs-int32, prompt-logprobs, seeded-sampling, swa-decode-window, swa-window-context, hpu-graph-lru, load-threads-cgroup, pipeline-parallel |
 | `vllm/v1/core/sched/scheduler.py` | gdn-prefix-cache, vllm-long-prefill-share, pipeline-parallel |
 | `vllm_gaudi/v1/worker/hpu_input_batch.py` | sampling-rows-refresh, bad-words-index, logitsprocs-rows, resumed-prefill-logits, penalty-shapes, topk-subset-sampler |
 | `vllm/v1/sample/ops/topk_topp_sampler.py` | seeded-sampling, topk-subset-sampler |
-| `vllm_gaudi/extension/ops.py` | sink-once, moe-explicit-overload |
+| `vllm_gaudi/extension/ops.py` | sink-once, moe-explicit-overload, fp8-scale-lut |
 | `vllm_gaudi/ops/hpu_fused_moe.py`, `hpu_compressed_tensors.py`, `hpu_fp8.py` | laguna-moe-sigmoid-routing, fp8-moe-gather, moe-router-weight-on-input |
 
 so-row-owners rewrites the call that structured-output-rows edits, so it must come after it.
@@ -113,11 +117,10 @@ gdn-prefix-cache checks that hybrid-decode-pad ran before it.
   `state * mask`, so a slot that ever holds NaN stays poisoned (`0 * NaN = NaN`). vllm-gaudi main
   uses `torch.where` at both sites; a backport is small but has not been validated on the releases.
   With prefix caching on, [gdn-prefix-cache](gdn-prefix-cache.md) zeroes new slots instead.
-- **Interleaved sliding window gated on one model type.** On both releases, prefill with the full
-  block list still applies the window bound in the attention bias, so the gate costs compute, not
-  correctness. Widening it changes shapes and performance without a validated benefit.
-- **Speculative decoding fixes** (rejection sampling with temperature, verify-row layout,
-  structured outputs under speculation). They need rework onto the current runner and HPU tests.
+- **Speculative decoding fixes** (rejection sampling with temperature, seeded draws under
+  speculation, verify-row layout, structured outputs under speculation, logprobs for rows without
+  drafts in a verify step). They need rework onto the current runner and HPU tests. On both releases
+  the HPU rejection sampler is greedy only, so seeds never reach it.
 - Model ports, custom kernels and their glue, diagnostics, and fixes already contained in both
   releases.
 
