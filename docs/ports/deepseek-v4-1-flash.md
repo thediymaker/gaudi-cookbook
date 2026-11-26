@@ -62,6 +62,7 @@ before the end; `prompt_logprobs` requests take the full stack, which gives a sa
 **MXFP4 decode kernel.** The [MXFP4 MoE kernels](../kernels/mxfp4-moe.md) gained a variant for interleaved rows with
 V4.1's exact clamp in the epilogue, for decode calls of up to 16 tokens. One card, real layer weights, one token:
 89 µs vs 369 µs for the stock op, relative L2 error vs fp32 1.9e-3 vs 5.9e-3 (per-call, one card).
+`DSV41_MXK_V10=1` adds the bit-identical [v10 decode kernels](../kernels/mxfp4-moe.md#v10-decode-kernels).
 
 **Decode step.** A rank-0 step was 12,435 device nodes, with compute busy 18 of 32 ms in a one-card emulation. The
 largest item was the mHC Sinkhorn loop (20 iterations on 4x4 matrices, about 42 nodes per call, 80 calls per step),

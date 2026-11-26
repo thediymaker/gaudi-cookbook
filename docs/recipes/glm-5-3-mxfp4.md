@@ -37,7 +37,8 @@ docker build -f ports/glm-5-mxfp4/Dockerfile --build-arg BASE=<your-vllm-gaudi-v
 
 The build copies the repository to `/opt/gaudi-cookbook` (so `$COOKBOOK` is set there), checks the image commits,
 applies the fixes of the Launch block, installs the `glm5_hpu` package, applies the port's 14 patches and builds the
-MXFP4 MoE kernels (`kernels/mxfp4-moe/build.sh --variant glm`). Details:
+MXFP4 MoE kernels (`kernels/mxfp4-moe/build.sh --variant glm`, which holds the v8 and the v10 decode kernels; the
+Launch block runs v8, and `GLM_MXK_V10=1` adds v10, see [v10 decode kernels](../kernels/mxfp4-moe.md#v10-decode-kernels)). Details:
 [`ports/glm-5-mxfp4/README.md`](https://github.com/thediymaker/gaudi-cookbook/blob/main/ports/glm-5-mxfp4/README.md).
 
 ## Launch

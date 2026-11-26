@@ -141,6 +141,7 @@ Agents: read AGENTS.md first. It maps tasks to files and gives the rules: check 
 
 - [Kernels](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/kernels/index.md): Custom TPC kernels for Gaudi 2.
 - [MXFP4 MoE decode kernels](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/kernels/mxfp4-moe.md): Up to 3x faster MXFP4 MoE decode on Gaudi 2.
+- [What did not work](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/kernels/what-did-not-work.md): Measured dead ends from the work on the MXFP4 MoE decode kernels and on the rest of the decode step of large MXFP4 MoE models on Gaudi 2.
 
 ## Ports
 

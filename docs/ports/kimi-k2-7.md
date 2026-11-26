@@ -88,7 +88,8 @@ and image requests get a 400.
 **One node, MXFP4 kernels.** The `kimi` build of [`kernels/mxfp4-moe`](../kernels/mxfp4-moe.md) runs a decode MoE
 call (up to 16 tokens, 128 routes) as two TPC kernels that read the packed E2M1 weights and E8M0 scales vLLM already
 keeps on the device and touch only the routed experts, instead of the stock op's unpack of a fixed number of expert
-slots. The port installs it as a wrapper around vllm-gaudi's MXFP4 MoE op, behind `KIMI_MXK`; prefill and any call
+slots. The port installs it as a wrapper around vllm-gaudi's MXFP4 MoE op, behind `KIMI_MXK` (`KIMI_MXK_V10=1` adds the bit-identical
+[v10 decode kernels](../kernels/mxfp4-moe.md#v10-decode-kernels)); prefill and any call
 outside the caps keep the stock op. On real layer-3 experts the kernels are closer to an fp32 reference than the
 stock op (relative error 1.7e-3 against 4.8e-3 to 5.5e-3). On `v0.30.0` the grouped top-k routing is upstream, so
 the one-node build needs only the repack, a loader patch for fused experts under expert parallelism, and the kernel

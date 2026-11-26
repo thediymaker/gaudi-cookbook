@@ -108,7 +108,7 @@ vllm serve $KIMI_MXFP4_DIR \
   loader refuses to split one expert across cards.
 - `KIMI_MXK=1` runs MoE calls of up to 16 tokens (every decode step at 8 sequences) on the kernels; prefill keeps
   the stock op. `KIMI_MXK=0` is the stock op, with nothing else changed. The engine log shows
-  `[kimi-mxk] enabled: mxk_tpc kimi-v8-<hash>, E_local=48 K=7168 I=2048` when it is on.
+  `[kimi-mxk] enabled: mxk_tpc kimi-v10-<hash>, E_local=48 K=7168 I=2048` when it is on (`kimi-v8-<hash>` for a build before the v10 kernels).
 - `VLLM_MOE_CHUNK=256` and `VLLM_MOE_TOKEN_BOUNDARY=2048` let the stock op skip expert slots no token routes to;
   the output is unchanged.
 - `--language-model-only` serves text only: the vision tower is not built, and image requests get HTTP 400.

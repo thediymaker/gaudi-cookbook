@@ -12,7 +12,7 @@ library links against that image's PyTorch build.
 
 | Kernel | Replaces | Helps when | Models | Gain |
 | --- | --- | --- | --- | --- |
-| [MXFP4 MoE decode](mxfp4-moe.md) | The stock MXFP4 MoE op for decode-sized calls (per-variant caps) | Decode of MXFP4 MoE models, where the routed experts dominate the step | Five build variants: `gptoss` (`openai/gpt-oss-120b` measured, `gpt-oss-20b` same shapes), `glm` (GLM-5.3, GLM-5.2, with a prefill unpack), `dsv41` (DeepSeek-V4.1-Flash), `muse` (Muse Spark Open), `kimi` (Kimi-K2.7). Non-gpt-oss models run it through their [port](../ports/index.md) | Per MoE call, one card: gpt-oss 3x to 10x, GLM-5.x 3.4x to 6.5x, DeepSeek-V4.1-Flash 4.0x to 7.2x, Muse Spark Open 4.7x to 5.7x, Kimi 3.3x to 5.7x. End to end: gpt-oss up to 3.2x decode tok/s; GLM-5.3 2.5x single stream (23.3 to 59.1 tok/s) |
+| [MXFP4 MoE decode](mxfp4-moe.md) | The stock MXFP4 MoE op for decode-sized calls (per-variant caps) | Decode of MXFP4 MoE models, where the routed experts dominate the step | Five build variants: `gptoss` (`openai/gpt-oss-120b` measured, `gpt-oss-20b` same shapes), `glm` (GLM-5.3, GLM-5.2, with a prefill unpack), `dsv41` (DeepSeek-V4.1-Flash), `muse` (Muse Spark Open), `kimi` (Kimi-K2.7). Non-gpt-oss models run it through their [port](../ports/index.md) | Per MoE call, one card: gpt-oss 3x to 10x, GLM-5.x 3.4x to 6.5x, DeepSeek-V4.1-Flash 4.0x to 7.2x, Muse Spark Open 4.7x to 5.7x, Kimi 3.3x to 5.7x. End to end: gpt-oss up to 3.2x decode tok/s; GLM-5.3 2.5x single stream (23.3 to 59.1 tok/s). The v10 kernels (`glm`, `kimi`, `dsv41`, `gptoss`; `muse` stays on v8) add 7% to 16% per stream at 4 to 16 streams, bit-identical to v8 |
 
 ## When a custom kernel helps
 
@@ -33,3 +33,10 @@ library links against that image's PyTorch build.
 - Install through a script that checks every anchor in vllm-gaudi and exits non-zero before writing anything if
   one is missing.
 - Ship a parity test against the stock op and an fp32 reference on one card, and a micro benchmark.
+
+## What did not work
+
+[What did not work](what-did-not-work.md) lists the measured dead ends: the x-permute fold on its own, FP8 experts
+on Gaudi 2, compile mode and the PT2 op path, deeper MTP drafts, data-parallel attention, reduce-scatter plus
+all-gather, the empty replay of a graph of only custom ops, and the lazy-mode all-reduce that serialises with the
+work after it. Each entry has its number and how it was measured.
