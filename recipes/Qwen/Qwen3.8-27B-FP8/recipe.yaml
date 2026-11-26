@@ -3,7 +3,7 @@ meta:
   title: "Qwen3.8-27B-FP8"
   slug: "qwen3-8-27b-fp8"
   provider: "Qwen"
-  description: "27B dense hybrid (Gated DeltaNet + attention) reasoning model with vision, Qwen's block FP8 release, native 256K context on one Gaudi 2 card, 32 sequences."
+  description: "27B dense hybrid (Gated DeltaNet + attention) reasoning model with vision, Qwen's FP8 release, 256K context on one Gaudi 2 card, 32 sequences."
   date_added: 2026-11-26
   date_updated: 2026-11-26
   tasks:
