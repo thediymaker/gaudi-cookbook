@@ -35,6 +35,7 @@ otherwise; none has been run on Gaudi 3.
 | [Qwen3-235B-A22B-Thinking-2507-FP8](qwen3-235b-a22b-2507-fp8.md) | 4 (TP 4) | FP8 | v0.26.0 | tools, reasoning | verified |
 | [Qwen3.5-122B-A10B-FP8](qwen3-5-122b-a10b-fp8.md) | 4 (TP 4, EP) | FP8 | v0.26.0 | tools, reasoning, 256K | verified |
 | [Qwen3-Coder-Next](qwen3-coder-next.md) | 4 (TP 4) | BF16 | v0.26.0 | tools, 256K | verified |
+| [Qwen3-Coder-Next-FP8](qwen3-coder-next-fp8.md) | 2 (TP 2) | FP8 | v0.26.0 | tools, 256K | verified |
 | [Devstral-2-123B-Instruct-2512](devstral-2-123b-instruct-2512.md) | 4 (TP 4) | FP8 | v0.26.0 | tools | verified |
 | [Gemma 4 31B IT](gemma-4-31b-it.md) | 4 (TP 4) | BF16 | v0.26.0 | tools, vision | verified |
 | [gpt-oss-120b](gpt-oss-120b.md) | 4 (TP 4, EP) | MXFP4 | v0.26.0 | tools, reasoning | verified |
