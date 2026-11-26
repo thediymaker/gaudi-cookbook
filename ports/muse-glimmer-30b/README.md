@@ -57,5 +57,7 @@ tool calls; `--base-url` points at another server.
 - The output-gate rank restore is a no-op on CUDA and belongs in vLLM's `muse_glimmer.py`.
 - The window gate should not be keyed on `model_type`: vllm-gaudi could use `interleaved_sliding_window`
   alone. Widening it changes graph shapes for every interleaved model, which is why the port only adds
-  this model.
+  this model. The opt-in [swa-window-context](../../fixes/swa-window-context/README.md) fix drops the condition for
+  every interleaved model; when it is applied, `swa_window_blocks.py` finds the gates already open and changes
+  nothing else.
 - The structural tag is the model's own format; upstream could ship it in the tool parser.

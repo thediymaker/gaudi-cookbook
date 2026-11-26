@@ -3,7 +3,8 @@
 Source: [`fixes/seeded-sampling/`](https://github.com/thediymaker/gaudi-cookbook/tree/main/fixes/seeded-sampling)
 
 Seeded random sampling on HPU without `torch.Generator` ops on the device, so a request with a
-`seed` cannot crash a worker, and seeded output does not depend on the batch.
+`seed` cannot crash a worker, seeded output does not depend on the batch, and in compile mode a
+seeded request does not recompile the sampler.
 
 | | |
 | --- | --- |
@@ -24,6 +25,11 @@ the whole batch at once and are not affected.
 Separately, the runner pads a batch by repeating its first request. A seeded first request's
 generator then advances once per padded row, so its tokens depend on the batch bucket.
 
+In compile mode (`PT_HPU_LAZY_MODE=0`) the runner compiles the sampler with `torch.compile`, and
+dynamo guards on each request's generator object. Every new seeded request is a new object, so the
+compiled sampler recompiles for it, stalling the whole batch, until dynamo reaches its recompile
+limit.
+
 ## Symptom
 
 Under sustained load with seeded requests, a worker dies with a segfault trace through
@@ -31,10 +37,18 @@ Under sustained load with seeded requests, a worker dies with a segfault trace t
 Seeded requests that do run can return different text for the same seed and prompt depending on
 what else is in the batch.
 
+In compile mode, each new seeded request adds a recompile to the step that first samples it, and
+the server log eventually shows dynamo's `recompile_limit` warning for the sampler. Measured on
+MiMo-V2.6-Flash in compile mode on a `releases/v0.30.0` base with the deployment's own model patches
+(not the cookbook's v0.26.0 MiMo port), warm, one request at a time: time to first token 0.42 s for a
+seeded request against 0.19 s unseeded, and 0.102 s against 0.101 s with the fix.
+
 ## Who is affected
 
 Any deployment where clients send `seed` with sampling (some SDKs and evaluation harnesses do
-this by default). Greedy requests and unseeded sampling are not affected.
+this by default). Greedy requests and unseeded sampling are not affected. The recompile part matters in compile
+mode only; it was measured on v0.30.0. Two compile-mode models on v0.26.0 showed no seeded time to
+first token penalty, and the change is the same no-op there when no recompile happens.
 
 ## The fix
 
@@ -51,10 +65,19 @@ this by default). Greedy requests and unseeded sampling are not affected.
   of two to bound the number of graph shapes.
 - With async scheduling, a discarded partial-prefill sample gives its step back (as the GPU runner
   rewinds its generator), so tokens do not depend on how a prompt was chunked.
+- When the batch has per-request generators and the sampler is a `torch.compile` wrapper, the runner
+  calls the uncompiled module (`_orig_mod`) for that step. Past the recompile limit dynamo ran those
+  batches eagerly anyway, at the same decode speed, so eager costs nothing measurable. In lazy mode
+  the sampler is not compiled and the call is unchanged.
 
 Seeded output stays deterministic but differs from the stock noise stream. The fix refuses to
 apply if vllm-gaudi stops replacing the stock rejection sampler, whose generator loops would meet
 a CPU generator.
+
+Speculative decoding is outside this fix. On both releases the HPU rejection sampler supports greedy
+requests only, so per-request seeds never reach it. Ports that add random rejection sampling must
+take seeded rows' accept draws and recovery noise from the same (seed, step) keys, or seeds are not
+honoured on those models.
 
 ## Verify
 
@@ -65,4 +88,6 @@ pytest fixes/seeded-sampling                     # GAUDI_FIXES_ROOT=<dir with vl
 
 End to end: run sustained concurrent load where every request sets a `seed` and temperature > 0,
 with tensor parallelism. Without the fix a worker eventually segfaults. With it, repeating a
-request with the same seed returns the same text at any concurrency.
+request with the same seed returns the same text at any concurrency. In compile mode, compare the
+time to first token of seeded and unseeded requests on a warm server; they should match (needs a
+device).

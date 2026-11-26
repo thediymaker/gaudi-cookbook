@@ -11,6 +11,8 @@
    * padded copies of a seeded row share its token and advance the generator once per call;
    * unseeded rows still draw fresh noise and plain generators keep the stock loop;
    * the same seed replays the same token sequence.
+3. The runner's sampler call: a batch with generators calls the uncompiled sampler (_orig_mod), any other
+   batch the compiled one.
 
 Needs torch (CPU) and unpatched vllm and vllm_gaudi source trees: the installed packages, or
 GAUDI_FIXES_ROOT=<dir holding vllm/ and vllm_gaudi/>. Run with: pytest fixes/seeded-sampling
@@ -91,6 +93,7 @@ def test_text_patch_and_refusals(srcs):
         ("sampler", A.SAMPLER_OLD, ""),
         ("sampler", A.SAMPLER_OLD, A.SAMPLER_OLD + "\n" + A.SAMPLER_OLD),
         ("runner", A.RUNNER_GEN_OLD, ""),
+        ("runner", A.RUNNER_SAMPLE_OLD, ""),
         ("runner", A.RUNNER_DISCARD_OLD, ""),
         ("rejection", A.REJECTION_REBIND, "pass"),
     ]
@@ -192,3 +195,30 @@ def test_random_sample(m):
     assert s1 == s2 and n1 == 30
     assert len(set(s1)) > 1 and s1 != s3
     assert m._hpu_seeded_noise_(torch.empty(2, V), {5: G(1)}) == {}
+
+
+def test_seeded_batch_uses_uncompiled_sampler():
+    body = "".join(line[8:] for line in A.RUNNER_SAMPLE_NEW.splitlines(keepends=True))
+    calls = []
+    eager = lambda **kw: calls.append("eager") or "out"  # noqa: E731
+
+    class Compiled:
+        _orig_mod = staticmethod(eager)
+
+        def __call__(self, **kw):
+            calls.append("compiled")
+            return "out"
+
+    for gens, sampler, want in (
+        ({0: object()}, Compiled(), "eager"),
+        ({}, Compiled(), "compiled"),
+        ({0: object()}, eager, "eager"),
+    ):
+        calls.clear()
+        ns = {
+            "self": types.SimpleNamespace(sampler=sampler),
+            "sampling_metadata": types.SimpleNamespace(generators=gens),
+            "logits_device": None,
+        }
+        exec(body, ns)
+        assert calls == [want] and ns["sampler_output"] == "out"

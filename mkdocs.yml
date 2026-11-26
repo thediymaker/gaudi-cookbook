@@ -111,7 +111,9 @@ nav:
       - fixes/topk-subset-sampler.md
       - fixes/sink-once.md
       - fixes/swa-decode-window.md
+      - fixes/swa-window-context.md
       - fixes/moe-explicit-overload.md
+      - fixes/fp8-scale-lut.md
       - fixes/laguna-moe-sigmoid-routing.md
       - fixes/fp8-moe-gather.md
       - fixes/moe-router-weight-on-input.md
@@ -121,6 +123,8 @@ nav:
       - fixes/glm4-moe-3d-input.md
       - fixes/rope-cpu-cache.md
       - fixes/rank-exception-fatal.md
+      - fixes/hpu-graph-lru.md
+      - fixes/load-threads-cgroup.md
       - fixes/vllm-long-prefill-share.md
       - fixes/pipeline-parallel.md
       - fixes/structured-outputs-auto-whitespace.md

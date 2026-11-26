@@ -50,7 +50,10 @@ nothing:
 
 With async scheduling the next step is scheduled before the previous one completes, so by default
 long chunks run in back-to-back pairs and the decode share is `(1 - s) / (1 + s)` rather than
-`1 - s`. Set `VLLM_LONG_PREFILL_SHARE_ASYNC=1` to make the share exact. Pair the feature with
+`1 - s`. Set `VLLM_LONG_PREFILL_SHARE_ASYNC=1` to make the share exact. Both releases' vLLM keeps
+`Request.num_in_flight_tokens`, which is how the fix sees a long chunk that is scheduled but not yet
+complete; older vLLM builds without that field need a scheduler-side count instead, which this fix
+does not carry. Pair the feature with
 `--long-prefill-token-threshold`, so that a single long step stays short and decode is smooth
 rather than stalling for seconds.
 
@@ -87,6 +90,35 @@ sides). Chained runs on one pod, `VLLM_LONG_PREFILL_SHARE_ASYNC=1` in every run 
 chunks (`--long-prefill-token-threshold 4096` or `--max-num-batched-tokens 4096`) keeps chats at about
 a third of their idle speed while long prompts finish at half the rate; 8,192-token chunks were
 slower and burstier for the chats. All runs had 0 errors and 0 preemptions.
+
+Qwen3.8-27B (BF16) on one Gaudi 2 card, vllm-gaudi v0.26.0 with the deployment's other patches, 16
+sequences, `--max-num-batched-tokens 1792`, warm, two servers on one node with no other traffic, each sent a
+~100K-token prompt back to back plus a short request every 1.5 s. The second server added
+`--long-prefill-token-threshold 1024`, `VLLM_LONG_PREFILL_SHARE=0.25`, `VLLM_LONG_PREFILL_SHARE_ASYNC=1` and
+`VLLM_LONG_PREFILL_MIN_TOKENS=32768`. Single runs:
+
+| | Stock | Threshold 1024 + share 0.25 |
+| --- | --- | --- |
+| short requests next to the long prefill, time to first token p50 / p99 | 38.1 / 70.1 s | 0.56 / 0.96 s |
+| the ~100K prompt's time to first token, under that load | 77.8 s | 91.2 s |
+| the ~100K prompt's time to first token, alone | 69.5 s | 73.4 s |
+
+Without the change one long prompt took every step's token budget until it finished, so short requests
+waited behind it on an otherwise idle server. On the same deployment in production, the four hours after
+the change against the same four hours a day earlier: queue time p95 28.3 to 18.7 s, p99 105 to 86 s, mean
+time to first token 8.5 to 6.1 s (different traffic on the two days).
+
+`VLLM_LONG_PREFILL_SHARE_ASYNC` matters under async scheduling. Kimi K2.7 on eight cards (an MXFP4 port on
+an older vllm-gaudi base, the fix applied with a scheduler-side in-flight count), share 0.5, minimum 32K,
+8,192-token chunks, other streams' decode while long prompts prefill, async share off against on:
+
+| Load | Other streams, share without async | Share with async | Long prompt TTFT, without / with |
+| --- | --- | --- | --- |
+| 4 streams, 64K prompts | 11.5 tokens/s | 17.9 tokens/s | 24.8 / 33.1 s |
+| 4 streams, 100K prompts | 13.4 tokens/s | 18.6 tokens/s | 51 / 66 s |
+| 7 streams, 125K prompts | 9.2 tokens/s | 13.4 tokens/s | 68 / 93 s |
+
+With no share at all the same streams ran at 0.9 to 1.7 tokens/s. 16K prompts were unaffected.
 
 ## Verify
 

@@ -29,12 +29,13 @@ HERE = Path(__file__).resolve().parent
 # Application order. Fixes that edit the same file must keep their relative order:
 #   hpu_model_runner.py: prompt-order, structured-output-rows, so-row-owners, async-inputs,
 #     hybrid-decode-pad, gdn-prefix-cache, gather-logprobs-int32, prompt-logprobs, seeded-sampling,
-#     swa-decode-window, pipeline-parallel (appends; it mirrors prompt-order on non-last stages)
+#     swa-decode-window, swa-window-context, hpu-graph-lru, load-threads-cgroup,
+#     pipeline-parallel (appends; it mirrors prompt-order on non-last stages)
 #   vllm scheduler.py: gdn-prefix-cache, vllm-long-prefill-share, pipeline-parallel
 #   hpu_input_batch.py: sampling-rows-refresh, bad-words-index, logitsprocs-rows,
 #     resumed-prefill-logits, penalty-shapes, topk-subset-sampler
 #   vllm topk_topp_sampler.py: seeded-sampling, topk-subset-sampler
-#   vllm_gaudi extension/ops.py: sink-once, moe-explicit-overload
+#   vllm_gaudi extension/ops.py: sink-once, moe-explicit-overload, fp8-scale-lut
 #   vllm_gaudi ops/hpu_fused_moe.py, hpu_compressed_tensors.py, hpu_fp8.py: laguna-moe-sigmoid-routing,
 #     fp8-moe-gather, moe-router-weight-on-input
 # so-row-owners also rewrites the call structured-output-rows edits, so it must come after it.
@@ -60,7 +61,9 @@ ORDER = (
     "topk-subset-sampler",
     "sink-once",
     "swa-decode-window",
+    "swa-window-context",
     "moe-explicit-overload",
+    "fp8-scale-lut",
     "laguna-moe-sigmoid-routing",
     "fp8-moe-gather",
     "moe-router-weight-on-input",
@@ -70,6 +73,8 @@ ORDER = (
     "glm4-moe-3d-input",
     "rope-cpu-cache",
     "rank-exception-fatal",
+    "hpu-graph-lru",
+    "load-threads-cgroup",
     "vllm-long-prefill-share",
     "pipeline-parallel",
     "structured-outputs-auto-whitespace",
@@ -90,8 +95,9 @@ STANDALONE = {
 }
 
 # Recommended generic fixes per release. Everything else is opt-in and named explicitly:
-# performance changes (penalty-shapes, topk-subset-sampler, fp8-moe-gather), the long-prefill
-# scheduler feature, and model-specific parser, routing and tokenizer fixes.
+# performance changes (penalty-shapes, topk-subset-sampler, fp8-moe-gather, hpu-graph-lru,
+# load-threads-cgroup, fp8-scale-lut), the long-prefill scheduler feature, the sliding-window prefill
+# change for every interleaved model, and model-specific parser, routing and tokenizer fixes.
 _COMMON = (
     "prompt-order",
     "sampling-rows-refresh",

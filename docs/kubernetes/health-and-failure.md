@@ -189,7 +189,7 @@ N shapes seen since the pod started (prefill shapes included) are kept forever, 
 shapes that appear later (more concurrent streams than before) never get a graph. Measured
 on one model with a cap of 64 after weeks of uptime: 6 of 10 pods at 675 to 923 ms per
 decode step, the other 4 at 79 to 83 ms, at the same load. Replacing the first-come cache
-with a least-recently-used one (the `hpu-graph-lru` fix) brought inter-token latency to 45
+with a least-recently-used one (the [`hpu-graph-lru`](../fixes/hpu-graph-lru.md) fix) brought inter-token latency to 45
 to 55 ms on every pod (it had ranged from 60 to 563 ms). Without such a fix, do not cap the
 graph count on a model that skips warm-up. To find affected pods, compare each pod's
 inter-token latency with its siblings over an hour: a pod that is slow at the same load is

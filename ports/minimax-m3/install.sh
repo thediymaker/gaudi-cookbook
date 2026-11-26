@@ -8,7 +8,8 @@
 #      MiniMax-M3 model and the minimax_m3_py tool parser);
 #   2. patch the compressed-tensors FP8 MoE method: SwiGLU-OAI experts on Habana's fused FP8 kernel;
 #   3. patch vLLM's minimax_m3 reasoning parser: prompt markers no longer end reasoning when streaming;
-#   4. re-check both patches and import the patched modules.
+#   4. patch vllm-gaudi's KV cache write: VLLM_M3_KV_FINITE=1 keeps non-finite K/V out of the cache (off by default);
+#   5. re-check the patches and import the patched modules.
 # The cookbook's v0.26.0 fix profile is applied at container start, as for any recipe (see the recipe).
 set -euo pipefail
 
@@ -45,10 +46,13 @@ PY
 echo "== minimax-m3: patches"
 python3 "${PORT}/patches/swigluoai_fp8_moe.py"
 python3 "${PORT}/patches/reasoning_prompt_scope.py"
+python3 "${PORT}/patches/kv_finite_writes.py"
 
 echo "== minimax-m3: build checks"
 python3 "${PORT}/patches/swigluoai_fp8_moe.py" --check
 python3 "${PORT}/patches/reasoning_prompt_scope.py" --check
+python3 "${PORT}/patches/kv_finite_writes.py" --check
+python3 -c "import vllm_gaudi.extension.utils as m; assert hasattr(m, '_M3_KV_FINITE')"
 python3 -c "import vllm_gaudi.ops.hpu_compressed_tensors as m; assert hasattr(m, '_m3_fp8_moe_call')"
 python3 -c "import vllm.reasoning.minimax_m3_reasoning_parser as m; \
 assert hasattr(m.MiniMaxM3ReasoningParser, '_current_turn_token_ids')"

@@ -84,11 +84,13 @@ gemma4-bos-tokenizer is a startup step that takes `MODEL OUT_DIR` and is run on 
 | [gather-logprobs-int32](gather-logprobs-int32/README.md) | `top_logprobs` token ids read back corrupted | v0.26.0, v0.30.0 |
 | [prompt-logprobs](prompt-logprobs/README.md) | `prompt_logprobs` crashes or returns wrong values | v0.26.0, v0.30.0 |
 | [logprobs-decode-guard](logprobs-decode-guard/README.md) | one undecodable logprob id shuts down the server | v0.26.0, v0.30.0 |
-| [seeded-sampling](seeded-sampling/README.md) | seeded sampling segfaults a tensor-parallel worker | v0.26.0, v0.30.0 |
+| [seeded-sampling](seeded-sampling/README.md) | seeded sampling segfaults a tensor-parallel worker, or recompiles the sampler in compile mode | v0.26.0, v0.30.0 |
 | [topk-subset-sampler](topk-subset-sampler/README.md) | top-k / top-p sorts the whole vocabulary every step (performance) | opt-in |
 | [sink-once](sink-once/README.md) | attention sinks counted once per KV block instead of once | v0.26.0, v0.30.0 |
 | [swa-decode-window](swa-decode-window/README.md) | gpt-oss sliding window is not exact in paged decode | v0.26.0, v0.30.0 |
+| [swa-window-context](swa-window-context/README.md) | sliding-window layers read the whole context in chunked prefill on every interleaved model but Gemma 4 | opt-in |
 | [moe-explicit-overload](moe-explicit-overload/README.md) | FP8 per-channel MoE forces a host sync per layer | v0.26.0, v0.30.0 |
+| [fp8-scale-lut](fp8-scale-lut/README.md) | the Gaudi 2 FP8 weight halving dominates the load of FP8 MoE checkpoints (performance) | opt-in |
 | [laguna-moe-sigmoid-routing](laguna-moe-sigmoid-routing/README.md) | MoE routing ignores `scoring_func`, correction bias and `renormalize` | v0.26.0, v0.30.0 |
 | [fp8-moe-gather](fp8-moe-gather/README.md) | FP8 MoE decode reads every expert's weights at low token counts (performance) | opt-in |
 | [moe-router-weight-on-input](moe-router-weight-on-input/README.md) | Llama 4 MoE applies the router weight to the expert output, not the input | opt-in |
@@ -98,6 +100,8 @@ gemma4-bos-tokenizer is a startup step that takes `MODEL OUT_DIR` and is run on 
 | [glm4-moe-3d-input](glm4-moe-3d-input/README.md) | GLM-4.5 family MoE stops the engine on the first token | opt-in |
 | [rope-cpu-cache](rope-cpu-cache/README.md) | RoPE tables built on the device are wrong at large positions | v0.26.0 |
 | [rank-exception-fatal](rank-exception-fatal/README.md) | a failed tensor-parallel worker leaves the engine serving garbage | v0.26.0, v0.30.0 |
+| [hpu-graph-lru](hpu-graph-lru/README.md) | the lazy-mode graph cache grows without bound, or a first-come cap runs later shapes uncaptured (performance) | opt-in |
+| [load-threads-cgroup](load-threads-cgroup/README.md) | model load runs host-core-count threads under a container CPU quota and is throttled (performance) | opt-in |
 | [vllm-long-prefill-share](vllm-long-prefill-share/README.md) | a very long prefill stalls every other stream's decode (scheduler feature) | opt-in |
 | [pipeline-parallel](pipeline-parallel/README.md) | `--pipeline-parallel-size` above 1 does not run on the HPU runner (stages on separate nodes) | opt-in |
 | [structured-outputs-auto-whitespace](structured-outputs-auto-whitespace/README.md) | `disable_any_whitespace` rejected with the `auto` backend | v0.26.0, v0.30.0 |
@@ -120,11 +124,11 @@ order on its command line. If you run the scripts yourself, keep that order. The
 
 | File | Fixes, in order |
 | --- | --- |
-| `vllm_gaudi/v1/worker/hpu_model_runner.py` | prompt-order, structured-output-rows, so-row-owners, async-inputs, hybrid-decode-pad, gdn-prefix-cache, gather-logprobs-int32, prompt-logprobs, seeded-sampling, swa-decode-window, mm-encoder-budget, mm-pooling-inputs, pipeline-parallel |
+| `vllm_gaudi/v1/worker/hpu_model_runner.py` | prompt-order, structured-output-rows, so-row-owners, async-inputs, hybrid-decode-pad, gdn-prefix-cache, gather-logprobs-int32, prompt-logprobs, seeded-sampling, swa-decode-window, swa-window-context, mm-encoder-budget, mm-pooling-inputs, hpu-graph-lru, load-threads-cgroup, pipeline-parallel |
 | `vllm_gaudi/v1/worker/hpu_input_batch.py` | sampling-rows-refresh, bad-words-index, logitsprocs-rows, resumed-prefill-logits, penalty-shapes, topk-subset-sampler |
 | `vllm/v1/core/sched/scheduler.py` | gdn-prefix-cache, vllm-long-prefill-share, pipeline-parallel |
 | `vllm/v1/sample/ops/topk_topp_sampler.py` | seeded-sampling, topk-subset-sampler |
-| `vllm_gaudi/extension/ops.py` | sink-once, moe-explicit-overload |
+| `vllm_gaudi/extension/ops.py` | sink-once, moe-explicit-overload, fp8-scale-lut |
 | `vllm_gaudi/ops/hpu_fused_moe.py`, `hpu_compressed_tensors.py`, `hpu_fp8.py` | laguna-moe-sigmoid-routing, fp8-moe-gather, moe-router-weight-on-input |
 
 so-row-owners rewrites the call that structured-output-rows edits, so it must come after it.
@@ -136,14 +140,10 @@ hybrid-decode-pad is already in the runner.
 - **GDN state masking by multiplication.** The GDN layers clear a new request's state with
   `state * mask`, so a slot that ever holds NaN stays poisoned (`0 * NaN = NaN`). vllm-gaudi main
   uses `torch.where` at both sites; a backport is small but has not been validated on the releases.
-- **interleaved-swa-model-type.** vllm-gaudi gives sliding-window layers their own window block list
-  in chunked prefill only for `gemma4`. For the models tested here, prefill with the full block list
-  still applies the window bound in the attention bias, so the gate costs compute, not correctness.
-  Muse Glimmer on `v0.30.0` is the exception: its sliding layers returned garbage at 120K tokens
-  and the `muse-glimmer-30b` port carries its own window gate. A general fix keyed on the config
-  instead of `model_type` has not been validated across models.
-- **Speculative decoding fixes** (rejection sampling with temperature, verify-row layout,
-  structured outputs under speculation). They need rework onto the current runner and HPU tests.
+- **Speculative decoding fixes** (rejection sampling with temperature, seeded draws under
+  speculation, verify-row layout, structured outputs under speculation, logprobs for rows without
+  drafts in a verify step). They need rework onto the current runner and HPU tests. On both releases
+  the HPU rejection sampler is greedy only, so seeds never reach it.
 - Model ports, custom kernels and their glue, diagnostics, and fixes already contained in both
   releases.
 
