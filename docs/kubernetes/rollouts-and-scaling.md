@@ -202,6 +202,46 @@ is the equivalent for AIBrix, whose behaviour differs (see the file header).
 - **Do not scale by hand.** `kubectl scale` is reverted by the autoscaler within seconds;
   change its floor or ceiling instead.
 
+### Churn: hold scale-down
+
+Queueing that looks like "too few seqs" is often churn. The autoscaler cuts pods in a lull,
+the next burst arrives a few minutes later, and it waits for new pods to load. New pods are
+also slow for their first minutes when shapes are not yet compiled (see
+[warm-up](startup-and-warmup.md#warm-up)), and every scale-down cuts the streams that are
+longer than the [drain](#graceful-drain) allows.
+
+How it shows:
+
+- Many pods per day that live less than 20 minutes. Count pod creations per model, for
+  example from `kube_pod_created` in kube-state-metrics.
+- Queue time that rises right after replica count drops, while per-pod occupancy before
+  the drop was well below the target.
+- Queue time per request (`vllm:request_queue_time_seconds`) is the measure to judge by.
+  Counting waiting requests overstates models whose queue is short but frequent.
+
+Measured on one fleet over 7 days, at the controller defaults (no hold): one model started
+975 pods, 750 of which lived less than 20 minutes; three more started 199 to 884. A replay
+of that week's real demand through the autoscaler with a 15-minute scale-down hold gave
+about 3.5 times fewer pod starts and, on the worst model, 15 times less queueing, for about
+13 more cards in use on average across the four models.
+
+What to do:
+
+- **Hold scale-down for about 15 minutes**: only cut when demand has stayed low for the
+  whole window. On an HPA this is `behavior.scaleDown.stabilizationWindowSeconds`
+  (the [template](https://github.com/thediymaker/gaudi-cookbook/blob/main/kubernetes/manifests/hpa.yaml)
+  uses 1200). On a controller whose window takes the *lowest* recommendation (see
+  [stabilization semantics](#autoscaler-pitfalls)), a window cuts deeper, not later; the
+  hold needs a controller change that takes the highest recommendation, as the HPA does.
+- **Floor of 2 for any model people rely on.** `num_requests_running` stays low on a model
+  that is prefill-bound (long prompts), so the autoscaler reads it as idle and cuts to one
+  pod while users wait. One such model was cut to a single pod while saturated by agent
+  traffic, and its streams fell from about 48 to under 1 tok/s (a slow long-prompt path in
+  the engine made it worse). Its fix included a floor of 2 and the 15-minute hold.
+- **Keep drain and hold together.** A hold makes scale-downs rare, the drain makes each one
+  harmless. A grace period sized for long generations (up to 900 s on some models) also
+  means a scaled-down pod keeps its cards that long.
+
 ## Disruption budgets
 
 [`pdb.yaml`](https://github.com/thediymaker/gaudi-cookbook/blob/main/kubernetes/manifests/pdb.yaml)

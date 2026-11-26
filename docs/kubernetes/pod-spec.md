@@ -72,6 +72,15 @@ checks this for a directory of manifests.
 - **No CPU limit.** Weight loading and graph compilation are CPU heavy. A CPU limit shows up
   as CFS throttling and very slow starts, which is easy to misread as slow storage.
 - **`/dev/shm` counts toward the memory limit**, because a memory `emptyDir` is RAM.
+- **Budget host RAM against the node, not the limit.** A Gaudi 2 node here has about
+  502 GiB of physical RAM (`free -g`), less than the memory limit some whole-node pods were
+  given (640 GiB). Such a limit is never the ceiling: the node runs out first and the
+  kernel OOM killer ends the pod. A long-context engine (262K tokens, 16 sequences) was
+  OOM-killed on host memory, with HBM to spare, in its first prompt warm-up bucket; a
+  reference run in the same pod at the same time made it worse. Measure host RSS while
+  ramping the context from 32K to the target length, keep the projected peak below about
+  85% of physical RAM (430 GiB here), and run CPU reference models one at a time. An
+  `OOMKilled` status with healthy HBM numbers points here.
 
 ## Probes
 

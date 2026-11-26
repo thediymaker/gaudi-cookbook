@@ -38,7 +38,7 @@ Everything here was run on these components. Treat anything outside them as unte
 | Port a model that has no vllm-gaudi path | `ports/README.md`, `docs/ports/*.md`, then `docs/results/platform-findings.md` | The port contract says how a port is laid out; the write-ups describe each design and its gates; the platform findings list Gaudi behaviours that break new models (FusedSDPA sinks and windows, fp32 trig, lazy-mode casts). |
 | Serve a model that does not run on vLLM (text-to-speech, EmbeddingGemma 2) | `servers/README.md`, then `servers/<server>/README.md` | Build the server image from its `Dockerfile`, then run `tests/hpu/run_gates.sh` on the device. Orpheus is the exception: its LLM half runs on a stock vllm-gaudi image with fixes. |
 | Run on Kubernetes | `docs/kubernetes/*.md`, `kubernetes/manifests/`, `kubernetes/tools/` | Start with `docs/kubernetes/pod-spec.md`. Replace the placeholders `<registry>/<image>:<tag>`, `<storage-class>` and namespace `llm`. |
-| Debug "Device acquire failed", missing cards or stalled engines | `docs/kubernetes/health-and-failure.md` | The matching tool is in `kubernetes/tools/`. Each prints its usage with `-h`. |
+| Debug "Device acquire failed", missing cards, stalled, slow or crashing engines | `docs/kubernetes/health-and-failure.md` | The matching tool is in `kubernetes/tools/`. Each prints its usage with `-h`. |
 
 The docs site is built from `docs/`, so every page is plain Markdown you can read directly.
 

@@ -58,12 +58,92 @@ set `clientConnection.kubeconfig`. Without it the scheduler cannot reach the API
 exits, which on some distributions stops the whole server process. Test the exact file as a
 throwaway secondary scheduler first.
 
-!!! warning "Two schedulers, one pool of cards"
-    While some Gaudi pods use the default scheduler and others use `gaudi-binpack`, both
-    keep their own cache and can bind pods to the same freed cards in the same instant. The
-    kubelet admits one; the other fails with `UnexpectedAdmissionError ... Requested: 4,
-    Available: 1`, and a rollout waiting on it can stall. The lasting fix is to move every
-    Gaudi workload to the same scheduler.
+### One scheduler for every Gaudi pod
+
+While some Gaudi pods use the default scheduler and others use `gaudi-binpack`, the two
+race for the same cards. Each scheduler keeps its own cache of what is free. When a pod
+ends and frees cards, both can bind a waiting pod to that node in the same second. The
+kubelet admits the first and rejects the second:
+
+```text
+UnexpectedAdmissionError ... habana.ai/gaudi. Requested: 4, Available: 1
+```
+
+The rejected pod goes `Failed` (it is not retried on another node), its controller creates
+a new one, and that one waits for the next freed node, where it can lose again. Find the
+losers with:
+
+```bash
+kubectl get pods -A --field-selector=status.phase=Failed \
+  -o custom-columns=NS:.metadata.namespace,POD:.metadata.name,REASON:.status.reason,SCHED:.spec.schedulerName \
+  | grep UnexpectedAdmission
+```
+
+What it cost on a fleet that ran both schedulers for a few weeks:
+
+- One whole-node model left on the default scheduler lost 15 pods in 5 days, each time to a
+  pod of another whole-node model on `gaudi-binpack` bound in the same second. Its
+  autoscaler wanted 7 replicas; 4 were Ready.
+- The canary pod of a rollout lost the race 6 times in a row over about 4 hours while
+  another model had 7 pods Pending, so the rollout could not advance.
+- A user's batch Job with `backoffLimit: 0` failed outright on its first lost race.
+
+The race is not a capacity problem and does not go away with more nodes: it happens
+whenever cards are freed while pods of both schedulers are Pending.
+
+**Rule: every pod that requests `habana.ai/gaudi` uses the same scheduler.** That includes
+canaries, test pods, multi-node replicas and image or speech servers, not only the main
+model Deployments. Add `schedulerName` to each template (each change is one rolling
+restart). Delete the `Failed` pods afterwards: they keep no cards, but they clutter every
+listing.
+
+Pods that users create themselves (Jobs, notebooks) will not carry the field. Set it at
+admission instead: a mutating admission policy that sets `schedulerName` on every new pod
+that requests Gaudi cards and still has the default scheduler. On API servers that serve
+`MutatingAdmissionPolicy` (beta in Kubernetes 1.34, not enabled everywhere) this needs no
+extra component; otherwise use a policy engine such as Kyverno or Kubewarden. A sketch,
+not run on a cluster here (validate it with `kubectl create --dry-run=server` on a test
+pod):
+
+```yaml
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: gaudi-scheduler
+spec:
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchConditions:
+    - name: requests-gaudi
+      expression: >-
+        object.spec.containers.exists(c, has(c.resources.limits) &&
+        'habana.ai/gaudi' in c.resources.limits)
+    - name: on-default-scheduler
+      expression: >-
+        !has(object.spec.schedulerName) || object.spec.schedulerName == 'default-scheduler'
+  failurePolicy: Ignore          # a policy error must not block pod creation
+  reinvocationPolicy: Never
+  mutations:
+    - patchType: ApplyConfiguration
+      applyConfiguration:
+        expression: >-
+          Object{spec: Object.spec{schedulerName: "gaudi-binpack"}}
+---
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: MutatingAdmissionPolicyBinding
+metadata:
+  name: gaudi-scheduler
+spec:
+  policyName: gaudi-scheduler
+```
+
+With one scheduler for every Gaudi pod, that scheduler is on the critical path: run two
+replicas with leader election, as the manifest does, and alert when Gaudi pods stay
+Pending.
 
 ### Caveats
 

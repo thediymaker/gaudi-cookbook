@@ -44,6 +44,15 @@ models share the fleet, replicas come and go, and users hold long streams open.
 | Cold starts take an hour | Per-node downloads, CPU throttling, a cold recipe cache | [Start-up and warm-up](startup-and-warmup.md) |
 | Long non-streamed requests fail at exactly 300 s or 600 s | A proxy or gateway timeout shorter than the rest of the chain | [Routing](routing.md#the-timeout-chain) |
 | One pod queues while its siblings idle | Clients that bypass the router, or KV-heavy prompts on one pod | [Routing](routing.md) |
+| Pods go `Failed` with `UnexpectedAdmissionError ... Requested: N, Available: M` | Two schedulers binding to the same freed cards | [Scheduling](scheduling.md#one-scheduler-for-every-gaudi-pod) |
+| Queueing right after replica count drops; hundreds of short-lived pods a week | Autoscaler churn with no scale-down hold | [Rollouts and scaling](rollouts-and-scaling.md#churn-hold-scale-down) |
+| A prefix-cache model misses its cache across turns, or one pod takes all traffic | Router reads the wrong max-num-seqs, a drifting in-flight counter, or one prefix index per gateway replica | [Routing](routing.md#check-what-the-router-believes) |
+| KV cache full with few requests running, preemptions on one pod | Runaway generations with no cap | [Routing](routing.md#cap-runaway-generations) |
+| Everyone slow on a model with no gateway queue | Bulk traffic with long prompts | [Routing](routing.md#bulk-traffic) |
+| Engine dies with "tensor_data is empty" at a different Python line each time | Device memory allocation failure at graph launch | [Health and failure](health-and-failure.md#crash-forensics) |
+| 2 to 5 tok/s at low load, about 700 ms per decode step, idle cards | Decode shapes running without an HPU graph | [Health and failure](health-and-failure.md#profiling-a-stuck-or-slow-engine) |
+| `OOMKilled` with HBM to spare | Host RAM below the pod's memory limit | [Pod spec](pod-spec.md#resources) |
+| New pods on fresh nodes are unusable for a long time with warm-up skipped | No recipe-cache seed | [Start-up and warm-up](startup-and-warmup.md#seed-the-cache-for-skip-warm-up-models) |
 | Prometheus runs out of memory after autoscaler churn | Per-pod series from pods that no longer exist | [Observability](observability.md#keep-prometheus-healthy) |
 
 ## Files
