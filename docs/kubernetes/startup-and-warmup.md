@@ -173,6 +173,16 @@ on live traffic, and while one request compiles, every other stream on that pod 
 - Some models fail during warm-up on some releases; then skipping it is the only option
   until that is fixed.
 
+**Skipped warm-up with a graph cap freezes the first shapes.** With `VLLM_HPU_MAX_GRAPHS` set,
+the stock graph cache keeps the first N shapes it sees and never replaces them. With warm-up
+skipped, those are whatever the first hours of traffic happened to send. When load later moves
+into decode batch sizes the pod never captured, those steps run uncaptured in lazy mode, host
+bound, at several hundred milliseconds each, while the cards sit idle. Pods of the same model
+then differ by up to 10x in inter-token latency depending on their history. Either leave the cap
+unset, warm the decode buckets before traffic, or use the
+[`hpu-graph-lru`](../fixes/hpu-graph-lru.md) fix, which evicts instead of freezing. The
+[profiling section](health-and-failure.md#profiling-a-stuck-or-slow-engine) of the health page shows how to see it.
+
 **Warm a pod before it takes traffic, never after.** Requests sent from inside a pod
 (`kubectl exec ... curl localhost`) are invisible to the router. A least-request router
 counts only its own in-flight requests, so it keeps sending users to the pod that is busy
