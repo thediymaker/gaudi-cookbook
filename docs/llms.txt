@@ -24,6 +24,8 @@ Agents: read AGENTS.md first. It maps tasks to files and gives the rules: check 
   - [Qwen/Qwen3.5-27B-FP8 recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/Qwen/Qwen3.5-27B-FP8/recipe.yaml)
 - [Qwen3.8-27B](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/qwen3-8-27b.md): 27B dense hybrid (Gated DeltaNet + attention) reasoning model with vision, BF16, native 256K context on one Gaudi 2 card, 4 sequences.
   - [Qwen/Qwen3.8-27B recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/Qwen/Qwen3.8-27B/recipe.yaml)
+- [Qwen3.8-27B-FP8](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/qwen3-8-27b-fp8.md): 27B dense hybrid (Gated DeltaNet + attention) reasoning model with vision, Qwen's FP8 release, 256K context on one Gaudi 2 card, 32 sequences.
+  - [Qwen/Qwen3.8-27B-FP8 recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/Qwen/Qwen3.8-27B-FP8/recipe.yaml)
 - [Qwen3.6-27B-FP8](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/qwen3-6-27b-fp8.md): 27B dense hybrid (Gated DeltaNet + attention) reasoning model with vision, FP8, native 256K context on one Gaudi 2 card.
   - [Qwen/Qwen3.6-27B-FP8 recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/Qwen/Qwen3.6-27B-FP8/recipe.yaml)
 - [Qwen3.6-35B-A3B-FP8](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/qwen3-6-35b-a3b-fp8.md): 35B MoE (3B active) hybrid (Gated DeltaNet + attention) reasoning model with vision, FP8, native 256K context on one Gaudi 2 card.
@@ -34,7 +36,7 @@ Agents: read AGENTS.md first. It maps tasks to files and gives the rules: check 
   - [Qwen/Qwen3-Embedding-4B recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/Qwen/Qwen3-Embedding-4B/recipe.yaml)
 - [Qwen3-VL-Embedding-8B](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/qwen3-vl-embedding-8b.md): 8B multimodal embedding model (text, images, screenshots; 4096 dimensions, Matryoshka truncation) on one Gaudi 2 card in BF16.
   - [Qwen/Qwen3-VL-Embedding-8B recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/Qwen/Qwen3-VL-Embedding-8B/recipe.yaml)
-- [Gemma 4 E2B IT](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/gemma-4-e2b-it.md): Small Gemma 4 instruct model (2.3B effective, 20 KV-shared layers) with KV-sharing fast prefill, BF16, text only, on one Gaudi 2 card.
+- [Gemma 4 E2B IT](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/gemma-4-e2b-it.md): Small Gemma 4 instruct model (2.3B effective, 20 KV-shared layers) with KV-sharing fast prefill, BF16, text only, 128K, one Gaudi 2 card.
   - [google/gemma-4-E2B-it recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/google/gemma-4-E2B-it/recipe.yaml)
 - [Qwen-AgentWorld-35B-A3B](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/qwen-agentworld-35b-a3b.md): 35B hybrid MoE (Gated DeltaNet + attention, 3B active) agent model, BF16, native 256K context on two Gaudi 2 cards.
   - [Qwen/Qwen-AgentWorld-35B-A3B recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/Qwen/Qwen-AgentWorld-35B-A3B/recipe.yaml)
@@ -42,7 +44,7 @@ Agents: read AGENTS.md first. It maps tasks to files and gives the rules: check 
   - [ornith-ai/Ornith-1.0-35B recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/ornith-ai/Ornith-1.0-35B/recipe.yaml)
 - [Qwen3-VL-32B-Instruct-FP8](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/qwen3-vl-32b-instruct-fp8.md): 32B dense vision-language model (images and video) in FP8, 128K context on two Gaudi 2 cards.
   - [Qwen/Qwen3-VL-32B-Instruct-FP8 recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/Qwen/Qwen3-VL-32B-Instruct-FP8/recipe.yaml)
-- [GLM-4.5V (FP8)](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/glm-4-5v-fp8.md): 106B MoE vision-language model (12B active) in FP8, 32K context on two Gaudi 2 cards.
+- [GLM-4.5V (FP8)](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/glm-4-5v-fp8.md): 106B MoE vision-language model (12B active) in FP8, 64K context on two Gaudi 2 cards.
   - [zai-org/GLM-4.5V-FP8 recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/zai-org/GLM-4.5V-FP8/recipe.yaml)
 - [Muse Glimmer 30B](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/muse-glimmer-30b.md): 29.6B dense vision-language agent model (3:1 sliding/global attention, image input), BF16, 128K context on two Gaudi 2 cards.
   - [meta-models/Muse-Glimmer-30B recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/meta-models/Muse-Glimmer-30B/recipe.yaml)
@@ -53,6 +55,8 @@ Agents: read AGENTS.md first. It maps tasks to files and gives the rules: check 
   - [Qwen/Qwen3.5-122B-A10B-FP8 recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/Qwen/Qwen3.5-122B-A10B-FP8/recipe.yaml)
 - [Qwen3-Coder-Next](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/qwen3-coder-next.md): 80B hybrid MoE (Gated DeltaNet + attention, 3B active) coding model with tool calling, BF16, native 256K context on four Gaudi 2 cards.
   - [Qwen/Qwen3-Coder-Next recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/Qwen/Qwen3-Coder-Next/recipe.yaml)
+- [Qwen3-Coder-Next-FP8](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/qwen3-coder-next-fp8.md): 80B hybrid MoE (Gated DeltaNet + attention, 3B active) coding model with tool calling, Qwen's FP8 release, 256K context on two Gaudi 2 cards.
+  - [Qwen/Qwen3-Coder-Next-FP8 recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/Qwen/Qwen3-Coder-Next-FP8/recipe.yaml)
 - [Devstral-2-123B-Instruct-2512](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/devstral-2-123b-instruct-2512.md): 123B dense agentic coding model, official FP8 checkpoint, 128K context with tool calling on four Gaudi 2 cards.
   - [mistralai/Devstral-2-123B-Instruct-2512 recipe.yaml](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/recipes/mistralai/Devstral-2-123B-Instruct-2512/recipe.yaml)
 - [Gemma 4 31B IT](https://raw.githubusercontent.com/thediymaker/gaudi-cookbook/main/docs/recipes/gemma-4-31b-it.md): 31B dense multimodal (image + text) instruct model, BF16, 128K context on four Gaudi 2 cards.
