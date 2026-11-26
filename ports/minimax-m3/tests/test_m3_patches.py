@@ -18,7 +18,11 @@ import pytest
 
 PORT = Path(__file__).resolve().parent.parent
 REPO = PORT.parent.parent
-PATCHES = [PORT / "patches" / "swigluoai_fp8_moe.py", PORT / "patches" / "reasoning_prompt_scope.py"]
+PATCHES = [
+    PORT / "patches" / "swigluoai_fp8_moe.py",
+    PORT / "patches" / "reasoning_prompt_scope.py",
+    PORT / "patches" / "kv_finite_writes.py",
+]
 
 
 def _root():
@@ -110,3 +114,37 @@ def test_w13_interleave_matches_gpt_swiglu():
     hi = h.view(5, 2, N).transpose(1, 2).reshape(5, 2 * N)
     assert torch.allclose(swiglu(hi[:, 0::2], hi[:, 1::2]), ref)
     assert not torch.allclose(swiglu(h[:, 0::2], h[:, 1::2]), ref)
+
+
+def _kv_cache_class(tree, monkeypatch, env):
+    """VLLMKVCache.forward from the patched utils.py, run on CPU with the switch set as given."""
+    torch = pytest.importorskip("torch")
+    assert _run(PATCHES[2], "--root", str(tree)) == 0
+    src = (tree / "vllm_gaudi" / "extension" / "utils.py").read_text()
+    tree_ast = ast.parse(src)
+    cls = next(n for n in tree_ast.body if isinstance(n, ast.ClassDef) and n.name == "VLLMKVCache")
+    fwd = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "forward")
+    if env is None:
+        monkeypatch.delenv("VLLM_M3_KV_FINITE", raising=False)
+    else:
+        monkeypatch.setenv("VLLM_M3_KV_FINITE", env)
+    ns = {"torch": torch, "os": os}
+    switch = next(n for n in tree_ast.body if isinstance(n, ast.Assign) and n.targets[0].id == "_M3_KV_FINITE")
+    exec(ast.get_source_segment(src, switch), ns)
+    exec(ast.get_source_segment(src, fwd).replace("    def forward", "def forward", 1).replace("\n    ", "\n"), ns)
+    return torch, ns["forward"]
+
+
+@pytest.mark.parametrize(("env", "guarded"), [(None, False), ("0", False), ("1", True)])
+def test_kv_finite_switch(tree, monkeypatch, env, guarded):
+    torch, forward = _kv_cache_class(tree, monkeypatch, env)
+    cache = torch.ones(6, 2, 4, dtype=torch.bfloat16)
+    x = torch.tensor([[[1.0, float("nan"), float("inf"), -float("inf")]] * 2] * 2, dtype=torch.bfloat16)
+    out = forward(None, x, cache, torch.tensor([1, 4]))
+    written = out[torch.tensor([1, 4])]
+    if guarded:
+        assert torch.isfinite(written).all() and written[0, 0, 0] == 1.0 and written[0, 0, 1] == 0.0
+    else:
+        assert torch.isnan(written).any()
+    assert (out[torch.tensor([0, 2, 3, 5])] == 1).all()
+    assert forward(None, None, cache, torch.tensor([0])) is cache

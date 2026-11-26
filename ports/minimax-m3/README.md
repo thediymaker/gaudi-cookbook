@@ -7,7 +7,7 @@ plus one shared expert, SwiGLU-OAI activation) text-only on one 8-card Gaudi 2 n
 vllm-gaudi v0.26.0 already has the HPU MiniMax-M3 model, the expert-parallel MoE and the `minimax_m3_py` tool
 parser. What it cannot do is run the AMD checkpoint: `quark` is not a supported quantization on HPU, and its
 compressed-tensors FP8 MoE op has no SwiGLU-OAI activation. The port closes that gap with a conversion and two
-source patches; there is no plugin package. Write-up: [docs/ports/minimax-m3.md](../../docs/ports/minimax-m3.md).
+source patches, plus an off-by-default KV cache guard; there is no plugin package. Write-up: [docs/ports/minimax-m3.md](../../docs/ports/minimax-m3.md).
 Recipe: [recipes/amd/MiniMax-M3-MXFP4](../../recipes/amd/MiniMax-M3-MXFP4/recipe.yaml).
 
 ## Contents
@@ -19,7 +19,8 @@ Recipe: [recipes/amd/MiniMax-M3-MXFP4](../../recipes/amd/MiniMax-M3-MXFP4/recipe
 | `convert/validate.py` | Independent check of a converted checkpoint against its source, with its own reader and decoders |
 | `patches/swigluoai_fp8_moe.py` | Runs SwiGLU-OAI experts of `HPUCompressedTensorsW8A8Fp8MoEMethod` on Habana's `bias_fp8_fused_weights` kernel (`VLLM_M3_FP8_MOE=native`) or on a bf16 reference path (`dequant`) |
 | `patches/reasoning_prompt_scope.py` | Fixes vLLM's `minimax_m3` reasoning parser, which streams the reasoning as content because the prompt quotes the thinking markers |
-| `install.sh`, `Dockerfile` | Check the image commits, apply both patches, re-check them |
+| `patches/kv_finite_writes.py` | `VLLM_M3_KV_FINITE=1` replaces non-finite K/V values with 0 before they are written to the KV cache, so one bad write cannot reach other requests through masked reads. Off by default |
+| `install.sh`, `Dockerfile` | Check the image commits, apply the patches, re-check them |
 | `tests/` | CPU tests (pytest): re-encoding exactness against an independent oracle, the quantization config under vLLM's matching rules, both patches against v0.26.0 sources (`GAUDI_FIXES_ROOT`), the w13 interleave |
 | `tests/hpu/run_gates.sh` | Serving gates: golden prompts, greedy loops, needles to 125K, logprobs, streamed reasoning and tool calls, speed |
 
@@ -70,11 +71,24 @@ SERVER_LOG=/path/to/server.log ports/minimax-m3/tests/hpu/run_gates.sh http://12
 
 | Variable | Values | Meaning |
 | --- | --- | --- |
+| `VLLM_M3_KV_FINITE` | `0` (default, recipe), `1` | `1`: every K/V write replaces NaN and infinity with 0 (bf16 KV cache). A guard, not a fix for the source of a bad value; see below |
 | `VLLM_M3_FP8_MOE` | `native` (recipe), `dequant` | `native`: Habana's fused FP8 kernel with SwiGLU-OAI inside, FP8 activations per token. `dequant`: the reference path, experts decoded to bf16 and run in PyTorch with bf16 activations (numerically the MXFP4 checkpoint in bf16; several times slower at decode) |
 
 The patch reads vllm-gaudi's existing `VLLM_MINIMAX_M3_MOE_DECODE_GATHER`, `VLLM_MINIMAX_M3_MOE_GATHER_MAX_TOKENS` and
 `VLLM_MINIMAX_M3_MOE_TOKEN_TILE` in `dequant` mode and the stock `VLLM_MOE_CHUNK` and `VLLM_MOE_TOKEN_BOUNDARY` hints
 in `native` mode.
+
+## Non-finite KV guard
+
+Attention on HPU reads more than a request's own keys: padded rows and padded block lists point at a shared
+padding block, and masked positions are removed by adding a large negative bias. A NaN or infinity written to the
+KV cache therefore does not stay in the request that wrote it (NaN plus any bias is NaN). A MiniMax-M3 server
+running a block-sparse attention path, which reads other sequences' blocks under a mask (not part of this port),
+went from one such write to every request returning token 0 until it was restarted. The origin of the first
+non-finite value was not found. With `VLLM_M3_KV_FINITE=1` every K/V write keeps finite values only, at the cost
+of one `torch.where` per layer and step. It was not needed and not observed with this port's dense attention, and
+the recipe's results were measured with it off; turn it on for long-running servers if you see a server that
+answers every request with the same token.
 
 ## Licence
 

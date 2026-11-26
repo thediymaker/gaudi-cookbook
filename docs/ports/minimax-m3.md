@@ -71,6 +71,11 @@ the whole prompt, finds that closer, and answers yes. Streaming then emits the m
 bug from API tests. `patches/reasoning_prompt_scope.py` starts the scan at the last role token, so only the turn
 being generated counts. The bug is in vLLM's parser and is present on v0.26.0, v0.30.0 and vLLM main.
 
+`patches/kv_finite_writes.py` adds an off-by-default guard, `VLLM_M3_KV_FINITE=1`, that replaces NaN and infinity
+with 0 in every K/V write. Masked attention reads other rows' blocks and the shared padding block, so one non-finite
+K/V can turn every later request into the same token. That was seen with a block-sparse attention path for M3 that
+is not part of this port; the guard is there for servers that want the protection, and the recipe runs with it off.
+
 ## History: three expert paths
 
 The same node shape ran three expert paths before FP8. Each row is the path production ran at the time, measured on
@@ -145,8 +150,9 @@ First token for one cold 2K, 16K and 32K prompt: 0.26 s, 2.0 s and 5.5 s. The KV
 ## Availability
 
 The port is in [`ports/minimax-m3`](https://github.com/thediymaker/gaudi-cookbook/tree/main/ports/minimax-m3): the
-converter, the two patches, the CPU tests and the serving gates. The recipe is verified as written: the image built
+converter, the patches, the CPU tests and the serving gates. The recipe is verified as written: the image built
 by `install.sh` from the stock v0.26.0 image passes every gate in `run_gates.sh`, and the converter reproduces the
-served checkpoint byte for byte. Not covered: images (the HPU vision path builds the tower as MXFP4 on the AMD checkpoint; the FP8
+served checkpoint byte for byte. The KV guard was added later and is off in the recipe; with it off the KV write is
+the stock one. Not covered: images (the HPU vision path builds the tower as MXFP4 on the AMD checkpoint; the FP8
 checkpoint leaves it in BF16 but images were not validated) and speculative decoding (no checkpoint publishes M3's
 MTP weights).
