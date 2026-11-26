@@ -64,6 +64,14 @@ affected, and with `--pipeline-parallel-size 1` the fix calls the original metho
 `VLLM_HPU_PP_STATS_EVERY=N` (default 0, off) logs the transfer counters of tensor-parallel rank 0 of each stage
 every N messages.
 
+## Limits
+
+- **Speculative decoding.** The last stage runs the stock `sample_tokens`, including its speculative branch, which
+  is unchanged. On both releases that branch accepts greedy batches only (the HPU rejection sampler asserts it) and
+  adds no logprobs for the tokens of a verify step. Ports that add random rejection sampling also have to keep vLLM's
+  sampler output (token, logprobs, penalties, seed) for rows without drafts in a verify step; this fix does not carry
+  that change.
+
 ## Serving
 
 Two nodes, one vLLM instance, vLLM's multiprocessing executor across nodes (no Ray). The node with rank 0 runs the
