@@ -100,7 +100,14 @@ TW = torch.tensor([[0.7, 0.3], [0.4, 0.6], [0.5, 0.5]])
 
 @pytest.mark.parametrize(
     "variant,k,inter",
-    [("gptoss", 576, 544), ("glm", 1024, 512), ("dsv41", 1024, 256), ("muse", 512, 512), ("kimi", 1536, 512)],
+    [
+        ("gptoss", 576, 544),
+        ("glm", 1024, 512),
+        ("dsv41", 1024, 256),
+        ("muse", 512, 512),
+        ("kimi", 1536, 512),
+        ("ml4", 1024, 512),
+    ],
 )
 def test_kernel_emulation_matches_reference(variant, k, inter):
     spec, d = small(variant, k, inter)

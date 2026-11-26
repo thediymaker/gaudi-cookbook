@@ -9,7 +9,7 @@
 #   - g++, objcopy, strip, python3 with torch
 #
 #   ./build.sh [--variant NAME] [--kernels v8|v10] [--extra-kernel DIR]... [--pt2] [OUT_DIR]
-#   defaults: --variant gptoss, --kernels v10 for a variant that has a v10 set (all but muse) unless --pt2, v8 otherwise,
+#   defaults: --variant gptoss, --kernels v10 for a variant that has a v10 set (all but muse and ml4) unless --pt2, v8 otherwise,
 #   OUT_DIR ./dist
 #
 # Variants (the kernels each model's integration calls; one variant per serving image):
@@ -22,6 +22,9 @@
 #   muse     mxk_w13x mxk_w2xr            Muse Spark Open: [gate; up] w13 + SiLU, w2 per route
 #   kimi     mxk_w13xt mxk_w2x            Kimi-K2.7: [gate; up] w13 + SiLU for K up to 8192, w2 sum
 #            v10 adds mxk_w13xk (K <= 7168) mxk_w2xc mxk_w2gp mxk_w2c (and the mxk_w2g ELF)
+#   ml4      mxk_w13x mxk_w2x mxk_deq     Mistral Large 4: GLM's v8 kernels at K 6144 / I 3072 (virtual experts)
+#            mxk_w13g mxk_w2g mxk_w2c     plus the grouped-route decode kernels (2-64 tokens per call), bit-identical
+#                                         to mxk_w13x + mxk_w2x per token; v8 only (no v10 set)
 #   none     (no MoE kernels)             a port that only needs its own --extra-kernel (GLM-5.3-Flash)
 #
 # --kernels v10 builds the variant's v8 kernels (the same machine code as a v8 build) PLUS its v10 kernels into one
@@ -40,7 +43,7 @@
 # The extra GUIDs follow the variant's GUIDs in the library, the gates expect them, and they are part of the version.
 #
 # --pt2 also builds libmxk_op_pt2.so (src/mxk_op_pt2.cpp): the same ops on the PT2 custom-op API with Meta
-# implementations, for models served in torch.compile mode (PT_HPU_LAZY_MODE=0). Not for gptoss (lazy mode) and not
+# implementations, for models served in torch.compile mode (PT_HPU_LAZY_MODE=0). Not for gptoss or ml4 (lazy mode) and not
 # with --extra-kernel (an extra kernel's op.cpp uses the lazy API).
 #
 # Env: TPC_CLANG (compiler path); MXK_BUILD_DIR (scratch dir, default /tmp/mxk_<variant>_v8_build for both kernel sets:
@@ -73,7 +76,7 @@ while [ $# -gt 0 ]; do
     --extra-kernel) EXTRA_DIRS+=("$(cd "$2" && pwd)"); shift 2 ;;
     --extra-kernel=*) EXTRA_DIRS+=("$(cd "${1#*=}" && pwd)"); shift ;;
     --pt2) PT2=1; shift ;;
-    -h|--help) sed -n '2,57p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) [ -z "$OUT" ] || { echo "one OUT_DIR only" >&2; exit 2; }; OUT=$1; shift ;;
   esac
@@ -85,8 +88,9 @@ case $VARIANT in
   dsv41)  KERNELS=(mxk_w13xi mxk_w2x) ;;
   muse)   KERNELS=(mxk_w13x mxk_w2xr) ;;
   kimi)   KERNELS=(mxk_w13xt mxk_w2x) ;;
+  ml4)    KERNELS=(mxk_w13x mxk_w2x mxk_deq mxk_w13g mxk_w2g mxk_w2c) ;;
   none)   KERNELS=() ;;
-  *) echo "unknown variant '$VARIANT' (gptoss, glm, dsv41, muse, kimi, none)" >&2; exit 2 ;;
+  *) echo "unknown variant '$VARIANT' (gptoss, glm, dsv41, muse, kimi, ml4, none)" >&2; exit 2 ;;
 esac
 # v10 kernels per variant: GUIDs, and ELFs built into the library without a GUID of their own
 declare -A V10=([glm]="mxk_w13xn mxk_w2xc mxk_w2gp mxk_w2c" [kimi]="mxk_w13xk mxk_w2xc mxk_w2gp mxk_w2c"
@@ -110,7 +114,7 @@ declare -A KSRC=([mxk_w13x]=mxk8_w13x [mxk_w13xi]=mxk8_w13xi [mxk_w13xib]=mxk8_w
                  [mxk_w2xr]=mxk8_w2xr [mxk_w2xb]=mxk8_w2xb [mxk_deq]=mxk_deq
                  [mxk_w13xn]=mxk10_w13xn [mxk_w13xk]=mxk10_w13xk [mxk_w13xin]=mxk10_w13xin
                  [mxk_w13xibn]=mxk10_w13xibn [mxk_w2gn]=mxk9_w2gn [mxk_w2cb]=mxk9_w2cb [mxk_w2xc]=mxk10_w2xc [mxk_w2gp]=mxk9_w2gp [mxk_w2c]=mxk9_w2c
-                 [mxk_w2g]=mxk9_w2g)
+                 [mxk_w2g]=mxk9_w2g [mxk_w13g]=mxk9_w13g)
 
 EXTRA=()
 for d in "${EXTRA_DIRS[@]}"; do
@@ -123,7 +127,7 @@ for d in "${EXTRA_DIRS[@]}"; do
 done
 [ "$VARIANT" != none ] || [ ${#EXTRA[@]} -gt 0 ] || { echo "--variant none needs at least one --extra-kernel" >&2; exit 2; }
 if [ "$PT2" = 1 ]; then
-  [ "$VARIANT" != gptoss ] && [ "$VARIANT" != none ] || { echo "--pt2: no torch.compile ops for variant $VARIANT" >&2; exit 2; }
+  [ "$VARIANT" != gptoss ] && [ "$VARIANT" != none ] && [ "$VARIANT" != ml4 ] || { echo "--pt2: no torch.compile ops for variant $VARIANT" >&2; exit 2; }
   [ ${#EXTRA[@]} -eq 0 ] || { echo "--pt2 cannot be combined with --extra-kernel (lazy-mode op.cpp)" >&2; exit 2; }
   [ "$KV" = v8 ] || { echo "--pt2: the v10 kernels have no torch.compile ops; build with --kernels v8 --pt2" >&2; exit 2; }
 fi
@@ -148,6 +152,7 @@ fi
 # Version: variant + hash of everything that goes into the libraries
 SRCS=("$SRC/mxk8_core.h" "$SRC/mxk8_w13.h" "$SRC/mxk8_w2.h")
 [ "$KV" = v8 ] || SRCS+=("$SRC"/mxk10_*.h "$SRC"/mxk9_*.h)
+[ "$VARIANT" != ml4 ] || SRCS+=("$SRC"/mxk9_*.h)
 for n in "${KERNELS[@]}" "${NOGUID[@]}"; do SRCS+=("$SRC/${KSRC[$n]}.c"); done
 SRCS+=("$SRC/mxk_tpc_lib.cpp" "$SRC/mxk_tpc.map" "$SRC/mxk_op_lazy.cpp" "$HERE/build.sh")
 for d in "${EXTRA_DIRS[@]}"; do SRCS+=("$d"/*.c "$d/glue.inc" "$d/op.cpp"); done

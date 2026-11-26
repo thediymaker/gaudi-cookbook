@@ -8,7 +8,8 @@ implementations with identical inputs must not share a process). ``run_parity.sh
     parity_hpu.py --variant V --impl ref    CPU fp32 reference (no device needed)
     parity_hpu.py --variant V --impl stock  the stock op as the model serves it
     parity_hpu.py --variant V --impl ours   the kernels (--lib DIR: a build of variant V), --path v8
-    parity_hpu.py --variant V --impl ours --path P   each v10 decode path of a v10 build (glm: stack3, stack2)
+    parity_hpu.py --variant V --impl ours --path P   each other decode path of the build (a v10 build's: glm
+                                            stack3, stack2; every ml4 build: grouped)
     parity_hpu.py --variant V --impl sig    every op of the variant twice with identical input shapes and different
                                             data in ONE lazy graph, per T = 1 .. the variant's token cap, for
                                             each decode path of the build (--path)
@@ -16,12 +17,13 @@ implementations with identical inputs must not share a process). ``run_parity.sh
 
 Shapes are the per-rank shapes the model serves (mxk_harness.VARIANTS). Weights: random MXFP4 weights of those
 shapes (default), or one layer of a local checkpoint (--checkpoint; see mxk_harness.load_layer for the formats).
-The glm variant also runs its prefill unpack path at 256, 1024 and 4096 tokens.
+The glm and ml4 variants also run their prefill unpack path at 256, 1024 and 4096 tokens. ml4 decode cases go up
+to 64 tokens: the v8 path calls the kernels in 16-token pieces, the grouped path once.
 
 Pass criteria (cmp):
   decode   for every case the kernel's rel_l2 against the fp32 reference is below --max-rel (default 3e-3) and not
-           above the stock op's, for every decode path of the build; each v10 path's outputs are bit-identical
-           to the v8 path's                                                                -> PARITY PASS
+           above the stock op's, for every decode path of the build; each other path's outputs (v10, ml4
+           grouped) are bit-identical to the v8 path's                                      -> PARITY PASS
   prefill  the unpack is bit-exact against the CPU unpack, and the unpack path's rel_l2 against the reference is
            within 2% of the stock op's, with rel_l2 to the stock op below 1e-3              -> PREFILL PASS
   sig      results inside one graph are bit-identical to the same calls alone, and the two calls differ
@@ -43,7 +45,7 @@ def parse():
     ap = argparse.ArgumentParser(description="MXFP4 MoE kernel parity (one Gaudi 2 card)")
     ap.add_argument("--variant", default="gptoss", choices=sorted(H.VARIANTS))
     ap.add_argument("--impl", required=True, choices=["ref", "stock", "ours", "sig", "cmp", "paths"])
-    ap.add_argument("--path", default="v8", help="decode path of a v10 build: v8 (default), stack2, stack3")
+    ap.add_argument("--path", default="v8", help="decode path: v8 (default); v10 builds stack2, stack3; ml4 grouped")
     ap.add_argument("--checkpoint", default="", help="local checkpoint (default: random weights)")
     ap.add_argument("--layer", type=int, default=None, help="checkpoint layer (default: the variant's)")
     ap.add_argument("--e-local", type=int, default=None, help="local experts on this card (default: as served)")
@@ -108,7 +110,7 @@ def compare(a):
             rs = H.rel_l2(s["y"], r["y"]) if s else float("nan")
             os_ = H.rel_l2(o["y"], s["y"]) if s else float("nan")
             ok = ro <= a.max_rel and (s is None or ro <= rs)
-            if path != "v8":  # a v10 path must give the v8 path's output bit for bit
+            if path != "v8":  # every other path must give the v8 path's output bit for bit
                 ident = key in ours["cases"] and torch.equal(o["y"], ours["cases"][key]["y"])
                 same += int(ident)
                 ok = ok and ident
@@ -151,8 +153,11 @@ def sig(a, d, run, t_dev):
     co = torch.ops.custom_op
     lo, hi = a.e_min, a.e_min + a.e_local
     bad = 0
-    for t in range(1, a.spec["max_tokens"] + 1):
-        if t * d["topk"] > 128:
+    ts = list(range(1, a.spec["max_tokens"] + 1))
+    if a.spec["split_tokens"]:
+        ts += [t for t in (24, 32, 48, 64) if t <= a.spec["split_tokens"]]
+    for t in ts:
+        if t * d["topk"] > 128 and not a.spec["split_tokens"]:
             break
         xa, ida, twa = H.make_case(a.spec, d, t, "rand", 1.0, a.e_min, a.e_local)
         xb, idb, twb = H.make_case(a.spec, d, t, "hot", 2.0, a.e_min, a.e_local)
@@ -163,7 +168,7 @@ def sig(a, d, run, t_dev):
             y = run(*args)
             ht.core.mark_step()
             alone.append(y.cpu())
-        deq = a.variant == "glm"
+        deq = bool(a.spec["prefill"])
         e1, e2 = (7 * t) % a.e_local, (7 * t + 13) % a.e_local
         # The expert views are taken inside each graph, as the prefill path does: a legacy custom op reads a view
         # that was materialised in an earlier lazy graph wrongly (README, "Lazy-mode pitfalls").

@@ -27,6 +27,7 @@ def _spec(**kw):
         prefill=(),  # token counts of the prefill unpack path
         chunk=256,  # chunk_size of the stock op (the production manifests' VLLM_MOE_CHUNK); 0 = none
         x_rms=(1.0,),
+        split_tokens=0,  # > max_tokens: the model also calls the kernels on up to this many tokens (v8 in pieces)
     )
     s.update(kw)
     return s
@@ -72,6 +73,20 @@ VARIANTS = {
     "muse": _spec(k=4096, inter=1024, e_global=256, topk=8, e_local=128, w2="route", max_tokens=4, layer=30),
     # Kimi-K2.7 EP8: 48 of 384 experts, K 7168 (longer than the w13 VLM stage)
     "kimi": _spec(k=7168, inter=2048, e_global=384, topk=8, e_local=48, max_tokens=16, layer=3),
+    # Mistral Large 4 EP8 after the virtual-expert split: 128 experts of I 6144 are 256 of I 3072, top-4 is top-8;
+    # 32 virtual experts per card. Decode calls of up to 64 tokens (multi-stream decode, speculative verify rows): v8
+    # in 16-token pieces, or one call of the grouped-route kernels.
+    "ml4": _spec(
+        k=6144,
+        inter=3072,
+        e_global=256,
+        topk=8,
+        e_local=32,
+        max_tokens=16,
+        split_tokens=64,
+        layer=5,
+        prefill=(256, 1024, 4096),
+    ),
 }
 
 for _name, _s in VARIANTS.items():
@@ -88,28 +103,38 @@ SERVED_PREFIX = {
 def decode_cases(spec):
     """(tokens, routing) cases up to the variant's token cap: "rand" = top-k of all experts per token (the local
     route count is what matters), "hot" = every route on a local expert (worst case)."""
-    ts = [t for t in (1, 2, 4, 8, 16, 32) if t <= spec["max_tokens"]]
+    cap = max(spec["max_tokens"], spec["split_tokens"])
+    ts = [t for t in (1, 2, 4, 8, 16, 32, 64) if t <= cap]
     out = [(t, "rand") for t in ts]
     out += [(1, "hot"), (min(8, spec["max_tokens"]), "hot")]
-    return [(t, m) for t, m in dict.fromkeys(out) if t * spec["topk"] <= 128]
+    if spec["split_tokens"]:
+        out += [(spec["split_tokens"], "hot")]
+    return [(t, m) for t, m in dict.fromkeys(out) if t * spec["topk"] <= 128 or spec["split_tokens"]]
 
 
 # ---------------------------------------------------------------------------------------------- weights
+INDEX_FILES = ("model.safetensors.index.json", "consolidated.safetensors.index.json")  # HF, Mistral-native
+
+
+def _index(path):
+    return next((os.path.join(path, n) for n in INDEX_FILES if os.path.isfile(os.path.join(path, n))), None)
+
+
 def snapshot_dir(path):
-    """A snapshot directory (with model.safetensors.index.json) from a snapshot or a hub cache model directory."""
-    if os.path.isfile(os.path.join(path, "model.safetensors.index.json")):
+    """A snapshot directory (with a safetensors index) from a snapshot or a hub cache model directory."""
+    if _index(path):
         return path
     for s in sorted(glob.glob(os.path.join(path, "snapshots", "*", ""))):
-        if os.path.isfile(os.path.join(s, "model.safetensors.index.json")):
+        if _index(s):
             return s
-    raise FileNotFoundError(f"no model.safetensors.index.json under {path}")
+    raise FileNotFoundError(f"no {' or '.join(INDEX_FILES)} under {path}")
 
 
 def _reader(checkpoint):
     from safetensors import safe_open
 
     ck = snapshot_dir(checkpoint)
-    with open(os.path.join(ck, "model.safetensors.index.json")) as f:
+    with open(_index(ck)) as f:
         idx = json.load(f)["weight_map"]
 
     def get(name, sl=None):
@@ -124,9 +149,10 @@ def load_layer(variant, checkpoint, layer, e_local, e_min, tp_rank=0):
     """Experts e_min .. e_min + e_local - 1 of one layer, in the layout vLLM keeps on the device.
 
     gptoss: the Hugging Face openai/gpt-oss checkpoint. muse: the amd Quark MXFP4 checkpoint as published (per-expert
-    gate/up/down tensors, TP slice ``tp_rank`` of 4). glm, dsv41, kimi: a checkpoint in the served layout
-    (``SERVED_PREFIX``: fused w13_weight / w13_weight_scale / w2_weight / w2_weight_scale); glm takes TP slice
-    ``tp_rank`` of 2 of the intermediate dim.
+    gate/up/down tensors, TP slice ``tp_rank`` of 4). ml4: the amd Quark MXFP4 Mistral Large 4 checkpoint as published
+    (Mistral-native names), re-sliced into virtual experts v = 128 h + e: rows 3072 h .. of w1 and w3, the same
+    columns of w2. glm, dsv41, kimi: a checkpoint in the served layout (``SERVED_PREFIX``: fused w13_weight /
+    w13_weight_scale / w2_weight / w2_weight_scale); glm takes TP slice ``tp_rank`` of 2 of the intermediate dim.
     """
     import torch
 
@@ -170,6 +196,21 @@ def load_layer(variant, checkpoint, layer, e_local, e_min, tp_rank=0):
         d["w13"], d["s13"] = cat("weight").contiguous(), cat("weight_scale").contiguous()
         d["w2"] = torch.stack([g(e, "down_proj", "weight", cols).contiguous() for e in experts]).contiguous()
         d["s2"] = torch.stack([g(e, "down_proj", "weight_scale", scols).contiguous() for e in experts]).contiguous()
+    elif variant == "ml4":
+        iv, pre = spec["inter"], f"layers.{layer}.experts."
+        parts = {"w13": [], "s13": [], "w2": [], "s2": []}
+
+        def u8(name, sl=None):  # E8M0 scales may be stored as float8_e8m0fnu: the same bytes
+            return get(pre + name, sl).view(torch.uint8)
+
+        for v in range(e_min, e_min + e_local):
+            h, e = divmod(v, spec["e_global"] // 2)
+            rows = slice(iv * h, iv * (h + 1))
+            for w, sfx in (("w13", "weight"), ("s13", "weight_scale")):
+                parts[w].append(torch.cat([u8(f"{e}.w1.{sfx}", rows), u8(f"{e}.w3.{sfx}", rows)]))
+            parts["w2"].append(u8(f"{e}.w2.weight")[:, iv * h // 2 : iv * (h + 1) // 2])
+            parts["s2"].append(u8(f"{e}.w2.weight_scale")[:, iv * h // 32 : iv * (h + 1) // 32])
+        d = {n: torch.stack(ts).contiguous() for n, ts in parts.items()}
     else:
         pre = SERVED_PREFIX[variant].format(layer=layer)
         w13, s13 = get(pre + "w13_weight", sl), get(pre + "w13_weight_scale", sl)
@@ -428,6 +469,9 @@ def kernel_act_params(spec):
 # stack3 = the v10 w13 kernel + grouped-route w2 (mxk_w2gp / mxk_w2gn) + combine (mxk_w2c / mxk_w2cb); stack2 = the v10
 # w13 kernel + mxk_w2xc (glm, kimi only).
 V10_PATHS = {"glm": ("stack3", "stack2"), "kimi": ("stack3", "stack2"), "dsv41": ("stack3",), "gptoss": ("stack3",)}
+# Decode paths every build of a variant serves besides v8. ml4 "grouped" = mxk_w13g + mxk_w2g + mxk_w2c in one call of
+# up to 64 tokens, bit-identical to v8 per token.
+EXTRA_PATHS = {"ml4": ("grouped",)}
 # Per variant: the v10 w13 op, whether it takes x permuted per 512-k chunk, and the grouped-route w2 op
 V10_OPS = {
     "glm": ("mxk_w13xn", False, "mxk_w2gp"),
@@ -442,7 +486,7 @@ def build_paths(lib_dir, variant):
     """The decode paths a build serves: ("v8",) plus the variant's v10 paths for a v10 build."""
     with open(os.path.join(lib_dir, "MANIFEST")) as f:
         v10 = "kernel_set: v10\n" in f.read()
-    return ("v8",) + (V10_PATHS.get(variant, ()) if v10 else ())
+    return ("v8",) + EXTRA_PATHS.get(variant, ()) + (V10_PATHS.get(variant, ()) if v10 else ())
 
 
 def kernel_runner(spec, t, d, e_min, path="v8"):
@@ -454,6 +498,18 @@ def kernel_runner(spec, t, d, e_min, path="v8"):
 
     co = torch.ops.custom_op
     topk = d["topk"]
+    if path == "grouped":
+        alpha, limit, beta, ascale = kernel_act_params(spec)
+        e_local = t["w2"].shape[0]
+
+        def run_grouped(x, ids, tw):
+            tokens = x.shape[0]
+            ids2, tw2 = ids.reshape(tokens, topk), tw.reshape(tokens, topk)
+            ap = co.mxk_w13g(permute_x(x), ids2, t["w13"], t["s13"], e_min, GROUP_GMAX, alpha, limit, beta, ascale)
+            part = co.mxk_w2g(ap, ids2, t["w2"], t["s2"], e_min, GROUP_GMAX)
+            return co.mxk_w2c(part, ids2, tw2, e_min, e_local)
+
+        return run_grouped
     if path != "v8" and spec["bias"]:  # gpt-oss: the runtime's v10 call
         import mxfp4_tpc_moe_rt as rt
 
@@ -501,12 +557,19 @@ def kernel_runner(spec, t, d, e_min, path="v8"):
             return co.mxk_w2xr(ap, idf, t["w2"], t["s2"], 1, e_min)
         return co.mxk_w2x(ap, idf, tw.reshape(-1), t["w2"], t["s2"], topk, e_min)
 
+    if spec["split_tokens"]:  # more tokens than one v8 call takes: pieces of max_tokens, as the model calls it
+        n = spec["max_tokens"]
+
+        def run_split(x, ids, tw):
+            return torch.cat([run(x[i : i + n], ids[i : i + n], tw[i : i + n]) for i in range(0, x.shape[0], n)])
+
+        return run_split
     return run
 
 
 def prefill_runner(spec, t, d, e_local, e_min, impl):
-    """GLM prefill: impl "stock" = mxfp4_fused_weights; "ours" = mxk_deq per expert, a graph break, then the stock
-    bf16 MoE op with the same chunk arguments."""
+    """GLM and Mistral Large 4 prefill: impl "stock" = mxfp4_fused_weights; "ours" = mxk_deq per expert, a graph
+    break, then the stock bf16 MoE op with the same chunk arguments."""
     import habana_frameworks.torch as ht
     import torch
 

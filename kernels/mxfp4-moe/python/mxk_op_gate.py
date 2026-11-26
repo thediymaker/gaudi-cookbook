@@ -26,6 +26,7 @@ import sys
 KNOWN_OPS = {"mxk_w13x", "mxk_w13xi", "mxk_w13xt", "mxk_w13xib", "mxk_w2x", "mxk_w2xr", "mxk_w2xb", "mxk_deq"}
 KNOWN_OPS |= {"mxk_w13xn", "mxk_w13xk", "mxk_w13xin", "mxk_w13xibn", "mxk_w2xc", "mxk_w2gp", "mxk_w2gn", "mxk_w2c"}
 KNOWN_OPS |= {"mxk_w2cb"}  # v10
+KNOWN_OPS |= {"mxk_w13g", "mxk_w2g"}  # ml4 grouped routes
 
 
 def expected_ops(guids):
