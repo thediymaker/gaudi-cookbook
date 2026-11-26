@@ -75,11 +75,11 @@ def _cache(runner):
 
 def _one(v):
     """A forward input as the graph cache's hash sees it: scalars by value, tensors by shape, view and dtype."""
-    if v is None or isinstance(v, (bool, int, float, str)):
+    if v is None or isinstance(v, bool | int | float | str):
         return v
     if torch.is_tensor(v):
         return (tuple(v.shape), tuple(v.stride()), v.storage_offset(), str(v.dtype).replace("torch.", ""))
-    if isinstance(v, (tuple, list)):
+    if isinstance(v, tuple | list):
         return tuple(_one(x) for x in v)
     return type(v).__name__
 
