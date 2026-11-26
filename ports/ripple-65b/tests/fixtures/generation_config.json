@@ -1,0 +1,11 @@
+{
+  "bos_token_id": 100257,
+  "do_sample": true,
+  "eos_token_id": [
+    100265,
+    100257
+  ],
+  "pad_token_id": 100277,
+  "temperature": 1.0,
+  "top_p": 0.95
+}
