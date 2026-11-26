@@ -1,0 +1,8 @@
+# Lint settings of the repository.
+extend = "../../pyproject.toml"
+
+[lint.extend-per-file-ignores]
+# the patches hold runner source lines verbatim (anchors and replacements must match vllm-gaudi exactly)
+"patches/*.py" = ["E501"]
+# vendored from vLLM PR #65745 (upstream formatting kept)
+"ripple_hpu/ripple_hpu/config.py" = ["UP"]

@@ -216,6 +216,13 @@ PORTS = [
         "different conditions, named on the page",
         "ports/kimi-k2-7/",
     ),
+    (
+        "Ripple-65B-Preview",
+        "65B dense, NoPE + sliding window, 4 cards",
+        "250K prompt 462 → 180 s",
+        "same-pod A/B; fp32 oracle NLL within 0.06%",
+        "ports/ripple-65b/",
+    ),
 ]
 RESULTS = [
     (

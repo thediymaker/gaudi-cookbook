@@ -9,10 +9,12 @@ affected, the workaround and how to check. Where the cookbook ships a fix, the s
     - **Silent wrong results:** FusedSDPA sinks, windows and fast softmax; fp32 sin/cos; int64 cat with an int32
       cast; `torch.multinomial`; `torch.unique(dim=0)`.
     - **Crashes:** seeded `exponential_`, SIGPIPE, the FusedSDPA bias workspace, "tensor_data is empty" after a
-      device allocation failure, order-9 host allocations, cards that hang at their first collective.
+      device allocation failure, order-9 host allocations, cards that hang at their first collective, an allocation
+      failure on one rank that looks like an all-rank hang.
     - **Reproducibility:** speculative decoding ignores `seed`; compiled samplers recompile per seeded request;
       a single HPU request is not a reference (only fp32 on the CPU is).
     - **Benchmarks:** an HPU graph of only custom ops replays nothing.
+    - **Slow FP8:** a view on a block-FP8 linear's output splits the decode graph at TP > 1.
     - **Throughput:** port-9 re-training. A driver reload took TP8 decode on one node from 7.56 to 15.45 tok/s
       (same-node A/B).
 
@@ -246,3 +248,36 @@ affected, the workaround and how to check. Where the cookbook ships a fix, the s
     5. A second hang on the same card and engine, in a different graph, makes it a card fault. Cordon and file
        the dumps with `hl-smi -q`.
 - Read the dump before reloading drivers or blaming links, and do not condemn a node on one dump.
+
+## A device allocation failure on one rank looks like a hang
+
+- **Symptom.** Every rank of a TP server reports "Synapse detected a device critical error ... No progress error"
+  about 10 minutes after the last step, as for a card fault. Restarted, the server runs for hours before it happens
+  again, more often under long contexts and many concurrent requests.
+- **Cause.** One rank failed a small device allocation in an HPU graph replay ("PT_DEVMEM Allocation failed", a few
+  MB). That rank stops; the others are already in the next all-reduce and wait until the device times out. In the
+  case found, the memory went to decode HPU graphs: with `VLLM_SKIP_WARMUP=true` every new decode shape is captured at
+  first use, the graph cache never drops one, and each graph keeps memory in proportion to its block list (on a 65B
+  dense model with 80 layers at TP 4, 0.31 MiB per block, 1.25 MiB per sliding-window block and 0.2 MiB per row: one
+  graph for 32 requests at 64K of context kept about 5.5 GiB). Pad buckets make many more shapes than exponential ones.
+- **Who.** Lazy-mode servers that capture graphs at run time, with long contexts or many shapes.
+- **Workaround.** Bound the graphs. [hpu-graph-lru](../fixes/hpu-graph-lru.md) caps their number, which is enough
+  when graph sizes are similar; where they span orders of magnitude, bound their predicted size instead, as the
+  [ripple-65b port](../ports/ripple-65b.md#decode-graph-memory) does. More `VLLM_GRAPH_RESERVED_MEM` only delays it.
+- **How to check.** Search every rank's log, not only rank 0's, for "PT_DEVMEM" in the minutes before the first "No
+  progress"; log `torch.hpu.memory_stats()` per step and watch in-use memory climb with new decode shapes.
+
+## A block-FP8 linear view splits the decode graph at TP greater than 1
+
+- **Symptom.** A dense model with block-FP8 weights decodes slower than its BF16 checkpoint at TP > 1 (20 against 30
+  tok/s per stream on a 65B model at TP 4), while a device profile shows FP8 doing less work (12.7 against 18.4 ms per
+  step).
+- **Cause.** vllm-gaudi's block-FP8 linear, with its default per-channel requantization, returns
+  `out.to(input.dtype).view(*input.shape[:-1], -1)`. For 2-D BF16 inputs both are no-ops, but the view is all-reduced
+  in place after o_proj and down_proj and splits the HPU graph around each collective: 7 recipes per layer instead of
+  3, each followed by a host event sync.
+- **Who.** Block-FP8 dense models at TP > 1 on `releases/v0.30.0`. Checked on one model only.
+- **Workaround.** Return the GEMM output itself for 2-D inputs already in the output dtype (the
+  [ripple-65b port](../ports/ripple-65b.md) does this behind `RIPPLE_FP8_VIEW_FIX`); FP8 then decodes as fast as BF16.
+- **How to check.** Count recipe launches per decode step with and without the change: on two cards, 4 layers took 28
+  recipes against 12.

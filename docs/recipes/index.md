@@ -40,6 +40,7 @@ otherwise; none has been run on Gaudi 3.
 | [Llama 4 Scout 17B-16E Instruct](llama-4-scout-17b-16e-instruct.md) | 4 (TP 4) | BF16 | v0.26.0 | tools, vision | verified |
 | [Laguna-S-2.1](laguna-s-2-1.md) | 4 (TP 4) | BF16 | releases/v0.30.0 | tools, reasoning | verified |
 | [MiniMax-M2.7](minimax-m2-7.md) | 4 (TP 4) | FP8 | releases/v0.30.0 | tools, reasoning | verified |
+| [Ripple-65B-Preview](ripple-65b-preview.md) | 4 (TP 4) | BF16 | releases/v0.30.0 | tools, reasoning, 256K | verified, port |
 | [Qwen3.5-397B-A17B-FP8](qwen3-5-397b-a17b-fp8.md) | 8 (TP 8, EP) | FP8 | releases/v0.30.0 | tools, reasoning, 256K | verified |
 | [Beam-1.0-501B-A23B-FP8](beam-1-0-501b-a23b-fp8.md) | 8 (TP 8, EP) | FP8 | releases/v0.30.0 | tools, reasoning, 256K | verified, port |
 | [Muse Spark Open](muse-spark-open.md) | 8 (TP 8, EP) | MXFP4 | releases/v0.30.0 | tools, reasoning, 256K | verified, port |
