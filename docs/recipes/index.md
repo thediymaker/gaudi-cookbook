@@ -19,21 +19,23 @@ otherwise; none has been run on Gaudi 3.
 | [Qwen3-Coder-30B-A3B-Instruct](qwen3-coder-30b-a3b-instruct.md) | 1 | BF16 | v0.26.0 | tools | verified |
 | [Qwen3.5-27B-FP8](qwen3-5-27b-fp8.md) | 1 | FP8 | v0.26.0 | tools, reasoning, vision, 256K | verified |
 | [Qwen3.8-27B](qwen3-8-27b.md) | 1 | BF16 | v0.26.0 | tools, reasoning, vision, 256K | verified |
+| [Qwen3.8-27B-FP8](qwen3-8-27b-fp8.md) | 1 | FP8 | v0.26.0 | tools, reasoning, vision, 256K | verified |
 | [Qwen3.6-27B-FP8](qwen3-6-27b-fp8.md) | 1 | FP8 | v0.26.0 | tools, reasoning, vision, 256K | verified |
 | [Qwen3.6-35B-A3B-FP8](qwen3-6-35b-a3b-fp8.md) | 1 | FP8 | v0.26.0 | tools, reasoning, vision, 256K | verified |
 | [Qwen3-Embedding-8B](qwen3-embedding-8b.md) | 1 | BF16 | v0.26.0 | embeddings, Matryoshka | verified, no fixes |
 | [Qwen3-Embedding-4B](qwen3-embedding-4b.md) | 1 | BF16 | v0.26.0 | embeddings, Matryoshka | verified, no fixes |
 | [Qwen3-VL-Embedding-8B](qwen3-vl-embedding-8b.md) | 1 | BF16 | releases/v0.30.0 | embeddings, vision | verified |
-| [Gemma 4 E2B IT](gemma-4-e2b-it.md) | 1 | BF16 | releases/v0.30.0 | tools | verified |
+| [Gemma 4 E2B IT](gemma-4-e2b-it.md) | 1 | BF16 | releases/v0.30.0 | tools, 128K | verified |
 | [Qwen-AgentWorld-35B-A3B](qwen-agentworld-35b-a3b.md) | 2 (TP 2) | BF16 | v0.26.0 | tools, reasoning, 256K | verified |
 | [Ornith-1.0-35B](ornith-1-0-35b.md) | 2 (TP 2) | BF16 | v0.26.0 | tools, reasoning, vision, 256K | verified |
 | [Qwen3-VL-32B-Instruct-FP8](qwen3-vl-32b-instruct-fp8.md) | 2 (TP 2) | FP8 | releases/v0.30.0 | tools, vision | verified |
-| [GLM-4.5V-FP8](glm-4-5v-fp8.md) | 2 (TP 2) | FP8 | releases/v0.30.0 | tools, reasoning, vision | verified |
+| [GLM-4.5V-FP8](glm-4-5v-fp8.md) | 2 (TP 2) | FP8 | releases/v0.30.0 | tools, reasoning, vision, 64K | verified |
 | [Muse Glimmer 30B](muse-glimmer-30b.md) | 2 (TP 2) | BF16 | releases/v0.30.0 | tools, reasoning, vision | verified, port |
 | [Qwen3-235B-A22B-Instruct-2507-FP8](qwen3-235b-a22b-2507-fp8.md) | 4 (TP 4) | FP8 | v0.26.0 | tools | verified |
 | [Qwen3-235B-A22B-Thinking-2507-FP8](qwen3-235b-a22b-2507-fp8.md) | 4 (TP 4) | FP8 | v0.26.0 | tools, reasoning | verified |
 | [Qwen3.5-122B-A10B-FP8](qwen3-5-122b-a10b-fp8.md) | 4 (TP 4, EP) | FP8 | v0.26.0 | tools, reasoning, 256K | verified |
 | [Qwen3-Coder-Next](qwen3-coder-next.md) | 4 (TP 4) | BF16 | v0.26.0 | tools, 256K | verified |
+| [Qwen3-Coder-Next-FP8](qwen3-coder-next-fp8.md) | 2 (TP 2) | FP8 | v0.26.0 | tools, 256K | verified |
 | [Devstral-2-123B-Instruct-2512](devstral-2-123b-instruct-2512.md) | 4 (TP 4) | FP8 | v0.26.0 | tools | verified |
 | [Gemma 4 31B IT](gemma-4-31b-it.md) | 4 (TP 4) | BF16 | v0.26.0 | tools, vision | verified |
 | [gpt-oss-120b](gpt-oss-120b.md) | 4 (TP 4, EP) | MXFP4 | v0.26.0 | tools, reasoning | verified |

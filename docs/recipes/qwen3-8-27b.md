@@ -5,6 +5,9 @@ reasoning, in BF16, at its native 256K context on a single Gaudi 2 card. Four se
 the ceiling on this release; scale with replicas. Prefix caching is on
 through the [`gdn-prefix-cache`](../fixes/gdn-prefix-cache.md) fix.
 
+For more than four sequences per card, use Qwen's FP8 release with the
+[Qwen3.8-27B-FP8](qwen3-8-27b-fp8.md) recipe: 32 sequences on one card.
+
 | | |
 | --- | --- |
 | Model | [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) |

@@ -60,16 +60,16 @@ export PT_HPU_LAZY_MODE=1
 export PT_HPU_ENABLE_LAZY_COLLECTIVES=true
 export PT_HPUGRAPH_DISABLE_TENSOR_CACHE=1
 export VLLM_GRAPH_RESERVED_MEM=0.3
-export VLLM_SKIP_WARMUP=true
+export VLLM_SKIP_WARMUP=false
 export VLLM_EXPONENTIAL_BUCKETING=false
 export VLLM_PROMPT_BS_BUCKET_MIN=1
 export VLLM_PROMPT_BS_BUCKET_STEP=1
 export VLLM_PROMPT_BS_BUCKET_MAX=1
 export VLLM_PROMPT_QUERY_BUCKET_MIN=512
-export VLLM_PROMPT_QUERY_BUCKET_STEP=512
-export VLLM_PROMPT_QUERY_BUCKET_MAX=2048
+export VLLM_PROMPT_QUERY_BUCKET_STEP=2048
+export VLLM_PROMPT_QUERY_BUCKET_MAX=8192
 export VLLM_PROMPT_CTX_BUCKET_MIN=0
-export VLLM_PROMPT_CTX_BUCKET_STEP=256
+export VLLM_PROMPT_CTX_BUCKET_STEP=128
 export VLLM_PROMPT_CTX_BUCKET_MAX=1024
 export VLLM_DECODE_BS_BUCKET_MIN=1
 export VLLM_DECODE_BS_BUCKET_STEP=1
@@ -80,21 +80,26 @@ export VLLM_DECODE_BLOCK_BUCKET_MAX=8192
 export VLLM_MOE_CHUNK=256
 export VLLM_MOE_TOKEN_BOUNDARY=2048
 export PT_HPU_QKV_SLICE_SEQ_LEN_THLD=128
+export VLLM_LONG_PREFILL_SHARE=0.5
+export VLLM_LONG_PREFILL_SHARE_ASYNC=1
+export VLLM_LONG_PREFILL_MIN_TOKENS=32768
 export VLLM_ENGINE_ITERATION_TIMEOUT_S=7200
 export VLLM_RPC_TIMEOUT=7200000
 export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3600
 
-# Fixes: the v0.30.0 profile. Stops with a non-zero exit code if the image does not match.
-python3 "$COOKBOOK/fixes/apply_all.py" --profile v0.30.0 || exit 1
+# Fixes: the v0.30.0 profile plus this recipe's opt-in fixes, in the pack's order.
+# Stops with a non-zero exit code if the image does not match.
+python3 "$COOKBOOK/fixes/apply_all.py" --profile v0.30.0 vllm-long-prefill-share || exit 1
 
-vllm serve $KIMI_MXFP4_DIR \
+vllm serve "$KIMI_MXFP4_DIR" \
   --served-model-name amd/Kimi-K2.7-Code-MXFP4 \
   --tensor-parallel-size 8 \
   --enable-expert-parallel \
   --max-model-len 131072 \
   --max-num-seqs 8 \
   --enable-chunked-prefill \
-  --max-num-batched-tokens 2048 \
+  --max-num-batched-tokens 8192 \
+  --max-cudagraph-capture-size 2048 \
   --block-size 128 \
   --gpu-memory-utilization 0.9 \
   --language-model-only \
@@ -112,13 +117,28 @@ vllm serve $KIMI_MXFP4_DIR \
 - `VLLM_MOE_CHUNK=256` and `VLLM_MOE_TOKEN_BOUNDARY=2048` let the stock op skip expert slots no token routes to;
   the output is unchanged.
 - `--language-model-only` serves text only: the vision tower is not built, and image requests get HTTP 400.
-- Linear buckets keep the shape set small; with `VLLM_SKIP_WARMUP=true` the first requests of each new shape
-  compile (up to a few minutes on a cold recipe cache).
-- The first start reads 659 GB: 21.5 minutes from network storage in the run below.
+- Prefill runs in 8,192-token chunks (`--max-num-batched-tokens 8192`). Every prefill step unpacks all 48 local
+  experts from MXFP4 to BF16 on the stock op, a fixed cost per step whatever the chunk size, so fewer and larger
+  chunks cut time to first token. The prompt buckets follow: query 512 to 8,192 in steps of 2,048, context in steps
+  of 128 blocks (16K tokens), 54 prompt shapes in all.
+- `--max-cudagraph-capture-size 2048` keeps HPU graph capture at decode and small prefill sizes. Without it the
+  capture size follows `--max-num-batched-tokens`, the 8K prompt graphs fill most of the graph reserve, and decode
+  graphs captured later under traffic overflow it; on an older vllm-gaudi build that stopped the engine
+  (`tensor_data is empty` after repeated defragmentation).
+- `VLLM_SKIP_WARMUP=false`: warm-up compiles and captures all 54 prompt and 80 decode buckets before the server
+  takes requests (18 minutes in the run below, about 3.5 GiB of graphs per card), so no graph is compiled or captured
+  in the middle of traffic.
+- `VLLM_LONG_PREFILL_SHARE=0.5` with the [`vllm-long-prefill-share`](../fixes/vllm-long-prefill-share.md) fix:
+  while a prompt of 32,768 tokens or more prefills, the other running requests keep decoding for at least half of
+  the wall time instead of one token per 8K chunk. The long prompt's own time to first token grows in exchange
+  (see [Performance](#performance)). `VLLM_LONG_PREFILL_SHARE_ASYNC=1` makes the share exact under async
+  scheduling.
+- The first start reads 659 GB from network storage (13 minutes in the run below, 21.5 minutes on an earlier
+  cold start), then warms up.
 
 ## Required fixes
 
-The `v0.30.0` profile, applied at launch.
+The `v0.30.0` profile, applied at launch, plus the opt-in long-prefill share.
 
 | Fix | Why this model needs it |
 | --- | --- |
@@ -127,15 +147,35 @@ The `v0.30.0` profile, applied at launch.
 | [`logprobs-decode-guard`](../fixes/logprobs-decode-guard.md) | Kimi's tiktoken tokenizer raises `KeyError` on a bad id, which would stop the API server |
 | [`seeded-sampling`](../fixes/seeded-sampling.md) | a request with a `seed` would segfault a tensor-parallel worker |
 | [`rank-exception-fatal`](../fixes/rank-exception-fatal.md) | a failed rank stops the engine instead of serving garbage |
+| [`vllm-long-prefill-share`](../fixes/vllm-long-prefill-share.md) (opt-in) | without it, every running stream gets one token per 8K prefill chunk while a long prompt prefills; the share settings in the launch need it |
 
 The port adds two patches of its own: the loader change for fused MXFP4 experts under expert parallelism (generic
 for DeepSeek-style MXFP4 checkpoints) and the two hooks that install the kernel switch.
 
 ## Verified
 
-Pod with 8 Gaudi 2 cards on one node, the port built by `install.sh` on the stock `releases/v0.30.0` image, the
-Launch block above, `tests/hpu/run_gates.sh`. The same server build was started twice on the same pod: once with
-`KIMI_MXK=0` (stock MXFP4 op), then with `KIMI_MXK=1`.
+Pod with 8 Gaudi 2 cards on one node, the port installed by `install.sh` on the stock `releases/v0.30.0` image
+(kernel build `kimi-v10-729451f0749d`; with `KIMI_MXK=1` alone the log shows `installed: decode v8`), the
+checkpoint converted by `repack_quark_mxfp4.py` (`--verify`: `VERIFY_OK`, 24 experts, 0 mismatches), and the
+Launch block above run as written. The same checks passed on a second pod with the build before the v10 kernels
+(`kimi-v8-f4b38ebce384`), with the same results within a few percent.
+
+| Check | Result |
+| --- | --- |
+| Kernel parity (`run_parity.sh --variant kimi`), before the server started | PARITY PASS (paths v8, stack2, stack3), SIG_DEVICE PASS on each |
+| Golden answers, 12 prompts, greedy | 12/12 |
+| Tool call, `kimi_k2` parser, streaming and not | pass |
+| Needles, 3 depths at 32K, 64K and 120K | 9/9 |
+| `top_logprobs=20` soak with CJK and emoji output, 200 requests | 200/200 clean |
+| Teacher-forced NLL, 9,707 positions of this repository's code | 1.2913 (recorded) |
+| Warm-up | 54 prompt and 80 decode buckets in 1,091 s; 3.6 GiB of graphs per card |
+| Server health after all checks, including a 109K prompt next to a running stream | healthy, 0 tracebacks, no defragmentation |
+
+KV pool at start-up: 260,480 tokens.
+
+The kernel A/B below ran earlier with the previous settings of this recipe (2,048-token prefill chunks, warm-up
+skipped, no long-prefill share), on the same kind of pod. The same server build was started twice on the same pod:
+once with `KIMI_MXK=0` (stock MXFP4 op), then with `KIMI_MXK=1`.
 
 | Check | `KIMI_MXK=0` | `KIMI_MXK=1` |
 | --- | --- | --- |
@@ -149,9 +189,35 @@ Launch block above, `tests/hpu/run_gates.sh`. The same server build was started 
 
 ## Performance
 
+### Prefill and the long-prefill share
+
+The Launch block above against this recipe's previous settings (2,048-token chunks, query buckets up to 2,048,
+context buckets in 256-block steps, warm-up skipped, no long-prefill share), on the same pod and server build,
+one after the other, on the build before the v10 kernels (the v10 build gave 1.47 / 7.54 / 31.9 s, 40.7 / 23.4 tok/s
+and 21.2 tok/s on the same measurements). Measured as: one 8-card node, `KIMI_MXK=1`, `kimi_gates.py ttft` (median of 3 uncached
+prompts; the previous settings' first run of each length compiled and is left out of the median),
+`kimi_gates.py sweep 16000 1,4`, and a decode stream of 6,000 tokens measured while one uncached 109K-token prompt
+prefills next to it.
+
+| Measurement | Previous settings | This recipe |
+| --- | --- | --- |
+| Time to first token, uncached 8K prompt | 3.23 s | 1.46 s (-55%) |
+| Time to first token, uncached 32K prompt | 12.95 s | 7.54 s (-42%) |
+| Time to first token, uncached 100K prompt | 49.5 s | 31.9 s (-36%) |
+| Decode at a 16K cached prefix, per stream, 1 / 4 streams | 44.5 / 20.7 tok/s | 41.9 / 23.9 tok/s |
+| Another stream's decode while a 109K prompt prefills (43 to 45 tok/s idle) | 0.8 tok/s | 21.0 tok/s |
+| That 109K prompt's own time to first token, with the other stream running | 82.5 s | 74.8 s |
+| Server start to healthy | 460 s (weights in page cache, no warm-up) | 1,891 s (cold weights, then warm-up) |
+
+The share is what keeps the other stream at half speed; the larger chunks pay for it, so the long prompt still
+finishes sooner than before. With the share and no running decodes, a long prompt prefills at full speed.
+
+### Decode with and without the kernels
+
 Decode at a 16,000-token cached prefix, 256 tokens per request, 2 x C requests at C streams (`kimi_gates.py sweep`).
 Per stream is 1 / median time per output token; aggregate is all tokens over the wall time, prefill included.
-Measured as: one 8-card node, same pod and server build, `KIMI_MXK=0` then `KIMI_MXK=1`, second of two sweeps
+Measured as: one 8-card node, same pod and server build, the previous settings of this recipe (2,048-token chunks,
+warm-up skipped), `KIMI_MXK=0` then `KIMI_MXK=1`, second of two sweeps
 (the first gave 18.0 / 13.1 / 10.4 / 6.3 and 44.8 / 34.3 / 21.0 / 12.2 tok/s per stream).
 
 | Streams | Stock op, per stream (aggregate) | Kernels, per stream (aggregate) |
@@ -163,7 +229,7 @@ Measured as: one 8-card node, same pod and server build, `KIMI_MXK=0` then `KIMI
 
 | Measurement | Stock op | Kernels | Measured as |
 | --- | --- | --- | --- |
-| TTFT, uncached 16,000-token prompt | 6.49 s | 6.48 s | same pod, median of 3, server otherwise idle |
+| TTFT, uncached 16,000-token prompt | 6.49 s | 6.48 s | same pod, median of 3, server otherwise idle, previous settings |
 | Weight load from network storage | 21.5 min (cold) | 9.9 min on rank 0 (warm page cache); the last rank finished 15 min after start | same pod, first and second start |
 
 Two-node FP8 (TP 16 over RoCE, 16 cards) on an older vllm-gaudi build ran 36.4 to 38.2 / 36.2 to 36.4 / 29.1 to 29.2
@@ -186,9 +252,12 @@ has no Ray.
 
 ## Known issues
 
-- Prefill keeps the stock MXFP4 op: an uncached 16K-token prompt takes about 6.5 s, with the kernels on or off.
-- The first request of each new bucket shape compiles a graph (`VLLM_SKIP_WARMUP=true`); expect a slow first long
-  prompt after every restart with an empty recipe cache.
+- Prefill keeps the stock MXFP4 op, which unpacks every local expert at every prefill step: an uncached 32K-token
+  prompt takes about 7.5 s and a 100K-token prompt about 32 s, with the kernels on or off.
+- Start-up is long: the weights load, then the warm-up compiles every bucket (18 minutes in the run above). A kept
+  recipe cache (`PT_HPU_RECIPE_CACHE_CONFIG`) shortens later starts on the same node.
+- While a long prompt prefills next to other streams, its own time to first token roughly doubles: the share gives
+  the other streams half of the time.
 - Output with `KIMI_MXK=1` is not bit-identical to the stock op (the kernels round differently; against an fp32
   reference they are closer, 1.7e-3 against 4.8e-3 to 5.5e-3). The gates compare answers and teacher-forced
   scores instead: 95.5% top-1 agreement, NLL within 0.001.
@@ -201,3 +270,7 @@ has no Ray.
   shapes, and only the `kimi` build passed the parity check for this model.
 - Do not drop `--language-model-only`: image prompts of new sizes each compile a graph, and very large images
   stall the vision prefill past the engine's step timeout.
+- Do not raise `--max-num-batched-tokens` without `--max-cudagraph-capture-size 2048`: graph capture then follows
+  the batched tokens, and decode graphs captured under traffic can overflow the graph reserve.
+- Do not turn the warm-up off with these buckets: 8K prefill shapes compile for seconds to about a minute each at first use,
+  in the middle of traffic.

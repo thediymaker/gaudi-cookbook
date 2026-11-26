@@ -2,7 +2,8 @@
 
 Google's smallest Gemma 4 instruct model (2.3B effective parameters, 5.1B with the per-layer
 embeddings) on one Gaudi 2 card, with KV-sharing fast prefill: the last 20 of its 35 layers run
-only on the token each prompt samples, which roughly halves prefill time. Text only.
+only on the token each prompt samples, which roughly halves prefill time. Text only, at the
+checkpoint's full 131,072-token context.
 
 | | |
 | --- | --- |
@@ -10,7 +11,7 @@ only on the token each prompt samples, which roughly halves prefill time. Text o
 | Hardware | 1x Gaudi 2 (TP 1) |
 | Image | vllm-gaudi `releases/v0.30.0` (`058f107`), vLLM `ced6857a`, Gaudi SW 1.24.1 |
 | Precision | BF16 (10.2 GB checkpoint) |
-| Context | 32,768 served (131,072 native) |
+| Context | 131,072 (native) |
 | Concurrency | `--max-num-seqs 64` |
 | Parsers | tools `gemma4` (engine-based, with two fixes) |
 | Recipe | [`recipes/google/gemma-4-E2B-it/recipe.yaml`](https://github.com/thediymaker/gaudi-cookbook/blob/main/recipes/google/gemma-4-E2B-it/recipe.yaml) |
@@ -33,7 +34,7 @@ python3 "$COOKBOOK/fixes/apply_all.py" --profile v0.30.0 \
 python3 "$COOKBOOK/fixes/gemma4-bos-tokenizer/apply.py" google/gemma-4-E2B-it /tmp/gemma4-bos-tokenizer || exit 1
 
 vllm serve google/gemma-4-E2B-it \
-  --max-model-len 32768 \
+  --max-model-len 131072 \
   --max-num-seqs 64 \
   --gpu-memory-utilization 0.9 \
   --max-num-batched-tokens 8192 \
@@ -99,6 +100,17 @@ image, fixes and lazy mode through `LLM.generate`).
   remaining differences are run-to-run decode variation at 64 concurrent streams, not fast prefill.
 - Tool reliability, 3 cases x 40 sampled: 120/120.
 
+The checks above ran with `--max-model-len 32768`. The launch above, at 131,072, was run again as
+written on one card (KV pool 4,034,688 tokens, warm-up 366 s, 0 tracebacks, healthy at the end):
+
+| Check | Result |
+| --- | --- |
+| Needle in a haystack, 3 depths (10%, 50%, 90%) | 12/12 at 32K, 64K, 100K and 126K tokens |
+| Tool call (`get_weather`), greedy, streamed and not, 6 runs | 6/6 with `{"city": "Lisbon"}` |
+| `response_format` JSON schema | valid object |
+| `top_logprobs: 20` soak, 200 requests with CJK and emoji output | 200/200 complete, no dead positions |
+| Known-answer prompts, greedy, 12 | 11/12, twice: "reverse the string 'gaudi'" answered `idaug` |
+
 ## Performance
 
 Single runs on one card, the same card and image for both columns.
@@ -129,6 +141,19 @@ two warm-up rounds then two recorded rounds per mode:
 | Wall time for the round | 9.29 / 9.18 s | 9.09 / 8.96 s | same rounds |
 
 Writing code is decode-bound, so wall time barely moves.
+
+At 131,072 served, the launch above, warm, single runs. Measured as: one card, `kimi_gates.py`
+from `ports/kimi-k2-7/tests/hpu` (`sweep`: 2 x C streamed requests of 256 tokens with `ignore_eos`
+on a cached 1,000-token prefix; `ttft`: median of 3 uncached prompts).
+
+| Test | Result |
+| --- | --- |
+| Decode, 1 stream | 151.4 tok/s |
+| Decode, 16 streams | 110.1 tok/s per stream, 1,566 aggregate |
+| Decode, 64 streams | 50.8 tok/s per stream, 2,831 aggregate |
+| Time to first token, uncached 32K prompt | 1.09 s |
+| Time to first token, uncached 100K prompt | 6.84 s |
+| Needle prompt of 126K tokens, end to end | 10 s |
 
 The [write-up](../results/gemma-4-e2b-prefill.md) has the full study, including higher prompt
 batch caps and the comparison with published A100 figures.

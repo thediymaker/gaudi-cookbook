@@ -4,6 +4,9 @@ Qwen's 80B hybrid MoE coding model (36 Gated DeltaNet and 12 attention layers, 5
 active) in BF16, with tool calling, at its native 256K context on four Gaudi 2 cards. Prefix
 caching is on through the [`gdn-prefix-cache`](../fixes/gdn-prefix-cache.md) fix.
 
+Qwen's FP8 release runs on two cards and decodes several times faster per stream: see
+[Qwen3-Coder-Next-FP8](qwen3-coder-next-fp8.md).
+
 | | |
 | --- | --- |
 | Model | [Qwen/Qwen3-Coder-Next](https://huggingface.co/Qwen/Qwen3-Coder-Next) |
