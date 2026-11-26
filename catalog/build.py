@@ -216,6 +216,13 @@ PORTS = [
         "different conditions, named on the page",
         "ports/kimi-k2-7/",
     ),
+    (
+        "Mistral Large 4",
+        "1T MoE, experts twice the kernel width, 128K",
+        "Decode step 57.1 → 38.8 ms, tokens identical",
+        "chained same-server A/Bs",
+        "ports/mistral-large-4/",
+    ),
 ]
 RESULTS = [
     (

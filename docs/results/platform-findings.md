@@ -7,7 +7,7 @@ affected, the workaround and how to check. Where the cookbook ships a fix, the s
 !!! summary "At a glance"
     - **Stack:** Gaudi 2, Gaudi software 1.24.1, lazy mode, vllm-gaudi v0.26.0 and releases/v0.30.0.
     - **Silent wrong results:** FusedSDPA sinks, windows and fast softmax; fp32 sin/cos; int64 cat with an int32
-      cast; `torch.multinomial`; `torch.unique(dim=0)`.
+      cast; `torch.multinomial`; `torch.unique(dim=0)`; writes through a dtype `.view()`.
     - **Crashes:** seeded `exponential_`, SIGPIPE, the FusedSDPA bias workspace, "tensor_data is empty" after a
       device allocation failure, order-9 host allocations, cards that hang at their first collective.
     - **Reproducibility:** speculative decoding ignores `seed`; compiled samplers recompile per seeded request;
@@ -100,6 +100,19 @@ affected, the workaround and how to check. Where the cookbook ships a fix, the s
 - **Who.** Lazy-mode deployments serving logprobs.
 - **Workaround.** [gather-logprobs-int32](../fixes/gather-logprobs-int32.md).
 - **How to check.** Reproduced only inside vLLM so far: check returned ids against the vocabulary.
+
+## A dtype `.view()` is a copy, not an alias
+
+- **Symptom.** KV offload to host memory (vLLM's `OffloadingConnector` with vllm-gaudi's CPU and HPU worker)
+  restores blocks that the model never reads: follow-up turns after an eviction come back wrong or re-prefill.
+- **Cause.** On HPU, `t.view(torch.int8)` of a bf16 or uint8 tensor returns a tensor with its own storage. Same-dtype
+  views and slices still alias. vllm-gaudi views every KV cache as int8, so the connector stored a snapshot and
+  loaded into a copy while the model kept reading the original rows.
+- **Who.** Any code that writes through a dtype view on HPU; found on Mistral Large 4, whose caches are declared
+  bf16 with int8 codec bytes packed inside.
+- **Workaround.** Keep views in the tensor's own dtype and move bits with `index_select` and `index_put_`, as the
+  [Mistral Large 4 port](../ports/mistral-large-4.md) does in `offload.py`.
+- **How to check.** Write through `t.view(torch.int8)` on the device, then read `t`: on HPU the write is not there.
 
 ## Seeded sampling segfaults with lazy collectives
 

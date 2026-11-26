@@ -16,6 +16,7 @@ number says how it was measured: a same-pod or same-node A/B, chained A/Bs, or d
 | [Beam-1.0-501B-A23B](beam-1-0.md) | NVIDIA-only upstream support, a custom load format, 256K context | 8 cards, one node | Weight load 2177 to 356 s bit-identical; decode 20.6 to 30.5 tok/s (chained A/Bs on one pod) |
 | [MiMo-V2.6-Flash and -Pro](mimo-v2-6-flash.md) (309B and 1.02T MoE) | Sliding-window attention with sinks, asymmetric head sizes, 512K context; Pro in MXFP4 on the kernels | 8 cards, one node | 512K served; window-sized KV gives 5.33x the token capacity; needles 3/3 at 500K |
 | [Kimi-K2.7-Code](kimi-k2-7.md) (1T MoE) | Too large for one node in FP8: an exact MXFP4 to FP8 expert conversion for two nodes, then a one-node MXFP4 build with the `kimi` kernels | 8 cards, one node (two-node FP8 documented) | One node with the kernels 44.5 tok/s at one stream vs 17.9 on the stock op (same pod) and 36.4 to 38.2 on two nodes in FP8 (different conditions) |
+| [Mistral Large 4](mistral-large-4.md) (1T MoE, MXFP4) | Experts twice as wide as the MXFP4 kernels allow, MLA with a sparse indexer and shared KV layers, a draft head that needs vLLM's model runner V2 | 8 cards, one node | Virtual expert split, bit-identical grouped-route kernel, DSpark on HPU; decode step 57.1 to 38.8 ms with exact decode-step kernels (chained same-server A/Bs); MMLU-Pro 84.5% against AMD's 85.0% |
 | [MiniMax-M3](minimax-m3.md) (427B MoE) | gpt-oss's clamped SwiGLU in a model the stock FP8 kernel cannot run; an exact MXFP4 to FP8 expert re-encoding | 8 cards, one node | FP8 experts 24.7 tok/s at one stream vs 22.1 on the fused MXFP4 kernel and 11.5 unpacked (different conditions) |
 | [Inkling-Small](inkling-small.md) (276B MoE) | No RoPE: a learned relative-position logit per head and short convolutions with state, CUDA-only kernels upstream | 8 cards, one node | 256K tokens per request; 43.9 tok/s at one stream, 21.7 per stream at 16 (single run) |
 
@@ -24,8 +25,9 @@ number says how it was measured: a same-pod or same-node A/B, chained A/Bs, or d
 - **Gaudi software 1.24.1 and HPU graphs.** Most ports run in lazy mode; MiMo-V2.6-Flash runs in torch.compile mode
   with static shapes. Decode speed on large models comes from capturing whole decode steps; see the per-port pages
   for what had to change to make capture safe.
-- **The MXFP4 MoE kernels.** Muse Spark Open, the GLM MXFP4 models, DeepSeek-V4.1-Flash and MiMo-V2.6-Pro use the
-  cookbook's [MXFP4 MoE decode kernels](../kernels/mxfp4-moe.md) through model-specific integrations.
+- **The MXFP4 MoE kernels.** Muse Spark Open, the GLM MXFP4 models, DeepSeek-V4.1-Flash, Kimi-K2.7, Mistral Large 4
+  and MiMo-V2.6-Pro use the cookbook's [MXFP4 MoE decode kernels](../kernels/mxfp4-moe.md) through model-specific
+  integrations.
 - **Platform findings.** Several ports ran into the same Gaudi behaviours; they are collected in
   [platform findings](../results/platform-findings.md).
 - **Fixes upstream.** Bugs that are not model-specific went into the [fixes pack](../fixes/index.md) and upstream.

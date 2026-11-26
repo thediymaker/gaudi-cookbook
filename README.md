@@ -22,9 +22,9 @@ container images and public checkpoints. Nothing depends on a private build.
 > Gaudi 2 node: GLM-5.3 single stream from 23.3 to 59.1 tokens/s, Kimi-K2.7 from 17.9 to 44.5, Muse Spark Open 2.4x
 > aggregate at four streams, with lower numerical error than the stock op. See [the write-up](docs/kernels/mxfp4-moe.md).
 >
-> **Ports.** Nine ports bring up models that released images cannot serve on Gaudi 2: Muse Spark Open,
+> **Ports.** Ten ports bring up models that released images cannot serve on Gaudi 2: Muse Spark Open,
 > GLM-5.3-Flash, DeepSeek-V4.1-Flash, GLM-5.x MXFP4, Beam-1.0, MiMo-V2.6 (Flash and Pro), Kimi-K2.7-Code,
-> MiniMax-M3 and Inkling-Small. See [Ports](docs/ports/index.md) and [Results](docs/results/index.md).
+> Mistral Large 4, MiniMax-M3 and Inkling-Small. See [Ports](docs/ports/index.md) and [Results](docs/results/index.md).
 >
 > **Using a coding agent?** Point it at this repository and have it read [`AGENTS.md`](AGENTS.md)
 > first. See [Use it with your coding agent](#use-it-with-your-coding-agent).
@@ -35,7 +35,7 @@ container images and public checkpoints. Nothing depends on a private build.
 | --- | --- |
 | [`recipes/`](recipes/) | One `recipe.yaml` per model: cards, precision, buckets, parsers, environment, the checks that passed, measured throughput, and known pitfalls. Rendered pages live under [`docs/recipes/`](docs/recipes/). |
 | [`fixes/`](fixes/) | Small runtime patches for bugs in released vllm-gaudi and vLLM images. Each one is tied to an upstream pull request or issue, has a `--check` mode, and refuses to start the server if the image does not match what it expects. |
-| [`kernels/`](kernels/) | Custom TPC kernels. The MXFP4 MoE decode kernels read the packed E2M1 weights and E8M0 scales directly and make decode up to 2.5x faster. One build variant per model family (GLM-5.x, DeepSeek-V4.1, Muse Spark Open, Kimi, gpt-oss) with build scripts, parity tests and micro benchmarks; the ports hook them in. |
+| [`kernels/`](kernels/) | Custom TPC kernels. The MXFP4 MoE decode kernels read the packed E2M1 weights and E8M0 scales directly and make decode up to 2.5x faster. One build variant per model family (GLM-5.x, DeepSeek-V4.1, Muse Spark Open, Kimi, Mistral Large 4, gpt-oss) with build scripts, parity tests and micro benchmarks; the ports hook them in. |
 | [`docs/ports/`](docs/ports/index.md) | Write-ups of models brought up on Gaudi 2 that released images cannot serve: what was hard, how it was solved, the correctness gates and measured speed. The integration code is not published yet. |
 | [`docs/results/`](docs/results/index.md) | Studies and findings that are not tied to one model: platform behaviours and workarounds, prefix caching on Gated DeltaNet hybrids, MoE decode-step anatomy, two-node pipeline parallel, fast prefill, text-to-speech and embeddings. |
 | [`servers/`](servers/README.md) | Small HPU servers for models vLLM does not serve: Qwen3-TTS, Chatterbox and Orpheus text-to-speech behind an OpenAI `/v1/audio/speech` API, and EmbeddingGemma 2 multimodal embeddings, each with an image, CPU tests and device gates. |

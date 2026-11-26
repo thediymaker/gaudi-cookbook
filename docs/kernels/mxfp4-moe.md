@@ -39,6 +39,7 @@ Sources, build script, gpt-oss vLLM hook, tests and benchmark:
 | DeepSeek-V4.1-Flash (MXFP4 checkpoint) | Variant `dsv41`: decode kernels, parity and per-call timings on one card in this package. The port adds its `dsv41_sinkhorn` kernel with `--extra-kernel` and holds the model hook |
 | Muse Spark Open | Variant `muse`: decode kernels, parity and per-call timings on one card in this package. The model hook is in the port |
 | Kimi-K2.7 (MXFP4 checkpoint) | Variant `kimi`: decode kernels, parity and per-call timings on one card in this package. New kernel for K = 7168; no end-to-end measurement yet |
+| Mistral Large 4 (MXFP4 checkpoint) | Variant `ml4`: v8 decode kernels, the grouped-route kernels (2 to 64 tokens, bit-identical to v8) and the prefill unpack; parity on one card with the checkpoint's weights in this package. Each I 6144 expert runs as two virtual experts of I 3072. The model hook is in the [port](../ports/mistral-large-4.md) |
 | MiMo-V2.6-Pro (MXFP4 checkpoint) | Variant `glm` built with `--pt2` (the `torch.compile` op library): Pro's per-rank shapes (K 6144, I 2048, 48 experts) are inside the `glm` caps, so it has no variant of its own. The model hook is in the [MiMo-V2.6 port](../ports/mimo-v2-6-flash.md), recipe [MiMo-V2.6-Pro-RL](../recipes/mimo-v2-6-pro-rl.md) |
 
 ## The bottleneck
@@ -163,8 +164,14 @@ same results.
 | `dsv41` | DeepSeek-V4.1-Flash MXFP4, layer 3 | EP 8: 48 of 384 experts, K 5120, I 2304 | 1.64e-3 to 1.68e-3 | 3.75e-3 to 3.75e-2 |
 | `muse` | Muse Spark Open, layer 30 | EP 2 x TP 4: 128 of 256 experts, K 4096, I 1024 | 1.66e-3 | 4.52e-3 to 4.91e-3 |
 | `kimi` | Kimi-K2.7 MXFP4, layer 3 | EP 8: 48 of 384 experts, K 7168, I 2048 | 1.65e-3 to 1.67e-3 | 4.75e-3 to 5.52e-3 |
+| `ml4` | Mistral Large 4 MXFP4, layer 5 | EP 8: 32 of 256 virtual experts, K 6144, I 3072, top-8, T 1 to 64 | 1.61e-3 to 1.69e-3 | 3.04e-3 to 4.01e-3 |
 
-All five print `PARITY PASS` and `SIG_DEVICE PASS`. The stock op's largest DeepSeek-V4.1-Flash errors (2.4e-2 and
+All six print `PARITY PASS` and `SIG_DEVICE PASS`. For `ml4` the run also checks the grouped-route path:
+`[ml4] path grouped: bit-identical to v8 in 10/10 cases`, `[ml4] PARITY PASS (paths v8, grouped)` and
+`SIG_DEVICE PASS` for both paths (v8 is called in 16-token pieces above 16 tokens). Its prefill path (the `glm`
+unpack, then the stock bf16 op) matched the stock MXFP4 op exactly at 256, 1024 and 4096 tokens (max abs 0, rel_l2
+3.72e-3 to 3.76e-3 against fp32 for both), and the unpacked experts matched an exact CPU unpack (`PREFILL PASS`).
+Every kernel of the `ml4` build has the same code hash as the library the Mistral Large 4 port was served with. The stock op's largest DeepSeek-V4.1-Flash errors (2.4e-2 and
 3.8e-2) are the 8-token calls with all 48 experts touched; the kernel stays at 1.7e-3 there.
 
 For the `glm` prefill path (`mxk_deq` per expert, then the stock bf16 MoE op), the same run at 256, 1024 and 4096
@@ -370,6 +377,7 @@ device time shows up only partly.
     | `glm`, `muse` | multiple of 512, at most 6144 | multiple of 512, at most 3072 | at most 16 (`muse`: the port uses 4) |
     | `dsv41` | multiple of 512, at most 6144 | multiple of 256, at most 3072 | at most 16 |
     | `kimi` | multiple of 512, at most 8192 | multiple of 512, at most 3072 | at most 16 |
+    | `ml4` | multiple of 512, at most 6144 | multiple of 512, at most 3072 | v8: at most 16; grouped: 2 to 64 (512 routes) |
 
     Every variant also needs at most 128 routes per call and at most 128 local experts.
 - **One op library per execution mode.** `libmxk_op_lazy.so` uses the legacy `hpu_custom_op.h` API, because the
@@ -425,7 +433,7 @@ build needs: `tpc-clang` at `/opt/habanalabs/bin/tpc-clang`, `tpc_kernel_lib_int
 `/usr/include/habanalabs`, and `hpu_custom_op.h` in the `habana_frameworks` package.
 
 ```bash
-kernels/mxfp4-moe/build.sh [--variant gptoss|glm|dsv41|muse|kimi] [--kernels v8|v10] [--extra-kernel DIR]... [--pt2] OUT_DIR
+kernels/mxfp4-moe/build.sh [--variant gptoss|glm|dsv41|muse|kimi|ml4] [--kernels v8|v10] [--extra-kernel DIR]... [--pt2] OUT_DIR
 ```
 
 | Variant | v8 kernels | v10 kernels (`--kernels v10`, the default) | Model |
@@ -435,6 +443,7 @@ kernels/mxfp4-moe/build.sh [--variant gptoss|glm|dsv41|muse|kimi] [--kernels v8|
 | `dsv41` | `mxk_w13xi`, `mxk_w2x` | `mxk_w13xin`, `mxk_w2gn`, `mxk_w2c` | DeepSeek-V4.1-Flash (its port adds `dsv41_sinkhorn` with `--extra-kernel`) |
 | `muse` | `mxk_w13x`, `mxk_w2xr` | none (v8 only) | Muse Spark Open |
 | `kimi` | `mxk_w13xt`, `mxk_w2x` | `mxk_w13xk`, `mxk_w2xc`, `mxk_w2gp`, `mxk_w2c` | Kimi-K2.7 MXFP4 |
+| `ml4` | `mxk_w13x`, `mxk_w2x`, `mxk_deq`, grouped `mxk_w13g`, `mxk_w2g`, `mxk_w2c` | none (v8 only) | Mistral Large 4 MXFP4, decode and the prefill unpack |
 
 `build.sh` compiles the variant's kernels with `tpc-clang -march=gaudi2 -O2` and embeds the ELFs in `libmxk_tpc.so`,
 which forwards every stock GUID. It builds `libmxk_op_lazy.so` with the variant's `torch.ops.custom_op` ops against
@@ -582,6 +591,7 @@ and keeps v8 when the flag is off or the library has no v10 ops:
 | gpt-oss-120b | `MXFP4_TPC_MOE_V10=1` with `MXFP4_TPC_MOE=1` | `gptoss` v10 | yes (below) |
 | DeepSeek-V4.1-Flash | `DSV41_MXK_V10=1` with `DSV41_MXK=1` ([port](../ports/deepseek-v4-1-flash.md)) | `dsv41` v10 | yes (below) |
 | Kimi-K2.7 | `KIMI_MXK_V10=1` with `KIMI_MXK=1` ([port](../ports/kimi-k2-7.md)) | `kimi` v10 | at EP 4 x TP 2 only (below) |
+| Mistral Large 4 | `ML4_MXK_V9G=1` selects the grouped-route kernels, not v10 ([port](../ports/mistral-large-4.md)) | `ml4`, v8 only | the grouped-route kernels are bit-identical to v8; no v10 set |
 | Muse Spark Open | none | v8 only | a v10 build was faster at 3 to 4 streams but about 1.6% slower per token at one stream, and was not kept |
 | MiMo-V2.6-Pro | none | `glm` v8 with `--pt2` | the v10 kernels have no `torch.compile` ops |
 
