@@ -91,5 +91,6 @@ RIPPLE_URL=http://127.0.0.1:8000 ports/ripple-65b/tests/hpu/run_gates.sh
 ```
 
 It prints one PASS or FAIL line per gate: `smoke`, `determinism`, `reasoning`, `dvp` (decode against prefill),
-`needle` (16K to 255K), `copy` (130K and 255K), `tools`, `isolation`, `stress` (15 decodes next to a 250K prompt),
-then an INFO line with decode speed at 1, 4 and 16 streams.
+`needle` (16K up to the server's `max_model_len`), `copy`, `tools`, `isolation`, `stress` (15 decodes next to a
+prompt near `max_model_len`), then an INFO line with decode speed at 1, 4 and 16 streams. The lengths follow the
+server's `max_model_len`; all gates take about 15 minutes at the recipe's 131,072.

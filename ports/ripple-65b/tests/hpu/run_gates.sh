@@ -6,7 +6,7 @@
 #   RIPPLE_URL=http://127.0.0.1:8000 ports/ripple-65b/tests/hpu/run_gates.sh [gate ...]
 #
 # Prints one PASS or FAIL line per gate (see gates.py for what each checks) and exits non-zero if any gate fails.
-# All gates take about 40 minutes on 4 Gaudi 2 cards, most of it in the 250K-token prompts. Details go to
+# All gates take about 15 minutes on 4 Gaudi 2 cards at the recipe's 131,072 tokens (about 40 at 262,144). Details go to
 # ripple_gates.json in the current directory (RIPPLE_GATES_OUT to change).
 set -euo pipefail
 

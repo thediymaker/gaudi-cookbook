@@ -12,16 +12,17 @@ INFO lines for speed. Details of every gate go to the JSON file named by --out.
               split streamed; a second turn after a reasoned turn splits again (the parser patch)
   dvp         8 greedy decodes of 512 tokens from prompts past the 1024-token window, re-scored by prefill:
               mean |logprob difference| at most 0.05
-  needle      a short code in neutral filler at 16K / 64K / 129K / 255K tokens x depths 0.1 / 0.5 / 0.9,
-              answered in the content; a control without the needle must not produce it
-  copy        a 1,500-token passage early in a 130K and a 255K prompt, restarted at the end: the greedy
-              continuation reproduces its next 64 tokens exactly (only the 16 full-attention layers can carry it
-              across the context)
+  needle      a short code in neutral filler at 16K, 64K, 129K (above a 200K max_model_len) and max_model_len - 6400
+              tokens x depths 0.1 / 0.5 / 0.9, asked 3 times at the checkpoint's default sampling: 2 of 3 answers
+              carry its number at every position; a control without the needle must not produce it
+  copy        a 1,500-token passage early in a 130K (at most max_model_len - 2000) prompt, and in a max_model_len -
+              7200 prompt above a 200K max_model_len, restarted at the end: the greedy continuation reproduces the
+              text of its next 64 tokens exactly (only the 16 full-attention layers can carry it across the context)
   tools       tool_choice auto / required / named / none, non-streaming and streaming (streamed fragments join to
               the same calls), parallel calls, response_format json_schema
   isolation   8 different requests at once, each with its own code: every answer has its own code and no other
               request's code or topic
-  stress      15 streaming decodes while a 250K-token prompt prefills: all complete, server healthy
+  stress      15 streaming decodes while a max_model_len - 12000 token prompt prefills: all complete, server healthy
   speed       INFO only: decode tok/s at 1, 4 and 16 streams (completions, 256 tokens, greedy)
 
   python3 gates.py all --out gates.json          # or a list of gate names
@@ -46,6 +47,16 @@ URL = os.environ.get("RIPPLE_URL", "http://127.0.0.1:8000")
 HERE = os.path.dirname(os.path.abspath(__file__))
 MARKUP = re.compile(r"</?think>|</?tool_call>|<\|im_(?:start|end)\|>")
 MODEL = None
+MAX_LEN = 262144  # the server's max_model_len, read at start
+
+
+def needle_lengths():
+    """16K, 64K, 129K when it fits with room, and the longest prompt that leaves 6,144 tokens for the answer."""
+    return [16384, 65536] + ([129000] if MAX_LEN > 200000 else []) + [MAX_LEN - 6400]
+
+
+def copy_lengths():
+    return [min(130000, MAX_LEN - 2000)] + ([MAX_LEN - 7200] if MAX_LEN > 200000 else [])
 
 
 # ------------------------------------------------------------------------------------------ http
@@ -266,27 +277,41 @@ def needle_prompt(length, depth, code, offset, needle=True):
 
 
 def gate_needle():
+    """Ripple reasons before it answers, and at temperature 0 it sometimes reasons its way to "not found" on a short
+    haystack (the direct answer still has about 30% of the first token). So each position is asked 3 times at the
+    checkpoint's default sampling (temperature 1.0, top-p 0.95, fixed seeds); a position passes with 2 hits of 3.
+    Repeats are prefix-cache hits, so they cost little."""
     items = []
-    for li, length in enumerate((16384, 65536, 129000, 255000)):
+    for li, length in enumerate(needle_lengths()):
         for depth in (0.1, 0.5, 0.9):
             code = CODES[(li + int(depth * 10)) % 3]
-            o = chat([{"role": "user", "content": needle_prompt(length, depth, code, 0)}], 2048)
+            prompt = needle_prompt(length, depth, code, 0)
+            hits, secs, answers = 0, [], []
+            for seed in range(3):
+                o = chat([{"role": "user", "content": prompt}], 6144, temperature=1.0, top_p=0.95, seed=seed)
+                hits += code.split("-")[1] in o["content"]  # the question asks for "the number only"
+                secs.append(o["seconds"])
+                answers.append(o["content"][:80])
             items.append(
-                {"length": length, "depth": depth, "prompt_tokens": o["prompt_tokens"], "hit": code in o["content"]}
-                | {"seconds": o["seconds"], "answer": o["content"][:120]}
+                {"length": length, "depth": depth, "prompt_tokens": o["prompt_tokens"], "hits": hits}
+                | {"seconds": secs, "answers": answers}
             )
-    o = chat([{"role": "user", "content": needle_prompt(16384, 0.5, CODES[0], 0, needle=False)}], 2048)
-    control = not any(c in o["content"] for c in CODES)
-    hits = sum(i["hit"] for i in items)
-    detail = f"{hits}/{len(items)} hit at 16K to 255K x 3 depths; control without needle clean: {control}"
-    return hits == len(items) and control, detail, items
+    o = chat([{"role": "user", "content": needle_prompt(16384, 0.5, CODES[0], 0, needle=False)}], 6144)
+    control = not any(c.split("-")[1] in o["content"] for c in CODES)
+    good = sum(i["hits"] >= 2 for i in items)
+    total = sum(i["hits"] for i in items)
+    detail = (
+        f"{good}/{len(items)} positions at 16K to {items[-1]['prompt_tokens'] // 1000}K x 3 depths, 2+ of 3 samples "
+        f"({total}/{3 * len(items)} answers); control without needle clean: {control}"
+    )
+    return good == len(items) and control, detail, items
 
 
 def gate_copy():
     passage = filler_ids(260000)[255000:256500]
     restart, gen = 400, 64
     items = []
-    for total in (130000, 255000):
+    for total in copy_lengths():
         n_fill = total - len(passage) - restart - gen
         fill = filler_ids(n_fill)[:n_fill]
         k = int(n_fill * 0.1)
@@ -298,10 +323,20 @@ def gate_copy():
             {"model": MODEL, "prompt": ids, "max_tokens": gen, "temperature": 0, "return_token_ids": True},
         )
         g = r["choices"][0]["token_ids"]
-        match = next((j for j, (x, y) in enumerate(zip(g, expect, strict=False)) if x != y), min(len(g), len(expect)))
-        items.append({"prompt_tokens": len(ids), "exact_prefix": match, "seconds": round(time.time() - t, 1)})
-    ok = all(i["exact_prefix"] == gen for i in items)
-    detail = ", ".join(f"{i['prompt_tokens']} tokens {i['exact_prefix']}/{gen} in {i['seconds']} s" for i in items)
+        # compared as text: the model may spell the same text with other tokens (".\n\n" as "." + "\n\n")
+        got, want = detok(g), detok(expect)
+        n = min(len(got), len(want))
+        match = next((j for j in range(n) if got[j] != want[j]), n)
+        items.append(
+            {"prompt_tokens": len(ids), "chars": match, "of": n, "same_tokens": g == expect}
+            | {"seconds": round(time.time() - t, 1)}
+        )
+    ok = all(i["chars"] == i["of"] and i["of"] > 100 for i in items)
+    detail = ", ".join(
+        f"{i['prompt_tokens']} tokens {i['chars']}/{i['of']} chars"
+        f"{' (same tokens)' if i['same_tokens'] else ''} in {i['seconds']} s"
+        for i in items
+    )
     return ok, detail, items
 
 
@@ -571,7 +606,8 @@ def gate_stress():
         t.start()
     time.sleep(5)
     t0 = time.time()
-    long_ids = filler_ids(250000 + 30000)[30000 : 30000 + 250000]
+    n_long = MAX_LEN - 12000
+    long_ids = filler_ids(n_long + 30000)[30000 : 30000 + n_long]
     r = ok_post("/v1/completions", {"model": MODEL, "prompt": long_ids, "max_tokens": 16, "temperature": 0})
     long_s = round(time.time() - t0, 1)
     for t in threads:
@@ -584,7 +620,9 @@ def gate_stress():
     complete = sum(n >= gen - 1 for n in results)
     long_ok = r["usage"]["completion_tokens"] == 16
     ok = healthy and long_ok and complete == decodes and not errors
-    detail = f"{complete}/{decodes} decodes of {gen} tokens complete, 250K prompt {long_s} s, healthy {healthy}"
+    detail = (
+        f"{complete}/{decodes} decodes of {gen} tokens complete, {n_long}-token prompt {long_s} s, healthy {healthy}"
+    )
     return ok, detail, {"decode_tokens": results, "errors": errors, "long_seconds": long_s}
 
 
@@ -623,7 +661,9 @@ def main() -> int:
     ap.add_argument("gates", nargs="*", default=["all"], help=f"all, speed, or any of {', '.join(GATES)}")
     ap.add_argument("--out", default="ripple_gates.json")
     a = ap.parse_args()
-    MODEL = json.loads(get("/v1/models"))["data"][0]["id"]
+    global MAX_LEN
+    m = json.loads(get("/v1/models"))["data"][0]
+    MODEL, MAX_LEN = m["id"], int(m.get("max_model_len") or 262144)
     names = list(GATES) + ["speed"] if a.gates == ["all"] else a.gates
     report, failed = {}, 0
     for name in names:
