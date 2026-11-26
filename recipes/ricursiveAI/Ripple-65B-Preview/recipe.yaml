@@ -1,0 +1,130 @@
+# Gaudi overlay recipe. Format: recipes/README.md. Page: docs/recipes/ripple-65b-preview.md
+meta:
+  title: "Ripple-65B-Preview"
+  slug: "ripple-65b-preview"
+  provider: "Ricursive"
+  description: "65B dense model with 64 sliding-window and 16 NoPE full-attention layers, BF16, 128K context on 4 Gaudi 2 cards, through the ripple-65b port."
+  date_added: 2026-11-26
+  date_updated: 2026-11-26
+  tasks:
+    - text
+  related_recipes: []
+  hardware:
+    gaudi2: verified
+
+model:
+  model_id: "ricursiveAI/Ripple-65B-Preview"
+  architecture: dense
+  parameter_count: "65B"
+  active_parameters: "65B"
+  context_length: 2097152
+
+features:
+  tool_calling:
+    description: >-
+      Hermes-style tool calls with the ripple parser. tool_choice auto gets the tool grammar even when no tool is
+      strict (RIPPLE_CONSTRAIN_AUTO_TOOLS), so a call names an offered tool and follows its schema.
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "ripple"]
+  reasoning:
+    description: "Split <think> reasoning from the answer. The model decides per turn whether to reason; there is no switch."
+    args: ["--reasoning-parser", "ripple"]
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: bf16
+    vram_minimum_gb: 156
+    description: "The official BF16 checkpoint (130 GB) as published, four Gaudi 2 cards."
+
+gaudi:
+  hardware: gaudi2
+  cards: { total: 4, tp: 4, ep: false }
+  image:
+    vllm_gaudi: "releases/v0.30.0"
+    vllm_gaudi_commit: "058f107"
+    vllm_commit: "ced6857a"
+    gaudi_sw: "1.24.1"
+    placeholder: "<your-vllm-gaudi-v0.30.0-image>"
+  port: ripple-65b
+  max_model_len: 131072
+  serve_args:
+    - "--tensor-parallel-size"
+    - "4"
+    - "--dtype"
+    - "bfloat16"
+    - "--block-size"
+    - "128"
+    - "--max-model-len"
+    - "131072"
+    - "--max-num-seqs"
+    - "16"
+    - "--max-num-batched-tokens"
+    - "4096"
+    - "--gpu-memory-utilization"
+    - "0.90"
+    - "--enable-prefix-caching"
+    - "--enable-prompt-tokens-details"
+    - "--async-scheduling"
+    - "--chat-template"
+    - "/opt/gaudi-cookbook/ports/ripple-65b/serving/chat_template.jinja"   # the tools-aware template
+    - "--reasoning-parser"
+    - "ripple"
+    - "--enable-auto-tool-choice"
+    - "--tool-call-parser"
+    - "ripple"
+    - "--exclude-tools-when-tool-choice-none"   # tool_choice none: the model answers in text
+  env:
+    PT_HPU_LAZY_MODE: "1"
+    PT_HPU_ENABLE_LAZY_COLLECTIVES: "true"     # TP collectives in lazy mode with HPU graphs
+    VLLM_CONTIGUOUS_PA: "false"
+    VLLM_SKIP_WARMUP: "true"                    # graphs are captured per shape at first use
+    VLLM_ENGINE_READY_TIMEOUT_S: "7200"
+    VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "3600"  # long prompts prefill next to running decodes
+    VLLM_FP32_SOFTMAX: "true"                   # halves the distance to the fp32 reference
+    VLLM_BUCKETING_STRATEGY: "pad"              # context buckets padded to the next step, not to 258K
+    VLLM_HPU_FSDPA_SLICE_ENABLED: "false"       # pad turns the slicer on; the port refuses it
+    VLLM_GRAPH_RESERVED_MEM: "0.3"              # room for run-time graphs and eager prefill workspaces
+    RIPPLE_SWA_KV: "1"                          # window-sized KV for the 64 sliding layers: 5x the tokens
+    RIPPLE_CONSTRAIN_AUTO_TOOLS: "1"            # tool grammar for tool_choice auto
+    RIPPLE_FAST_SOFTMAX_MIN_KV: "16384"         # fast softmax for long full-layer prompt attention
+    RIPPLE_FSDPA_WS_GIB: "2"                    # long prompt chunks with context run as query tiles
+    RIPPLE_FSDPA_Q_TILE: "256"
+    RIPPLE_GRAPH_BUDGET_GIB: "auto"             # bound the device memory decode graphs keep
+    RIPPLE_PREFILL_INFLIGHT: "1"                # bound prefill run-ahead to one layer
+  buckets: null
+  required_fixes:
+    - prompt-order             # prefix-cache hits read before they are written in the same step
+    - structured-output-rows   # tool requests carry a grammar: rows must keep their own sampling parameters
+    - so-row-owners            # grammar masks on the right rows when a long prompt is chunked
+    - async-inputs             # stale decode input ids under async scheduling
+    - resumed-prefill-logits   # a request resumed after preemption must not repeat its output
+    - gather-logprobs-int32    # prompt and top logprob ids read back corrupted otherwise
+    - prompt-logprobs          # prompt_logprobs (the decode-vs-prefill gate) crashes or is wrong otherwise
+    - logprobs-decode-guard    # a bad logprob id no longer kills the API server
+    - seeded-sampling          # a seeded request segfaults a TP worker otherwise
+    - swa-decode-window        # exact window in decode; the port extends it to model type ricursive
+    - swa-window-context       # window block lists in prefill for every interleaved model (opt-in)
+    - rank-exception-fatal     # a failed rank stops the engine instead of serving garbage
+  verified:
+    - "Build gates 10/10 and CPU tests 46 passed in the port image built by install.sh from the stock releases/v0.30.0 image"
+    - "Smoke, 20 chat prompts at temperature 0: 20/20 correct, finish stop 20/20, no markup"
+    - "Greedy determinism: 3/3 identical alone (prefix cache included); concurrent runs split only at exact top-2 ties"
+    - "Reasoning split 6/6: reasoning filled, content clean, streaming equals non-streaming, second turn splits"
+    - "Decode vs prefill, 8 x 512 greedy tokens past the window: mean |dlogprob| 0.0055 (gate 0.05)"
+    - "Needles at 16K, 64K and 124.5K x 3 depths, 3 samples each at default sampling: 9/9 positions, 25/27 answers"
+    - "Copy test at 129,010 tokens: 251/251 characters, same tokens"
+    - "Tools 10/10 (auto, required, named, none, streaming and not, parallel calls, json_schema)"
+    - "Isolation: 8 concurrent requests, own code 8/8, foreign content 0"
+    - "Stress: 15 streaming decodes next to a 119,072-token prompt, 15/15 complete, server healthy"
+  notes:
+    - >-
+      Needs the ripple-65b port image: docker build -f ports/ripple-65b/Dockerfile from the stock releases/v0.30.0 image.
+      install.sh applies the v0.30.0 fix profile and swa-window-context before the port's runner patches, so the
+      launch's fix step finds every fix applied.
+    - "The KV pool holds 2,068,666 tokens per replica (only the 16 full-attention layers keep full-length KV): 15.8x a 128K request."
+    - "Production serves self-quantized block FP8 weights at 32 sequences; that checkpoint is not public, so this recipe is BF16."
+    - "DFlash2 speculative decoding is left out: it hung TP ranks in serving."
+    - >-
+      262,144 was run too: needles pass at 255K, but a greedy copy of a passage fails past about 200K tokens with fast
+      or fp32 softmax alike, so the verified window is 131,072.
