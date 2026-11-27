@@ -10,7 +10,7 @@ meta:
     - embedding
     - multimodal
   related_recipes:
-    - qwen3-embedding-8b
+    - "Qwen/Qwen3-Embedding-8B"
   hardware:
     gaudi2: verified
 

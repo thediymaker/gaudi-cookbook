@@ -31,12 +31,14 @@
     function done() {
       if (!btn) return;
       var label = btn.querySelector("span");
-      var old = label ? label.textContent : null;
+      // Remember the label once: a second click inside the timeout would otherwise save "Copied" as the original.
+      if (label && !btn.hasAttribute("data-label")) btn.setAttribute("data-label", label.textContent);
+      clearTimeout(btn.copiedTimer);
       btn.classList.add("copied");
       if (label) label.textContent = "Copied";
-      setTimeout(function () {
+      btn.copiedTimer = setTimeout(function () {
         btn.classList.remove("copied");
-        if (label) label.textContent = old;
+        if (label) label.textContent = btn.getAttribute("data-label");
       }, 1400);
     }
     if (navigator.clipboard && window.isSecureContext) {

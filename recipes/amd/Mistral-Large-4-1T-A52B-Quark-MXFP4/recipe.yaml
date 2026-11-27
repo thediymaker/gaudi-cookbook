@@ -12,8 +12,8 @@ meta:
   tasks:
     - text
   related_recipes:
-    - kimi-k2-7-code
-    - deepseek-v4-1-flash-1017
+    - "amd/Kimi-K2.7-Code-MXFP4"
+    - "deepseek-ai/DeepSeek-V4.1-Flash-1017"
   hardware:
     gaudi2: verified
 
