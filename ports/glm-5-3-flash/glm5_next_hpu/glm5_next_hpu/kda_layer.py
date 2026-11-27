@@ -34,16 +34,25 @@ _KDA_SUB = 16
 KDA_SCAN = os.environ.get("GLM5_NEXT_KDA_SCAN", "0") == "1"
 
 
+def _state_slots(state_indices, n_slots):
+    """The state cache rows to read and write, with the batch's -1 padding entries mapped to the last row.
+
+    vllm-gaudi's GDN layer indexes with `ssm_state[state_indices]`, where -1 wraps to the last row (the padding slot).
+    `index_select` and `index_copy_` do not wrap (CPU raises, HPU is undefined), so the loads and the save all take
+    these indices.
+    """
+    return torch.remainder(state_indices, n_slots).long()
+
+
 @torch._dynamo.disable
-def _save_ssm_state(core_attn_out, ssm_state, final_state, state_indices):
-    """Write the final recurrent states into the cache and pass `core_attn_out` through.
+def _save_ssm_state(core_attn_out, ssm_state, final_state, slots):
+    """Write the final recurrent states into the cache rows `slots` (from `_state_slots`), pass `core_attn_out` through.
 
     Same shape as vllm-gaudi's GDN layer: outside dynamo (torch.compile drops an in-place index_copy_ into an aliased
     state), and the caller must use the return value (a call whose result is unused can be eliminated, which also
     broke graph replay with "Neither storage attached to input tensor").
     """
-    safe = torch.remainder(state_indices, ssm_state.shape[0]).long()
-    ssm_state.index_copy_(0, safe, final_state.to(device=ssm_state.device, dtype=ssm_state.dtype))
+    ssm_state.index_copy_(0, slots, final_state.to(device=ssm_state.device, dtype=ssm_state.dtype))
     return core_attn_out
 
 
@@ -133,6 +142,7 @@ class Glm5NextHPUKDAAttention(KimiGatedDeltaNetAttention):
             return  # warmup / profile metadata carries no state map
 
         conv_state, ssm_state = self.kv_cache[0], self.kv_cache[1]
+        slots = _state_slots(state_indices, ssm_state.shape[0]) if state_indices is not None else None
         n = q_proj_states.size(0)
 
         # Mask before the conv as well as after: the padded tail can hold NaN, and the conv writes its state from the
@@ -212,7 +222,7 @@ class Glm5NextHPUKDAAttention(KimiGatedDeltaNetAttention):
             init = None
             n_seqs = 1
             if state_indices is not None:
-                init = ssm_state.index_select(0, state_indices.long()).contiguous()
+                init = ssm_state.index_select(0, slots).contiguous()
                 if has_initial_state is not None:
                     # a multiply, not a boolean index (which lowers to scatter_nd)
                     init = init * has_initial_state.bool().view(-1, 1, 1, 1).to(init.dtype)
@@ -240,7 +250,7 @@ class Glm5NextHPUKDAAttention(KimiGatedDeltaNetAttention):
                 out, final = hpu_chunk_kda(qkv[0], qkv[1], qkv[2], gg, bb, **kw)
             out = out.reshape(1, n, -1, d).contiguous()
         else:
-            state = ssm_state.index_select(0, state_indices.long()).contiguous() if state_indices is not None else None
+            state = ssm_state.index_select(0, slots).contiguous() if slots is not None else None
 
             def to_seq(t):
                 # [1, n, H, D] -> [n, 1, H, D], contiguous: strided inputs to a captured graph fail at replay
@@ -257,7 +267,7 @@ class Glm5NextHPUKDAAttention(KimiGatedDeltaNetAttention):
             )
             out = out.reshape(1, -1, *out.shape[2:]).contiguous()
         if state_indices is not None:
-            out = _save_ssm_state(out, ssm_state, final, state_indices)
+            out = _save_ssm_state(out, ssm_state, final, slots)
 
         out = torch.nan_to_num(out).to(core_attn_out.dtype)
         if out.shape == core_attn_out.shape:
