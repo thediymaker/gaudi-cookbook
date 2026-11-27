@@ -319,8 +319,13 @@ def test_call_stop_token_ends_the_answer():
     assert parse(FINAL + "done<|call|>") == (None, "done", [])
 
 
+# beam_hpu: the request's strict-argument tools (_beam_strict_tools, set by BeamParser._template_tag)
+# decide which calls stream their arguments in fragments (_ArgumentStream); the others come whole.
+@pytest.mark.parametrize(
+    "strict_tools", [frozenset(), frozenset({"set_count"}), frozenset({"get_weather", "set_count"})]
+)
 @pytest.mark.parametrize("chunk_size", [1, 7, 10_000])
-def test_streaming_matches_non_streaming(chunk_size):
+def test_streaming_matches_non_streaming(chunk_size, strict_tools):
     text = (
         THOUGHT
         + call(
@@ -331,10 +336,12 @@ def test_streaming_matches_non_streaming(chunk_size):
         + call("set_count", parameter("count", "7"))
     )
     parser = make_parser()
-    reasoning, calls = [], {}
+    reasoning, calls, pieces = [], {}, {}
     for start in range(0, len(text), chunk_size):
         end = min(start + chunk_size, len(text))
-        delta = parser.parse_delta(text[start:end], [], request(), finished=end == len(text))
+        delta = parser.parse_delta(
+            text[start:end], [], request(_beam_strict_tools=strict_tools), finished=end == len(text)
+        )
         if delta is not None:
             reasoning.append(delta.reasoning or "")
             # beam_hpu: a call is announced when its region opens and its arguments may
@@ -345,9 +352,12 @@ def test_streaming_matches_non_streaming(chunk_size):
                     name + (tool_call.function.name or ""),
                     arguments + (tool_call.function.arguments or ""),
                 )
+                pieces[tool_call.index] = pieces.get(tool_call.index, 0) + bool(tool_call.function.arguments)
 
     assert "".join(reasoning) == "plan"
     assert [(name, json.loads(arguments)) for name, arguments in map(calls.get, sorted(calls))] == parse(text)[2]
+    if chunk_size == 1:  # a strict call's arguments arrive in fragments, the others whole at the close
+        assert [pieces[i] > 1 for i in sorted(calls)] == [calls[i][0] in strict_tools for i in sorted(calls)]
 
 
 WEATHER_CALL = call("get_weather", parameter("city", "Paris"))
