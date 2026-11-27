@@ -17,7 +17,11 @@ carry a `<|message_model|>[recipient]` header.
 
 The reasoning parser takes the thinking blocks and leaves the other markers in place for the tool parser,
 which extracts tool blocks and strips every remaining marker. With --enable-auto-tool-choice the tool
-parser runs on every chat request, so it is also what cleans the visible text.
+parser runs on every chat request, so it is also what cleans the visible text. Reasoning is the thinking
+bodies joined as written (as vLLM's own inkling parser joins them). Streaming hands the stream to the tool
+parser once the first thinking block closes, so a later thinking block is streamed as reasoning by the tool
+parser (without a reasoning parser, thinking stays content). A tool block that is cut off or does not decode
+to a call is dropped from the content whole, as the stream drops it.
 
 The markers are special tokens, so the detokenizer must keep them: adjust_request sets
 skip_special_tokens=False on every chat request (--override-generation-config cannot set it).
@@ -70,18 +74,38 @@ def _strip_markers(s: str) -> str:
     return _ALL_MARKERS_RE.sub("", s)
 
 
+def _tool_call(raw: str) -> FunctionCall | None:
+    """The call in a tool block's JSON payload, None when it does not decode to one."""
+    try:
+        obj = json.loads(raw.strip())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict) or not obj.get("name"):
+        return None
+    args = obj.get("args", obj.get("arguments", {}))
+    return FunctionCall(name=obj["name"], arguments=json.dumps(args, ensure_ascii=False))
+
+
 def _clean_content(s: str, keep_tool_blocks: bool) -> str:
-    """Strip markers from visible text. keep_tool_blocks leaves tool spans verbatim for the tool parser;
-    otherwise they are removed whole, so tool syntax never leaks when no tool parsing runs."""
-    if not keep_tool_blocks:
-        return _strip_markers(_TOOL_SPAN_RE.sub("", s))
+    """Strip markers from visible text. keep_tool_blocks leaves the tool spans that hold a call (closed, payload
+    decodes) verbatim for the tool parser. Any other tool span is removed whole: when the tool parser extracts no
+    call, the server returns this text as the content, so tool syntax must never be left in it."""
     parts, last = [], 0
     for m in _TOOL_SPAN_RE.finditer(s):
         parts.append(_strip_markers(s[last : m.start()]))
-        parts.append(m.group(0))
+        span = m.group(0)
+        if keep_tool_blocks and _CLOSE_RE.search(span) and _tool_call(_TOOL_BLOCK_RE.match(span).group(1)):
+            parts.append(span)
         last = m.end()
     parts.append(_strip_markers(s[last:]))
     return "".join(parts)
+
+
+def _thinking(text: str) -> str:
+    """The bodies of the thinking blocks in `text`, joined, without a partial marker at the end of an open one."""
+    bodies = "".join(_THINK_BLOCK_RE.findall(text))
+    hold = _marker_hold(text) if _inside_block(text, THINK) else 0
+    return bodies[: len(bodies) - hold]
 
 
 def _inside_block(text: str, opener: str) -> bool:
@@ -110,7 +134,8 @@ class InklingPyReasoningParser(ReasoningParser):
 
     def __init__(self, tokenizer, *args, **kwargs):
         super().__init__(tokenizer, *args, **kwargs)
-        self._streamed_reasoning_len = 0
+        self._block_start = -1  # where the thinking block being streamed opens in current_text
+        self._streamed_reasoning_len = 0  # of that block's body
         self._streamed_content_len = 0
         # Marker id -> kind, so is_reasoning_end scans raw ids instead of decoding a window of tokens.
         self._marker_kind: dict[int, str] = {}
@@ -133,8 +158,7 @@ class InklingPyReasoningParser(ReasoningParser):
         """The server uses this content verbatim when no tool call is extracted, so it must be marker-free;
         tool spans stay only when tool extraction will run on them."""
         keep_tools = bool(getattr(request, "tools", None)) and getattr(request, "tool_choice", None) != "none"
-        thinks = _THINK_BLOCK_RE.findall(model_output)
-        reasoning = "\n".join(t.strip() for t in thinks if t.strip())
+        reasoning = "".join(_THINK_BLOCK_RE.findall(model_output)).strip()
         content = _clean_content(_THINK_BLOCK_RE.sub("", model_output), keep_tool_blocks=keep_tools).strip()
         return (reasoning or None), (content or None)
 
@@ -188,6 +212,9 @@ class InklingPyReasoningParser(ReasoningParser):
                 return DeltaMessage(content=delta_text)
             return None
         body_start = current_text.rfind(THINK) + len(THINK)
+        if body_start != self._block_start:
+            # a new thinking block (an <|end_message|><|message_model|> delta kept reasoning open)
+            self._block_start, self._streamed_reasoning_len = body_start, 0
         after = current_text[body_start:]
         close = _CLOSE_RE.search(after)
         if close is None:
@@ -197,7 +224,7 @@ class InklingPyReasoningParser(ReasoningParser):
                 new = new[:-hold]
             if new:
                 self._streamed_reasoning_len += len(new)
-                return DeltaMessage(reasoning_content=new)
+                return DeltaMessage(reasoning=new)
             return None
         # Thinking block closed: flush its body. Text after the close waits for the transition delta (an
         # END + <|message_model|> pair in one delta leaves an open header, so reasoning has not ended yet).
@@ -209,30 +236,28 @@ class InklingPyReasoningParser(ReasoningParser):
             new_c = rest[self._streamed_content_len :]
             self._streamed_content_len = len(rest)
         if new_r or new_c:
-            return DeltaMessage(reasoning_content=new_r or None, content=new_c or None)
+            return DeltaMessage(reasoning=new_r or None, content=new_c or None)
         return None
 
 
 class InklingPyToolParser(ToolParser):
     """Extracts <|content_invoke_tool_json|> blocks as OpenAI tool calls and strips the remaining markers."""
 
+    # Set True by vLLM's Parser when no reasoning parser is configured: thinking blocks are then plain content.
+    skip_reasoning_parsing = False
+
     def __init__(self, tokenizer, tools=None):
         super().__init__(tokenizer, tools)
         self._emitted_calls = 0
         self._content_len = 0
+        self._reasoning_len = 0
 
     @staticmethod
     def _parse_payload(raw: str) -> FunctionCall | None:
-        try:
-            obj = json.loads(raw.strip())
-        except json.JSONDecodeError:
-            logger.warning("inkling_py: undecodable tool payload %r", raw[:200])
-            return None
-        name = obj.get("name")
-        if not name:
-            return None
-        args = obj.get("args", obj.get("arguments", {}))
-        return FunctionCall(name=name, arguments=json.dumps(args, ensure_ascii=False))
+        call = _tool_call(raw)
+        if call is None:
+            logger.warning("inkling_py: dropping a tool payload that is not a call: %r", raw[:200])
+        return call
 
     def extract_tool_calls(self, model_output: str, request: ChatCompletionRequest) -> ExtractedToolCallInformation:
         blocks = _TOOL_BLOCK_RE.findall(model_output)
@@ -259,7 +284,21 @@ class InklingPyToolParser(ToolParser):
         request: ChatCompletionRequest,
     ) -> DeltaMessage | None:
         """Stream visible text as it arrives (partial markers held back); emit each tool call once its block
-        closes."""
+        closes. With a reasoning parser, the body of a thinking block after the handover streams as reasoning."""
+        if self.skip_reasoning_parsing:
+            return self._calls_or_content(current_text, request)
+        message = self._calls_or_content(_THINK_BLOCK_RE.sub("", current_text), request)
+        thinking = _thinking(current_text)
+        if len(thinking) <= self._reasoning_len:
+            return message
+        piece = thinking[self._reasoning_len :]
+        self._reasoning_len = len(thinking)
+        if message is None:
+            return DeltaMessage(reasoning=piece)
+        message.reasoning = piece
+        return message
+
+    def _calls_or_content(self, current_text: str, request: ChatCompletionRequest) -> DeltaMessage | None:
         if not getattr(request, "tools", None):
             # No tools: never emit calls, drop any tool syntax, stream the cleaned text.
             if _inside_block(current_text, TOOL_JSON):

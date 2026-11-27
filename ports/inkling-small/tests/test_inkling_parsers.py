@@ -87,7 +87,7 @@ def _stream(tok, output, tools=None, tool_choice=None, batch_end_msg=False):
         if dm is None:
             continue
         content.append(dm.content or "")
-        reasoning.append(getattr(dm, "reasoning", None) or getattr(dm, "reasoning_content", None) or "")
+        reasoning.append(dm.reasoning or "")  # the field v0.30.0 declares
         calls.extend(dm.tool_calls or [])
     return "".join(content), "".join(reasoning), calls
 
