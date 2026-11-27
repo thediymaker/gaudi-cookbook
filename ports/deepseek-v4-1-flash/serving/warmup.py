@@ -17,9 +17,13 @@ graphs and (S, W) is the whole set.
 
 How: one unique prompt of nearly the full context first (its blocks become a cached prefix); every later cell is a
 block-aligned prefix of it (a prefix-cache hit, free) plus a fresh random tail, so the server computes only that
-cell's chunk. Token ids are random per run, so nothing matches user traffic. Idempotent: a re-run compiles nothing
-new. Order: the base prompt, then prefill cells widest first and, within a width, small query buckets first, then
-decode.
+cell's chunk. With decoder replay on (DSV41_REPLAY_KEEP, read from the same environment as the server), a hit ends
+at least KEEP tokens before the request's end, so a request with a hit computes more than KEEP tokens: a query
+bucket below KEEP (128 at KEEP 140) cannot be reached through a hit beyond the narrowest width. Those cells send a
+fresh prompt instead, as long as a multiple of the 4096-token chunk plus S, so its last chunk is the cell (four
+cells at 128K, about 123K prompt tokens in all). Token ids are random per run, so nothing matches user traffic.
+Idempotent: a re-run compiles nothing new. Order: the base prompt, then prefill cells widest first and, within a
+width, small query buckets first, then decode.
 
 Readiness. DONE (DSV41_WARMUP_DONE, default /tmp/dsv41-warmup.done) is written when the ladder finishes, when
 DSV41_WARMUP_MAX_S (counted from the server first answering /health) runs out, or on any error: a replica that serves
@@ -52,6 +56,7 @@ MAX_SEQS = int(os.environ.get("DSV41_WARMUP_MAX_SEQS", "8"))
 SERVER_WAIT_S = float(os.environ.get("DSV41_WARMUP_SERVER_WAIT_S", "7200"))
 CHUNK, BLOCK, BT_MIN = 4096, 128, 64  # --max-num-batched-tokens, --block-size, the runner's narrowest table
 LO, HI = 1000, 100000  # random token ids are drawn from here
+KEEP = int(os.environ.get("DSV41_REPLAY_KEEP", "0"))  # the server's decoder replay; prefix hits stop KEEP tokens short
 T0 = time.time()
 
 
@@ -85,14 +90,29 @@ def width(npos: int, max_len: int) -> int:
     return min(w, -(-max_len // BLOCK))
 
 
-def prefill_cells(max_len: int) -> list[tuple[int, int, tuple[int, int]]]:
-    """(S, prefix blocks k, (S, W)): the chunk is S tokens after k * BLOCK cached tokens."""
+def prefill_cells(max_len: int, keep: int = KEEP) -> list[tuple[int, int, tuple[int, int], bool]]:
+    """(S, k, (S, W), fresh). fresh False: the chunk is S tokens after k * BLOCK cached tokens. fresh True (S < keep,
+    W wider than a prompt of S alone): a new prompt of k * BLOCK + S tokens, k * BLOCK a multiple of CHUNK, so the
+    chunk before the last ends at k * BLOCK and the last chunk is S tokens at width W."""
     cells: dict[tuple[int, int], int] = {}
     for s in QB:
         for k in range((max_len - 2 - s) // BLOCK + 1):
             cells.setdefault((s, width(k * BLOCK + s, max_len)), k)
-    out = sorted(cells.items(), key=lambda e: (-e[0][1], e[0][0], e[1]))
-    return [(key[0], k, key) for key, k in out]
+    out = []
+    for key, k in sorted(cells.items(), key=lambda e: (-e[0][1], e[0][0], e[1])):
+        s, w = key
+        if k == 0 or s >= keep:
+            out.append((s, k, key, False))
+            continue
+        ks = [
+            j
+            for j in range((max_len - 2 - s) // BLOCK + 1)
+            if j * BLOCK % CHUNK == 0 and width(j * BLOCK + s, max_len) == w
+        ]
+        if not ks:
+            raise ValueError(f"no chunk-aligned fresh prompt reaches prefill cell {key} at max_len {max_len}")
+        out.append((s, ks[0], key, True))
+    return out
 
 
 def decode_cells(max_len: int, max_seqs: int) -> list[tuple[int, int]]:
@@ -168,16 +188,17 @@ def run(srv: Server, deadline: float | None = None, decode_tokens: int = 8) -> d
     base = [rng.randrange(LO, HI) for _ in range(base_len)]
     rows.append(("base", srv.complete(base)))
     log(json.dumps({"cell": "base", "tokens": base_len, "s": round(rows[-1][1], 2)}))
-    for s, k, key in pcells:
+    for s, k, key, fresh in pcells:
         check()
+        prefix = [rng.randrange(LO, HI) for _ in range(k * BLOCK)] if fresh else base[: k * BLOCK]
         try:
-            dt = srv.complete(base[: k * BLOCK] + [rng.randrange(LO, HI) for _ in range(s)])
+            dt = srv.complete(prefix + [rng.randrange(LO, HI) for _ in range(s)])
         except Exception as e:
             errors += 1
             log(json.dumps({"cell": ["prefill", *key], "error": str(e)}))
             continue
         rows.append((["prefill", *key], dt))
-        log(json.dumps({"cell": ["prefill", *key], "prefix_tokens": k * BLOCK, "s": round(dt, 2)}))
+        log(json.dumps({"cell": ["prefill", *key], "prefix_tokens": k * BLOCK, "fresh": fresh, "s": round(dt, 2)}))
     for b, k in dcells:
         check()
         errs: list[str] = []
@@ -214,9 +235,10 @@ def main() -> int:
     args = ap.parse_args()
     if args.dry_run:
         pcells, dcells = prefill_cells(args.max_len), decode_cells(args.max_len, MAX_SEQS)
-        print(json.dumps({"query_buckets": QB, "prefill_cells": len(pcells), "decode_cells": len(dcells)}))
-        for _, k, key in pcells:
-            print(json.dumps({"prefill": key, "prefix_tokens": k * BLOCK}))
+        head = {"query_buckets": QB, "keep": KEEP, "prefill_cells": len(pcells), "decode_cells": len(dcells)}
+        print(json.dumps(head))
+        for _, k, key, fresh in pcells:
+            print(json.dumps({"prefill": key, "prefix_tokens": k * BLOCK, "fresh": fresh}))
         for b, k in dcells:
             print(json.dumps({"decode_batch": b, "prefix_tokens": k * BLOCK}))
         return 0
