@@ -59,6 +59,12 @@ Every `apply.py` is a single stdlib-only file with the same driver:
 `apply_all.py` stops at the first failure with exit code 2, so a container never serves a
 half-patched engine.
 
+`apply_all.py --check` writes nothing either. A fix that needs an earlier fix in the source
+(gdn-prefix-cache needs hybrid-decode-pad) cannot find it on an image that is not patched yet, and
+its own `apply.py --check` exits 2 there. `apply_all.py --check` checks such a fix against a scratch
+copy of the files involved with the pending fixes before it applied, and reports 1 when its anchors
+match there and 2 when they do not.
+
 ## Fixes
 
 In application order. "Profiles" says which release profiles include the fix; "opt-in" fixes are
