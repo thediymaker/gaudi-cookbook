@@ -492,13 +492,24 @@ def build_commands(r, enabled, fix_pack):
             script += block
     slug = r["meta"].get("slug") or r["repo"].lower()
     model, named = serve_target(r)
-    extra = (*(named or (f"--served-model-name {slug}",)), "--host 0.0.0.0", "--port 8000", "--shutdown-timeout 120")
+    extra = (*(named or (f"--served-model-name {slug}",)), "--host 0.0.0.0", "--port 8000")
+    # With several API server processes, vLLM's native drain freezes every stream on SIGTERM, so the
+    # pod drains in its preStop instead (docs/kubernetes/rollouts-and-scaling.md, idle mode).
+    api_servers = dict(p for p in pairs if p[1] is not None).get("--api-server-count", "1")
+    native_drain = int(api_servers) <= 1
+    if native_drain:
+        extra += ("--shutdown-timeout 120",)
     script += serve_block(model, pairs, exec_=True, extra=extra)
     cards = str(g["cards"]["total"])
     k8s = [
         "# Container for kubernetes/manifests/vllm-deployment.yaml: keep the template's probes, volumes,",
         "# hugepages and drain settings, and size CPU and memory per card (docs/kubernetes/pod-spec.md).",
     ]
+    if not native_drain:
+        k8s += [
+            f"# --api-server-count {api_servers}: no --shutdown-timeout, which would freeze every stream on SIGTERM.",
+            "# Replace the template's preStop with the idle-mode drain in docs/kubernetes/rollouts-and-scaling.md.",
+        ]
     if port:
         k8s.append(f"# The port image (ports/{port}/Dockerfile) carries this repository at {IMAGE_COOKBOOK}.")
     elif cb:
