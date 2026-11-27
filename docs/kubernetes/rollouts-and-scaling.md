@@ -75,6 +75,10 @@ With this, measured on several models and releases: idle pods leave about 25 s a
 deletion, pods deleted during start-up leave within seconds, and streams shorter than N
 complete.
 
+A replica that spans two pods drains at the leader, and the worker needs a preStop of its
+own that keeps it up until the leader is done: see
+[Multi-node replicas](multi-node.md#the-replica-is-the-group).
+
 ### Choosing N
 
 Pick N per model from its own request durations. A request that is in flight at a random

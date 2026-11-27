@@ -33,6 +33,16 @@ Two pods that form one engine behave like one pod with two halves:
   LeaderWorkerSet creates a headless Service named after the set for the pods' DNS names.
 - **Probe the leader.** The leader's `/health` reflects the whole engine: a lost stage stops
   its steps. The worker gets no HTTP probes; group restart covers it.
+- **Drain at the leader, hold the worker.** The leader gets the start-up aware preStop and
+  `--shutdown-timeout` of a one-pod model ([Graceful drain](rollouts-and-scaling.md#graceful-drain)).
+  Every step of its drain needs the worker, so the worker must not exit first. Deleting the
+  set (the default background cascade), scaling down and rolling remove the leader first and
+  the worker only once the leader is gone. Deleting or evicting the worker pod (a node drain)
+  recreates the group and terminates both at once, and so does a foreground cascading delete
+  of the set (`kubectl delete --cascade=foreground`, or a deploy tool that deletes that way).
+  The worker's preStop waits while its ranks hold a connection to the leader's
+  torch.distributed store (`--master-port`), returns at once when the leader is done or gone,
+  and gives up after 150 s, inside the grace period.
 - **Scale and roll by group.** An autoscaler or rollout adds or removes whole groups. With
   `maxSurge 0`, a rollout of a single group drops the model to zero replicas while it
   restarts.
@@ -49,8 +59,30 @@ Ray cluster per replica for builds that use Ray, are alternatives with the same 
 
 [`kubernetes/manifests/vllm-two-node-pipeline.yaml`](https://github.com/thediymaker/gaudi-cookbook/tree/main/kubernetes/manifests/vllm-two-node-pipeline.yaml)
 is a LeaderWorkerSet for PP 2 x TP 8. The two `vllm serve` commands inside are the verified
-ones; the LeaderWorkerSet around them was not applied on a cluster, so treat it as a starting
-point. The essentials:
+ones. The LeaderWorkerSet around them was applied on a kind cluster with LeaderWorkerSet
+v1.0.0, with only the images and commands swapped for small stand-ins: a leader that streams
+slow requests, drains like the template (20 s preStop, then in-flight requests finish, new
+ones get HTTP 500) and needs the worker at every step, and a worker that holds a connection
+to the leader's store port and exits at once on SIGTERM. It was not applied on Gaudi nodes as
+one set. One 90 s stream, started 8 s before each event:
+
+| Event | Worker without preStop | Worker with preStop |
+| --- | --- | --- |
+| `kubectl delete` the set (background cascade) | completes; worker deleted after the leader | completes |
+| Scale to 0 replicas | completes; worker deleted after the leader | completes |
+| Rolling update | completes; worker deleted after the leader | completes |
+| `kubectl delete --cascade=foreground` the set | fails at the next step: both pods get SIGTERM at once | completes; worker exits 1 s after the leader |
+| Delete the worker pod (as an eviction does) | fails at the next step: the group is recreated | completes; worker exits 2 s after the leader |
+| Leader process killed, group recreated | not run | worker exits at once |
+| Foreground delete or worker delete, no request in flight | not run | worker exits within 1 s of the leader, about 21 s after the delete |
+
+Two more things the run showed. Deleting the set removes its headless Service at once, so the
+pods' DNS names stop resolving while the leader drains: the stages must not look each other
+up again (vLLM's stages keep their open connections). And a user Service named after the set,
+applied with it, takes the name first: LeaderWorkerSet fails to create its headless Service
+(a `FailedCreate` event), and the worker never resolves `LWS_LEADER_ADDRESS`.
+
+The essentials:
 
 ```bash
 python3 fixes/apply_all.py --profile v0.30.0 pipeline-parallel || exit 1

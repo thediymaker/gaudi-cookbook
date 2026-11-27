@@ -7,8 +7,11 @@
 # (fixes/pipeline-parallel) and the LeaderWorkerSet controller
 # (https://github.com/kubernetes-sigs/lws).
 #
-# Not applied as written: the launch commands below are the ones verified with two plain pods
-# (see fixes/pipeline-parallel/README.md); the LeaderWorkerSet wrapper around them is untested.
+# Tested in two parts. The launch commands below are the ones verified with two plain pods on
+# Gaudi (see fixes/pipeline-parallel/README.md). The LeaderWorkerSet wrapper (group restart,
+# DNS names, Service, preStop hooks, grace periods) was applied on a kind cluster with
+# LeaderWorkerSet v1.0.0, with only the images and commands swapped for small stand-ins that
+# serve, drain and step like the two stages. Not applied on Gaudi nodes as one set.
 #
 # Replace before applying:
 #   <registry>/<image>:<tag>   a vllm-gaudi v0.30.0 image with this repository copied to
@@ -214,16 +217,38 @@ spec:
             env: *stage-env
             resources: *stage-resources
             # No probes: the worker serves no HTTP. The group restart policy covers it.
-            # No preStop: with no API server, no router or Service sends requests here, so
-            # there is nothing to take out of rotation; the leader drains the replica's requests.
-            # Whether this stage stays up through the leader's drain when the whole group is
-            # deleted is part of the untested LeaderWorkerSet wrapper (see the top of the file).
+            # The leader drains the replica's requests, and every step of that drain needs this
+            # stage. Deleting the set (default background cascade), scaling down and rolling
+            # remove the leader first and this pod only once the leader is gone. Deleting or
+            # evicting this pod (a node drain) recreates the group, which terminates both at
+            # once, and so does a foreground cascading delete of the set. Without this preStop
+            # the stage exits on SIGTERM and the leader's in-flight requests fail at their next
+            # step.
+            lifecycle:
+              preStop:
+                exec:
+                  command:
+                    - /bin/bash
+                    - -c
+                    - |
+                      # Each rank here keeps a connection to the leader's torch.distributed
+                      # store (--master-port 29555 = 0x7373) until the leader's engine exits.
+                      # While one is open (state 01, ESTABLISHED), the leader is still stepping:
+                      # stay up. Leader done, gone or not reached yet: return at once. At most
+                      # 150 s, so the stage still gets SIGTERM inside the 170 s grace period.
+                      while (( SECONDS < 150 )) &&
+                        grep -qE '^ *[0-9]+: [0-9A-F]+:[0-9A-F]{4} [0-9A-F]+:7373 01' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do
+                        sleep 2
+                      done
             volumeMounts: *stage-mounts
         volumes: *stage-volumes
 ---
 # Route to the leader only: the worker has no API server. Not named after the
 # LeaderWorkerSet: the controller creates a headless Service with that name for the pods'
-# DNS names, which LWS_LEADER_ADDRESS resolves through.
+# DNS names, which LWS_LEADER_ADDRESS resolves through. A Service of that name applied with
+# the set takes the name first: the controller fails to create its own (FailedCreate event),
+# the leader's name never resolves and the worker cannot reach it. Applied later, it merges
+# into the headless Service (still no cluster IP) and drops the worker's name.
 apiVersion: v1
 kind: Service
 metadata:
