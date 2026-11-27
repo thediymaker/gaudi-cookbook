@@ -72,12 +72,22 @@ def test_parse_items():
     (server,) = load(__file__, "server")
 
     req = server.EmbeddingRequest
-    assert server.parse_items(req(input="hi")) == [("text", "hi")]
-    assert server.parse_items(req(input=[1, 2, 3])) == [("ids", [1, 2, 3])]
-    items = server.parse_items(req(input=["a", [{"type": "image_url", "image_url": {"url": "u"}}, {"text": "t"}]]))
+    vocab = 100
+
+    def parse(r):
+        return server.parse_items(r, vocab)
+
+    assert parse(req(input="hi")) == [("text", "hi")]
+    assert parse(req(input=[0, 2, 99])) == [("ids", [0, 2, 99])]
+    assert parse(req(input=["a", [5, 6]])) == [("text", "a"), ("ids", [5, 6])]
+    items = parse(req(input=["a", [{"type": "image_url", "image_url": {"url": "u"}}, {"text": "t"}]]))
     assert items == [("text", "a"), ("parts", [("image", "u"), ("text", "t")])]
     msgs = [{"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": "QQ=="}}, "x"]}]
-    assert server.parse_items(req(messages=msgs)) == [("parts", [("audio", "QQ=="), ("text", "x")])]
+    assert parse(req(messages=msgs)) == [("parts", [("audio", "QQ=="), ("text", "x")])]
     for bad in (req(), req(input=[]), req(input="x", messages=msgs), req(input=[[{"type": "pdf"}]])):
         with pytest.raises(server.BadRequest):
-            server.parse_items(bad)
+            parse(bad)
+    # token ids outside the embedding table are refused before they can reach a batch shared with other requests
+    for ids in ([1, 100], [-1], ["a", [3, 1000]], [[1, 2], [2, -5]], [True, 2]):
+        with pytest.raises(server.BadRequest):
+            parse(req(input=ids))

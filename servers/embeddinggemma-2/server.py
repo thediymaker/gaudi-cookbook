@@ -2,8 +2,8 @@
 """OpenAI-compatible POST /v1/embeddings for EmbeddingGemma 2 (text, image, audio, video) on one Gaudi card.
 
 Request fields follow vLLM's embeddings API, so clients can switch between this and vLLM-served embedding models:
-  input                   a string, a list of strings, token ids (a list of ints or lists of ints), or multimodal
-                          items (below)
+  input                   a string, a list of strings, token ids (a list of ints or lists of ints, each id below
+                          the vocabulary size, else 400), or multimodal items (below)
   messages                vLLM-style chat messages instead of `input`: every content part of every message, in
                           order, becomes ONE embedding
   dimensions              Matryoshka width, 1 to 768 (trained at 128, 256, 512 and 768)
@@ -149,7 +149,17 @@ def _part(p):
     raise BadRequest(f"unsupported content part type {t!r}")
 
 
-def parse_items(req):
+def _token_ids(x, vocab_size):
+    """`x` as token ids if it is a non-empty list of ints (JSON true/false are not ids), else None. Ids outside the
+    embedding table are refused here: past this point one bad row fails every request batched with it."""
+    if not isinstance(x, list) or not x or not all(type(t) is int for t in x):
+        return None
+    if (bad := next((t for t in x if not 0 <= t < vocab_size), None)) is not None:
+        raise BadRequest(f"token id {bad} is out of range; ids must be in [0, {vocab_size})")
+    return x
+
+
+def parse_items(req, vocab_size):
     """-> list of ("ids", [int]) | ("text", str) | ("parts", [(kind, value), ...])."""
     if req.messages is not None:
         if req.input is not None:
@@ -175,16 +185,16 @@ def parse_items(req):
         return [("parts", [_part(raw)])]
     if not isinstance(raw, list) or not raw:
         raise BadRequest("input must not be empty")
-    if all(isinstance(x, int) for x in raw):
-        return [("ids", raw)]
+    if (ids := _token_ids(raw, vocab_size)) is not None:
+        return [("ids", ids)]
     items = []
     for x in raw:
         if isinstance(x, str):
             items.append(("text", x))
         elif isinstance(x, dict):
             items.append(("parts", [_part(x)]))
-        elif isinstance(x, list) and x and all(isinstance(t, int) for t in x):
-            items.append(("ids", x))
+        elif (ids := _token_ids(x, vocab_size)) is not None:
+            items.append(("ids", ids))
         elif isinstance(x, list) and x:
             items.append(("parts", [_part(p) for p in x]))
         else:
@@ -348,7 +358,7 @@ async def embeddings(request: Request):
             return error(400, f"truncate_prompt_tokens must be -1 or 1..{MAX_LEN}")
 
     try:
-        items = parse_items(req)
+        items = parse_items(req, engine.vocab_size)
         if len(items) > MAX_INPUTS:
             raise BadRequest(f"at most {MAX_INPUTS} inputs per request")
         texts = [v for k, v in items if k == "text"]

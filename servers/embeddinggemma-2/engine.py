@@ -167,6 +167,7 @@ class Engine:
         model = model.to(device).eval()
         self.cfg = model.config
         self.hidden = model.config.text_config.hidden_size
+        self.vocab_size = model.language_model.embed_tokens.num_embeddings  # token ids must be below this
         self.language = LanguagePath(model)
         self.vision = VisionPath(model) if model.vision_tower is not None else None
         self.audio_path = AudioPath(model) if model.audio_tower is not None else None
