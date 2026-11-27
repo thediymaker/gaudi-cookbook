@@ -116,3 +116,28 @@ def test_applies_after_structured_output_rows(runner_root):
     assert fix_mod.run(False, str(root)) == 0 and target.read_text() == patched
     assert rows_mod.run(True, str(root)) == 0 and fix_mod.run(True, str(root)) == 0
     compile(patched, str(target), "exec")
+
+
+def test_applied_alone_then_structured_output_rows(runner_root, tmp_path):
+    # Applied alone, a later structured-output-rows run (as in a profile) reports applied, and the
+    # file is the same as applying both in order.
+    root, target = runner_root
+    stock = target.read_text()
+    assert fix_mod.run(False, str(root)) == 0
+    alone = target.read_text()
+    assert rows_mod.run(True, str(root)) == 0
+    assert rows_mod.run(False, str(root)) == 0 and target.read_text() == alone
+    target.write_text(stock)
+    assert rows_mod.run(False, str(root)) == 0 and fix_mod.run(False, str(root)) == 0
+    assert target.read_text() == alone
+
+
+def test_altered_call_is_still_drift(runner_root):
+    root, target = runner_root
+    stock_call = "pd_info.prompt_req_ids + pd_info.decode_req_ids,"
+    assert target.read_text().count(stock_call) == 1
+    target.write_text(target.read_text().replace(stock_call, "pd_info.prompt_req_ids + pd_info.other_req_ids,"))
+    altered = target.read_text()
+    for mod in (rows_mod, fix_mod):
+        assert mod.run(True, str(root)) == 2
+        assert mod.run(False, str(root)) == 2 and target.read_text() == altered

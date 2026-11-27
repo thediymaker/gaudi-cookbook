@@ -100,6 +100,30 @@ def test_profile_end_to_end(tmp_path):
         compile(path.read_text(), str(path), "exec")
 
 
+def test_so_row_owners_alone_then_profile(tmp_path):
+    """so-row-owners applied on its own (its README allows that) does not block a later profile run."""
+    root, profile = os.environ.get("GAUDI_FIXES_ROOT"), os.environ.get("GAUDI_FIXES_PROFILE")
+    if not root or not profile:
+        pytest.skip("set GAUDI_FIXES_ROOT and GAUDI_FIXES_PROFILE to run a profile end to end")
+    site = tmp_path / "site"
+    for pkg in ("vllm", "vllm_gaudi"):
+        shutil.copytree(Path(root) / pkg, site / pkg, ignore=shutil.ignore_patterns("__pycache__"))
+
+    def run(script, *extra):
+        cmd = [sys.executable, str(HERE / script), "--root", str(site), *extra]
+        return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+    proc = run("so-row-owners/apply.py")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    proc = run("apply_all.py", "--profile", profile, "--check")
+    assert proc.returncode in (0, 1), proc.stdout + proc.stderr
+    assert "[gaudi-fix:structured-output-rows] applied" in proc.stdout
+    proc = run("apply_all.py", "--profile", profile)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    proc = run("apply_all.py", "--profile", profile, "--check")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def _recipe_fix_sets(profile):
     """(recipe, fix ids) for every recipe on this profile's release, parsed without a YAML library."""
     release = {"v0.26.0": "v0.26.0", "v0.30.0": "releases/v0.30.0"}[profile]

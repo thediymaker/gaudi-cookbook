@@ -54,6 +54,11 @@ masks (a request with no row gets no mask, as in upstream vLLM), the sampling pa
 logprobs. Otherwise (for example several rows for one request) the step runs as before and a
 warning is logged once. A partial chunk gets a logits row only when async scheduling discards it.
 
+It can be applied on its own. On the stock call its fallback is decodes first, which is the
+[structured-output-rows](../structured-output-rows/README.md) change, so it also leaves that fix's
+marker line on the call: a profile run afterwards reports structured-output-rows as applied, and the
+file is the same as when both are applied in order.
+
 ## Verify
 
 ```bash

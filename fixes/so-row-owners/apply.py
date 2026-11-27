@@ -26,7 +26,9 @@ that list matches the logits one to one; otherwise the step runs as before. A pa
 logits row only when async scheduling discards it.
 
 When both are used, apply structured-output-rows first (apply_all.py does). Applied alone, this fix
-also puts the fallback order decodes first.
+also puts the fallback order decodes first, which is what structured-output-rows does, and leaves
+that fix's marker line on the call: structured-output-rows then reports applied, so a profile run
+afterwards goes through, and the file is the same as when both are applied in order.
 
 Usage: apply.py [--check] [--root SITE_PACKAGES]
 """
@@ -46,11 +48,14 @@ MARKER = f"[gaudi-fix:{FIX_ID}]"
 BITMASK_OLD = """            if grammar_output:
                 self.apply_grammar_bitmask(scheduler_output, grammar_output, logits)
 """
+SO_ROWS_COMMENT = (
+    "            # [gaudi-fix:structured-output-rows] rows are decodes first, so the per-request sampling"
+    " params must be too.\n"
+)
 CALL_VARIANTS = (
     (
         "structured-output-rows fix",
-        "            # [gaudi-fix:structured-output-rows] rows are decodes first, so the per-request sampling"
-        " params must be too.\n",
+        SO_ROWS_COMMENT,
         """            sampler_output, _sampling_metadata = self._run_sampling(batch_changed, logits,
                                                                     list(pd_info.decode_req_ids) +
                                                                     list(pd_info.prompt_req_ids),
@@ -195,7 +200,10 @@ def patch_runner(src: str, ctx: dict[str, str]) -> str:
     if len(matches) != 1:
         raise Drift("the structured-output sampling call has none of the known forms")
     _, comment, call = matches[0]
-    src = replace_once(src, BITMASK_OLD + comment + call, OWNERS_NEW + comment + CALL_NEW, "structured-output sampling")
+    # Over the stock call the fallback below is decodes first, the structured-output-rows change, so
+    # its marker line goes in too and that fix reports applied when a profile runs later.
+    new_call = OWNERS_NEW + (comment or SO_ROWS_COMMENT) + CALL_NEW
+    src = replace_once(src, BITMASK_OLD + comment + call, new_call, "structured-output sampling")
     src = replace_once(src, LOGPROBS_OLD, LOGPROBS_NEW, "structured-output logprobs request ids")
     src = replace_once(src, APPLY_OLD, APPLY_NEW, "apply_grammar_bitmask")
     src = replace_once(src, PARTIAL_OLD, PARTIAL_NEW, "partial prompt chunk logits row")
