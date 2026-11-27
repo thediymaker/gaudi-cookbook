@@ -57,7 +57,9 @@ warning is logged once. A partial chunk gets a logits row only when async schedu
 It can be applied on its own. On the stock call its fallback is decodes first, which is the
 [structured-output-rows](../structured-output-rows/README.md) change, so it also leaves that fix's
 marker line on the call: a profile run afterwards reports structured-output-rows as applied, and the
-file is the same as when both are applied in order.
+file is the same as when both are applied in order. A tree patched by an older so-row-owners alone has the
+rewrite without that marker, and a later profile run stops on structured-output-rows with exit 2: start again
+from the stock image (or a clean copy of the release) and apply the profile.
 
 ## Verify
 
