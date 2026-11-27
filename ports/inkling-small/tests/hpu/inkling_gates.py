@@ -80,7 +80,10 @@ def chat(messages, max_tokens=1024, **extra):
 
 
 def reasoning_of(msg):
-    return msg.get("reasoning") or msg.get("reasoning_content") or ""
+    # v0.30.0 names the field `reasoning`; a `reasoning_content` key means the parser set an undeclared field
+    if msg.get("reasoning_content") is not None:
+        raise AssertionError("reasoning_content in the response: the parser must set `reasoning`")
+    return msg.get("reasoning") or ""
 
 
 def ntokens(text):
@@ -124,7 +127,7 @@ def stream(body):
             for c in json.loads(line[6:]).get("choices", []):
                 d = c.get("delta") or {}
                 content.append(d.get("content") or "")
-                reasoning.append(d.get("reasoning") or d.get("reasoning_content") or "")
+                reasoning.append(reasoning_of(d))
                 calls += d.get("tool_calls") or []
     return "".join(content), "".join(reasoning), calls
 
