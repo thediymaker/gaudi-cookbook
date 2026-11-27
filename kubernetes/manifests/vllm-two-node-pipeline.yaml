@@ -137,6 +137,26 @@ spec:
               periodSeconds: 10
               timeoutSeconds: 10
               failureThreshold: 3
+            # The same start-up aware drain as vllm-deployment.yaml: 20 s preStop, then
+            # --shutdown-timeout 120, inside the 170 s grace period.
+            lifecycle:
+              preStop:
+                exec:
+                  command:
+                    - /bin/bash
+                    - -c
+                    - |
+                      # Serving (port 8000 = 0x1F40 in LISTEN state): wait 20 s so routers and
+                      # the Service drop this pod, then the SIGTERM that follows starts vLLM's
+                      # drain (--shutdown-timeout): in-flight requests finish, new ones are refused.
+                      # Still starting: there is nothing to drain, and a SIGTERM during start-up
+                      # can be ignored or lost, which would hold the cards for the whole grace
+                      # period. Kill everything in the pod now instead.
+                      if grep -qE '^ *[0-9]+: [0-9A-F]+:1F40 [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+                        sleep 20
+                      else
+                        kill -KILL -1
+                      fi
             volumeMounts: &stage-mounts
               - name: models
                 mountPath: /models
@@ -194,14 +214,20 @@ spec:
             env: *stage-env
             resources: *stage-resources
             # No probes: the worker serves no HTTP. The group restart policy covers it.
+            # No preStop: with no API server, no router or Service sends requests here, so
+            # there is nothing to take out of rotation; the leader drains the replica's requests.
+            # Whether this stage stays up through the leader's drain when the whole group is
+            # deleted is part of the untested LeaderWorkerSet wrapper (see the top of the file).
             volumeMounts: *stage-mounts
         volumes: *stage-volumes
 ---
-# Route to the leader only: the worker has no API server.
+# Route to the leader only: the worker has no API server. Not named after the
+# LeaderWorkerSet: the controller creates a headless Service with that name for the pods'
+# DNS names, which LWS_LEADER_ADDRESS resolves through.
 apiVersion: v1
 kind: Service
 metadata:
-  name: vllm-pp2-example
+  name: vllm-pp2-example-api
   namespace: llm
 spec:
   selector:

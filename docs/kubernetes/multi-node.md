@@ -29,7 +29,8 @@ Two pods that form one engine behave like one pod with two halves:
 - **Restart together.** A stage cannot rejoin a running pipeline (or a running tensor-parallel
   group). If either pod dies, the other hangs on its next transfer. Recreate the whole group.
 - **Route to the leader only.** The node with rank 0 runs the API server; the other node runs
-  headless and has no HTTP port. The Service selects the leader.
+  headless and has no HTTP port. The Service selects the leader. Give it a name of its own:
+  LeaderWorkerSet creates a headless Service named after the set for the pods' DNS names.
 - **Probe the leader.** The leader's `/health` reflects the whole engine: a lost stage stops
   its steps. The worker gets no HTTP probes; group restart covers it.
 - **Scale and roll by group.** An autoscaler or rollout adds or removes whole groups. With

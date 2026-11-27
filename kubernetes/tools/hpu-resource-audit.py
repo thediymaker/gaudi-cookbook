@@ -24,7 +24,8 @@ Warnings (printed, exit 0 unless --strict):
   - no /dev/shm mount
   - HABANA_VISIBLE_DEVICES set in the spec (the device plugin sets it)
   - a hostname pin (nodeName, or a nodeSelector/required node affinity on the hostname)
-  - no preStop hook, or the default 30 s termination grace period
+  - no preStop hook on a container that serves HTTP (declares a port or an HTTP probe), or the
+    default 30 s termination grace period
 
 Info (printed, never fails a run):
   - PT_HPU_LAZY_MODE=0 (compile mode) or --enforce-eager: right when the recipe's verified mode is
@@ -144,7 +145,10 @@ def audit_container(c: dict, args) -> tuple[int, list[str], list[str], list[str]
     mounts = {m.get("mountPath") for m in c.get("volumeMounts") or []}
     if "/dev/shm" not in mounts:
         warnings.append("no /dev/shm mount")
-    if not ((c.get("lifecycle") or {}).get("preStop")):
+    # A container with no port and no HTTP probe (a headless pipeline stage) takes no requests to drain.
+    probes = ("startupProbe", "readinessProbe", "livenessProbe")
+    serves_http = bool(c.get("ports")) or any((c.get(p) or {}).get("httpGet") for p in probes)
+    if serves_http and not ((c.get("lifecycle") or {}).get("preStop")):
         warnings.append("no preStop hook (scale-down and rollouts will cut in-flight streams)")
     return cards, errors, warnings, infos
 
