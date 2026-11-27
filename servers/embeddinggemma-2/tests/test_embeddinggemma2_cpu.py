@@ -88,6 +88,15 @@ def test_parse_items():
         with pytest.raises(server.BadRequest):
             parse(bad)
     # token ids outside the embedding table are refused before they can reach a batch shared with other requests
-    for ids in ([1, 100], [-1], ["a", [3, 1000]], [[1, 2], [2, -5]], [True, 2]):
-        with pytest.raises(server.BadRequest):
+    for ids in ([1, 100], [-1], ["a", [3, 1000]], [[1, 2], [2, -5]]):
+        with pytest.raises(server.BadRequest, match="out of range"):
             parse(req(input=ids))
+    # the message names the actual problem
+    for raw in ([True, 2], [1, True], [[True, 2]], ["a", [False]]):
+        with pytest.raises(server.BadRequest, match="not booleans"):
+            parse(req(input=raw))
+    for raw in (True, 7):
+        with pytest.raises(server.BadRequest, match="a string, a list, or a content part"):
+            parse(req(input=raw))
+    with pytest.raises(server.BadRequest, match="must not be empty"):
+        parse(req(input=[]))

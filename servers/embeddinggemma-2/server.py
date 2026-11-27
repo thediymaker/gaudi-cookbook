@@ -150,10 +150,13 @@ def _part(p):
 
 
 def _token_ids(x, vocab_size):
-    """`x` as token ids if it is a non-empty list of ints (JSON true/false are not ids), else None. Ids outside the
-    embedding table are refused here: past this point one bad row fails every request batched with it."""
-    if not isinstance(x, list) or not x or not all(type(t) is int for t in x):
+    """`x` as token ids if it is a non-empty list of ints, else None. A list of ints with a JSON true/false in it, and
+    ids outside the embedding table, are refused here: past this point one bad row fails every request batched with
+    it."""
+    if not isinstance(x, list) or not x or not all(type(t) in (int, bool) for t in x):
         return None
+    if any(type(t) is bool for t in x):
+        raise BadRequest("token ids must be integers, not booleans")
     if (bad := next((t for t in x if not 0 <= t < vocab_size), None)) is not None:
         raise BadRequest(f"token id {bad} is out of range; ids must be in [0, {vocab_size})")
     return x
@@ -183,7 +186,9 @@ def parse_items(req, vocab_size):
         return [("text", raw)]
     if isinstance(raw, dict):
         return [("parts", [_part(raw)])]
-    if not isinstance(raw, list) or not raw:
+    if not isinstance(raw, list):
+        raise BadRequest("input must be a string, a list, or a content part")
+    if not raw:
         raise BadRequest("input must not be empty")
     if (ids := _token_ids(raw, vocab_size)) is not None:
         return [("ids", ids)]
