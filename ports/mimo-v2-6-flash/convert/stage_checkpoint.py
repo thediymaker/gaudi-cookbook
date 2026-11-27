@@ -15,8 +15,9 @@ OUT_DIR gets a symlink to every file of the checkpoint except config.json, which
   would silently become sliding ones.
 
 The original is kept as config.orig.json. Running it again refreshes the links and the config. A repository id is
-resolved with huggingface_hub.snapshot_download, which downloads missing files (about 210 GB) unless
-HF_HUB_OFFLINE=1.
+resolved with huggingface_hub.snapshot_download, which downloads missing files unless HF_HUB_OFFLINE=1: the whole
+repository, about 178 GB at revision 5711b26 (the 173 GB of model weights plus the dflash/ and audio_tokenizer/
+folders). OUT_DIR itself holds only links and the two configs.
 """
 
 from __future__ import annotations

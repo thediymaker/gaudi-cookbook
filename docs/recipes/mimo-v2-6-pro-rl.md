@@ -166,7 +166,7 @@ Serving gates, `PROFILE=pro tests/hpu/run_gates.sh` against this page's command:
 
 | Gate | Result |
 | --- | --- |
-| Decode, 256 greedy tokens (floor 12 tok/s per stream; the stock MoE op stays under it at 4 and 8 streams) | 40.3 / 27.5 / 15.1 tok/s per stream at 1 / 4 / 8 streams |
+| Decode, 256 sampled tokens at temperature 0.7 (floor 12 tok/s per stream; the stock MoE op stays under it at 4 and 8 streams) | 40.3 / 27.5 / 15.1 tok/s per stream at 1 / 4 / 8 streams |
 | Tool calls: one call with arguments, choosing between tools, no call, using a result, `tool_choice: "required"`, a call after a 32.9K-token document | 6/6 |
 | Needles at 240K tokens x depths 0.1 / 0.5 / 0.9 (greedy) | 3/3 |
 | Four 240K-token prompts at once | 4/4, 899 s |
@@ -187,7 +187,7 @@ built from the same `glm` kernel code), the same server measured with the stock 
 Per MoE call on one card (`mxk_ops.py`, 48 experts of layer 1 or 69, compiled, warm): 53 to 56 us with the kernels
 against 353 to 357 us for the stock op at 1 token, and 247 to 248 us against 2,612 to 2,613 us at 8 tokens.
 
-End to end, from the decode gate above (one run, warm server, 256 greedy tokens, TP 8):
+End to end, from the decode gate above (one run, warm server, 256 sampled tokens at temperature 0.7, TP 8):
 
 | Streams | Tokens/s per stream | Aggregate |
 | --- | --- | --- |

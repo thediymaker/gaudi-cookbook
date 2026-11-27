@@ -144,7 +144,7 @@ Run on one 8-card Gaudi 2 node from the stock vllm-gaudi `v0.26.0` image (`b059f
 
 | Gate | Result |
 | --- | --- |
-| Decode, 256 greedy tokens (floor 20 tok/s per stream) | 33.8 / 33.2 / 25.6 tok/s per stream at 1 / 4 / 16 streams |
+| Decode, 256 sampled tokens at temperature 0.7 (floor 20 tok/s per stream) | 33.8 / 33.2 / 25.6 tok/s per stream at 1 / 4 / 16 streams |
 | Tool calls: one call with arguments, choosing between tools, no call, using a result, `tool_choice: "required"`, a call after a 32.9K-token document | 6/6 |
 | Needles at 128K / 256K / 500K tokens x depths 0.1 / 0.5 / 0.9 (greedy) | 3/3 at each length. At 500K and depth 0.5 the model called the line inserted text and declined to repeat it, quoting the line with the code in the same answer |
 | Four 500K-token prompts at once | 4/4, 932 s |
@@ -155,7 +155,7 @@ streaming fp32 CPU oracle at 0.7943; GSM8K 5-shot 0.910 (200 samples); tool call
 
 ## Performance
 
-From the decode gate above (one run, warm server, 256 greedy tokens):
+From the decode gate above (one run, warm server, 256 sampled tokens at temperature 0.7):
 
 | Streams | Tokens/s per stream | Aggregate |
 | --- | --- | --- |
