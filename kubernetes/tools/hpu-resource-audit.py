@@ -23,9 +23,12 @@ Warnings (printed, exit 0 unless --strict):
   - no runtimeClassName, or hostIPC not true
   - no /dev/shm mount
   - HABANA_VISIBLE_DEVICES set in the spec (the device plugin sets it)
-  - PT_HPU_LAZY_MODE=0 or --enforce-eager (both turn off HPU graphs)
   - a hostname pin (nodeName, or a nodeSelector/required node affinity on the hostname)
   - no preStop hook, or the default 30 s termination grace period
+
+Info (printed, never fails a run):
+  - PT_HPU_LAZY_MODE=0 (compile mode) or --enforce-eager: right when the recipe's verified mode is
+    one of them, wrong otherwise; only the recipe knows, so check the manifest against it
 
 Usage:
   kubernetes/tools/hpu-resource-audit.py kubernetes/manifests
@@ -104,14 +107,15 @@ def hostname_pinned(spec: dict) -> bool:
     return False
 
 
-def audit_container(c: dict, args) -> tuple[int, list[str], list[str]]:
+def audit_container(c: dict, args) -> tuple[int, list[str], list[str], list[str]]:
     res = c.get("resources") or {}
     req, lim = res.get("requests") or {}, res.get("limits") or {}
     cards = int(lim.get("habana.ai/gaudi", req.get("habana.ai/gaudi", 0)) or 0)
     errors: list[str] = []
     warnings: list[str] = []
+    infos: list[str] = []
     if not cards:
-        return 0, errors, warnings
+        return 0, errors, warnings, infos
     if str(req.get("habana.ai/gaudi", cards)) != str(lim.get("habana.ai/gaudi", cards)):
         errors.append("habana.ai/gaudi requests != limits")
     # Kubernetes sets a missing request to the limit, so a container with limits only still requests that much.
@@ -132,16 +136,17 @@ def audit_container(c: dict, args) -> tuple[int, list[str], list[str]]:
     env = {e.get("name"): str(e.get("value", "")) for e in c.get("env") or []}
     if "HABANA_VISIBLE_DEVICES" in env:
         warnings.append("HABANA_VISIBLE_DEVICES is set; leave it to the device plugin")
+    # Some recipes are verified in compile mode or eager; the manifest alone cannot tell, so these are notes.
     if env.get("PT_HPU_LAZY_MODE") == "0":
-        warnings.append("PT_HPU_LAZY_MODE=0 turns off lazy mode and HPU graphs")
+        infos.append("PT_HPU_LAZY_MODE=0 (compile mode); check it is the recipe's verified mode")
     if "--enforce-eager" in " ".join(str(x) for x in (c.get("command") or []) + (c.get("args") or [])):
-        warnings.append("--enforce-eager turns off HPU graphs")
+        infos.append("--enforce-eager (no HPU graphs); check it is the recipe's verified mode")
     mounts = {m.get("mountPath") for m in c.get("volumeMounts") or []}
     if "/dev/shm" not in mounts:
         warnings.append("no /dev/shm mount")
     if not ((c.get("lifecycle") or {}).get("preStop")):
         warnings.append("no preStop hook (scale-down and rollouts will cut in-flight streams)")
-    return cards, errors, warnings
+    return cards, errors, warnings, infos
 
 
 def audit_file(path: Path, args) -> tuple[int, int]:
@@ -159,7 +164,7 @@ def audit_file(path: Path, args) -> tuple[int, int]:
             pod_warnings: list[str] = []
             any_cards = False
             for c in spec.get("containers") or []:
-                cards, errors, warnings = audit_container(c, args)
+                cards, errors, warnings, infos = audit_container(c, args)
                 if not cards:
                     continue
                 any_cards = True
@@ -167,6 +172,8 @@ def audit_file(path: Path, args) -> tuple[int, int]:
                     print(f"ERROR {path} {name} [{c.get('name')}] {cards} card(s): {msg}")
                 for msg in warnings:
                     print(f"warn  {path} {name} [{c.get('name')}]: {msg}")
+                for msg in infos:
+                    print(f"info  {path} {name} [{c.get('name')}]: {msg}")
                 n_err += len(errors)
                 n_warn += len(warnings)
             if not any_cards:

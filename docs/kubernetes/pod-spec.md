@@ -39,7 +39,7 @@ The image normally runs as root; the Gaudi runtime needs access to the device no
 
 | Variable | Value | Why |
 | --- | --- | --- |
-| `PT_HPU_LAZY_MODE` | `1` | Lazy mode with HPU graphs. `0` (eager) and `--enforce-eager` collapse throughput; debug compile failures in graph mode instead |
+| `PT_HPU_LAZY_MODE` | `1`, unless the recipe sets `0` | Lazy mode with HPU graphs, unless the recipe's verified mode is compile (`PT_HPU_LAZY_MODE=0`) or `--enforce-eager`: use what the recipe sets. Do not switch a lazy-mode recipe to either to work around a graph compile failure; they cost throughput there |
 | `PT_HPU_ENABLE_LAZY_COLLECTIVES` | `true` | Needed for tensor parallelism with HPU graphs in lazy mode |
 | `PT_HPU_RECIPE_CACHE_CONFIG` | `<dir>,<delete_on_start>,<max_MB>` | Compiled graph cache on node-local disk; see [Start-up and warm-up](startup-and-warmup.md#recipe-cache) |
 | `VLLM_SKIP_WARMUP` | `false` or `true` | Trade-off between start time and live compiles; see [Start-up and warm-up](startup-and-warmup.md#warm-up) |
