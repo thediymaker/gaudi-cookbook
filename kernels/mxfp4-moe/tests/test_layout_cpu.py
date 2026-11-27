@@ -211,4 +211,7 @@ def test_decode_cases_respect_caps():
     for name, spec in H.VARIANTS.items():
         cases = H.decode_cases(spec)
         assert cases, name
-        assert all(t <= spec["max_tokens"] and t * spec["topk"] <= 128 for t, _ in cases), name
+        cap = max(spec["max_tokens"], spec["split_tokens"])
+        assert max(t for t, _ in cases) == cap, name
+        # a call over max_tokens runs in pieces of max_tokens (split variants only); each piece fits the route cap
+        assert all(t <= cap and min(t, spec["max_tokens"]) * spec["topk"] <= 128 for t, _ in cases), name

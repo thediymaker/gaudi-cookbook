@@ -2,7 +2,12 @@
 """CPU tests of the decoder stack on a tiny random-weight model.
 
 1. Chunking: a prompt prefilled in several chunks and then decoded gives the same logits as one chunk (every token
-   writes its rows, every query reads what it may see, whatever the chunk boundaries).
+   writes its rows, every query reads what it may see, whatever the chunk boundaries). The fake FP8/FP4 activation
+   quantizers are identity here: they act per token, so they cannot see a chunk boundary, but as step functions
+   they turn the fp32 summation-order change of another chunk shape (or another BLAS thread count) into whole grid
+   steps that cascade through the tiny random model's top-k. With them on, the same comparison ranged from 3e-4 to
+   0.31 relative depending only on the thread count; with them off it is ~5e-6 at every thread count. Their values
+   are checked in test_numerics.py.
 2. Switches: every speed-up switch the recipe turns on computes the same function as its reference path (within
    fp32 summation-order noise). DSV41_TOPK_SELECT=thresh is checked in test_topk.py: it relies on bf16 scores.
 The model runs in fp32: in bf16 the tiny random model amplifies last-bit GEMM differences between chunk shapes into
@@ -41,10 +46,13 @@ def _run(model, chunks, n_dec=4, seed=5, pad=0):
 
 def test_chunking_invariance(model, monkeypatch):
     monkeypatch.setattr(csa, "DET_TOPK", True)
+    for name in ("fake_fp8_ue8m0", "fake_fp4_ue8m0", "fake_fp4_e4m3"):
+        monkeypatch.setattr(csa, name, lambda x, block=0: x)
     one = _run(model, [(0, 200)])
     many = _run(model, [(0, 37), (37, 130), (130, 200)], pad=16)
     assert torch.equal(one.argmax(-1), many.argmax(-1))
-    assert float((one - many).abs().max()) < 2e-3 * float(one.abs().max())
+    # fp32 summation order only: ~5e-6 measured at 1 to 16 threads; a write that drops one row per chunk gives 0.78
+    assert float((one - many).abs().max()) < 1e-4 * float(one.abs().max())
 
 
 @pytest.mark.parametrize(

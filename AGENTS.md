@@ -106,6 +106,7 @@ yamllint -c .yamllint.yaml recipes kubernetes .github
 python3 scripts/gen_llms_txt.py --check   # docs/llms.txt is generated; rerun without --check after changes
 mkdocs build --strict          # pip install -r requirements-docs.txt
 pytest --import-mode=importlib fixes ports servers kernels   # skips what needs torch, vLLM or a device
+# CI runs it a second time with CPU torch, numpy and the server packages (job tests-cpu-torch in .github/workflows/ci.yml)
 GAUDI_FIXES_ROOT=<dir with a release's vllm/ and vllm_gaudi/> GAUDI_FIXES_PROFILE=v0.30.0 \
     pytest --import-mode=importlib fixes ports
 ```

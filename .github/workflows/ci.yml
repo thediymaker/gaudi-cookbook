@@ -44,6 +44,20 @@ jobs:
       # skips what needs torch, vLLM or a device
       - run: pytest -q --import-mode=importlib fixes ports servers kernels
 
+  tests-cpu-torch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu
+      - run: >-
+          pip install pytest==9.1.1 pyyaml==6.0.3 numpy==2.5.5 safetensors==0.8.0 fastapi==0.165.0 httpx==0.29.0
+          uvicorn==0.54.0 prometheus_client==0.26.0 soundfile==0.14.0
+      # the CPU tests of the ports, kernels and servers; still skips what needs vLLM or a device
+      - run: pytest -q --import-mode=importlib fixes ports servers kernels
+
   fixes-on-release:
     runs-on: ubuntu-latest
     strategy:
