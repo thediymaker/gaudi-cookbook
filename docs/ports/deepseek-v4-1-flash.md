@@ -130,8 +130,12 @@ server (same node, restarted without speculation), essays run 1.28x / 1.17x / 1.
   about 3,400 nodes per step, and a tiny TPC kernel removed them bit-exactly.
 - **HPU graph caches key on the input's view state.** Passing views where warm-up captured fresh tensors re-captured
   every warmed graph in serving, and memory grew until a long request failed to allocate.
-- **vllm-gaudi's `all_gather` calls `mark_step`;** inside a captured HPU graph that gave stale values for batches
-  above 1. An all-reduce replaced it.
+- **vllm-gaudi's `all_gather` calls `mark_step`.** In the DSpark drafter's HPU graph, the vocabulary-parallel draft
+  argmax used it, and drafts at batches above 1 came back wrong (first-draft acceptance 0.1 to 0.25 at 2 to 8
+  streams, 0.85 to 1.0 at one). Each rank now writes its (max, index) pair into its own column and one all-reduce
+  shares them. The drafter is not in this repository. The target's decode graphs still all-gather the Engram rows
+  (layers 1 and 14) and are served and measured at up to 8 streams; if output ever depends on the batch, that
+  gather is the first suspect.
 - Two runner bugs that affect every model with prefix caching or preemption were found here and are now in the fixes
   pack:
   [resumed-prefill-logits](../fixes/resumed-prefill-logits.md) and [prompt-order](../fixes/prompt-order.md). More in
