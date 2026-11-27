@@ -219,12 +219,16 @@ if [ "$PT2" = 1 ]; then
   OPLIBS+=(libmxk_op_pt2.so)
 fi
 
-# 4. library gate (host only, no device needed): stock GUIDs unchanged, then exactly this build's GUIDs
+# 4. library gate (host only, no device needed): stock GUIDs unchanged, then exactly this build's GUIDs.
+# Everything goes into a staging directory first and both gates run there; OUT changes only after they pass,
+# so a failed gate leaves an earlier good build in OUT as it was.
 g++ -O2 -std=c++17 -I/usr/include/habanalabs "$SRC/mxk_lib_gate.cpp" -ldl -o "$B/mxk_lib_gate"
-rm -f "$OUT/libmxk_op_pt2.so"   # a library left from an earlier --pt2 build would not match this one
-for f in libmxk_tpc.so "${OPLIBS[@]}"; do install -m 0644 "$B/$f" "$OUT/"; done
-install -m 0755 "$B/mxk_lib_gate" "$OUT/"
-"$OUT/mxk_lib_gate" "$OUT/libmxk_tpc.so" "$STOCK_LIB" "${ALL[@]}"
+STAGE=$B/stage
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+for f in libmxk_tpc.so "${OPLIBS[@]}"; do install -m 0644 "$B/$f" "$STAGE/"; done
+install -m 0755 "$B/mxk_lib_gate" "$STAGE/"
+"$STAGE/mxk_lib_gate" "$STAGE/libmxk_tpc.so" "$STOCK_LIB" "${ALL[@]}"
 
 TORCHV=$(python3 -c "import torch;print(torch.__version__)")
 HTPV=$(python3 -c "import importlib.metadata as m;print(m.version('habana-torch-plugin'))" 2>/dev/null || echo unknown)
@@ -245,12 +249,19 @@ HTPV=$(python3 -c "import importlib.metadata as m;print(m.version('habana-torch-
   # hash (.text and .tpc_metadata sections) does not: equal code hashes mean the same kernel machine code.
   for n in "${ALL[@]}" "${NOGUID[@]}"; do echo "elf_sha256 $n: $(sha256sum "$B/$n.o" | cut -c1-64)"; done
   for n in "${ALL[@]}" "${NOGUID[@]}"; do echo "code_sha256 $n: $(python3 "$HERE/python/tpc_elf_code.py" "$B/$n.o")"; done
-  (cd "$OUT" && sha256sum libmxk_tpc.so "${OPLIBS[@]}" | sed 's/^/sha256 /')
-} > "$OUT/MANIFEST"
+  (cd "$STAGE" && sha256sum libmxk_tpc.so "${OPLIBS[@]}" | sed 's/^/sha256 /')
+} > "$STAGE/MANIFEST"
 
 # 5. op gate: the op library loads, registers this variant's ops and no op of another variant (lazy mode would hand
 # an op with the same input signature the other op's cached result)
 for f in "${OPLIBS[@]}"; do
-  python3 "$HERE/python/mxk_op_gate.py" --lib "$OUT" --op-lib "$f" --guids "$(IFS=,; echo "${ALL[*]}")"
+  python3 "$HERE/python/mxk_op_gate.py" --lib "$STAGE" --op-lib "$f" --guids "$(IFS=,; echo "${ALL[*]}")"
+done
+
+# 6. publish: each file is copied next to its final name in OUT and renamed over it
+rm -f "$OUT/libmxk_op_pt2.so"   # a library left from an earlier --pt2 build would not match this one
+for f in libmxk_tpc.so "${OPLIBS[@]}" mxk_lib_gate MANIFEST; do
+  cp -p "$STAGE/$f" "$OUT/.$f.new"
+  mv -f "$OUT/.$f.new" "$OUT/$f"
 done
 cat "$OUT/MANIFEST"

@@ -100,7 +100,8 @@ Run it inside the serving image (or a Dockerfile stage `FROM` it); the default `
 | `mxk_lib_gate` | The library gate binary: `mxk_lib_gate <libmxk_tpc.so> <stock lib> <guid>...` |
 | `MANIFEST` | `version`, `variant`, `kernel_set` (v8 or v10), `kernels`, `fallback_elfs` (ELFs without a GUID), `extra_kernels`, toolchain versions, `elf_sha256` and `code_sha256` per kernel, `sha256` of both libraries |
 
-The build fails unless both gates pass:
+The build fails unless both gates pass. They run on a staging copy in the build directory, and `OUT_DIR` is
+written only after both pass, so a failed build leaves an earlier one there as it was:
 
 - **library gate:** the stock GUIDs are listed unchanged and in order, followed by exactly the build's GUIDs; the
   six graph-compiler entry points are exported; `GetLibVersion` matches stock;
@@ -227,7 +228,7 @@ kernel version. `mxfp4_tpc_moe_rt.setup_env` does exactly this for gpt-oss; port
 | `python/mxfp4_tpc_moe_rt.py`, `python/install_mxfp4_tpc_moe.py` | gpt-oss runtime and its fail-closed installer into vllm-gaudi |
 | `python/mxk_harness.py` | Variant shapes, CPU fp32 reference, stock and kernel runners for the tests and the benchmark |
 | `python/mxk_op_gate.py`, `python/tpc_elf_code.py` | Op gate; kernel code hashes |
-| `tests/test_*.py` | CPU tests of the host-side layout code and of the two op libraries' schemas (pytest, no device) |
+| `tests/test_*.py` | CPU tests of the host-side layout code, the two op libraries' schemas and `build.sh`'s gating (pytest, no device) |
 | `tests/parity_hpu.py`, `tests/run_parity.sh` | One-card parity per variant against the stock op and a CPU fp32 reference |
 | `bench/bench_moe.py` | Per-call micro benchmark per variant, stock vs kernels |
 
