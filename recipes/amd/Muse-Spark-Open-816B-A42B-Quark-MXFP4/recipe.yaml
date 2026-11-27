@@ -147,7 +147,7 @@ gaudi:
       releases/v0.30.0 image. install.sh applies the v0.30.0 fix profile before the port's runner patches, so the
       launch's fix step finds the profile applied and adds the two opt-in fixes.
     - >-
-      Status supported: the gates above ran with MUSE_SPARK_MXFP4_KERNELS=0; the run of this exact command (switch
-      on, the default) was not complete when the recipe was written.
+      Verified with the kernel switch on (the default, this command) and off, in the same pod. Greedy outputs of the
+      two settings are compared report-only: they split, mostly at near-ties (recipe page, Verified).
     - "Text only: the checkpoint's vision and audio towers are not loaded."
     - "Muse Model License: products using the model must show \"Built with Muse Spark Open\"."
