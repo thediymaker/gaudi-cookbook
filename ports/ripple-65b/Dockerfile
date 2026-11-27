@@ -9,3 +9,4 @@ ARG BASE
 FROM ${BASE}
 COPY . /opt/gaudi-cookbook
 RUN bash /opt/gaudi-cookbook/ports/ripple-65b/install.sh
+ENV COOKBOOK=/opt/gaudi-cookbook

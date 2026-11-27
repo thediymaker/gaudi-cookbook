@@ -5,3 +5,4 @@ ARG BASE
 FROM ${BASE}
 COPY . /opt/gaudi-cookbook
 RUN bash /opt/gaudi-cookbook/ports/muse-glimmer-30b/install.sh
+ENV COOKBOOK=/opt/gaudi-cookbook

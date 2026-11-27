@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """EmbeddingGemma 2 parity on one card: the HPU engine against the stock model in fp32 on the CPU.
 
-    python3 tests/hpu/parity.py [--min-cos 0.9999]
+    python3 tests/hpu/parity.py [--min-cos 0.9995]
 
 The reference is transformers' own EmbeddingGemma2Model (no padding, no graphs, fp32, one input at a time) on the
 same token ids and media features, mean-pooled and normalized as the checkpoint's sentence-transformers modules do.
@@ -35,7 +35,7 @@ RESULTS: list[bool] = []
 
 def gate(name, got, floor, min_cos):
     """`got`: HPU vs fp32 reference; `floor`: the stock model in bf16 on the CPU vs the same reference."""
-    ok = bool(min(got) >= min_cos)
+    ok = all(c >= min_cos for c in got)  # not min(got): min() skips a NaN unless it comes first
     RESULTS.append(ok)
     fmt = lambda xs: ", ".join(f"{c:.6f}" for c in xs)  # noqa: E731
     print(
@@ -164,10 +164,12 @@ def main():
     every = text_items + img_items + aud_items + vid_items
     together = hpu.embed_items(every)
     alone = torch.cat([hpu.embed_items([p]) for p in every])
-    ok = min(cos(together, alone)) >= a.min_cos
+    mixed = cos(together, alone)
+    ok = all(c >= a.min_cos for c in mixed)  # a NaN fails, as in gate()
     RESULTS.append(ok)
     print(
-        f"{'PASS' if ok else 'FAIL'} mixed_batch: min cosine {min(cos(together, alone)):.6f} over {len(every)} inputs"
+        f"{'PASS' if ok else 'FAIL'} mixed_batch: min cosine {min(mixed, key=lambda c: (c == c, c)):.6f} "
+        f"over {len(every)} inputs"
     )
     print(f"{sum(RESULTS)}/{len(RESULTS)} gates passed")
     return 0 if all(RESULTS) else 1

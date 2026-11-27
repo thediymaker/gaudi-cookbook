@@ -24,6 +24,14 @@ def test_sentences_packed_to_limit():
     assert sa.split_text(text, 30) == [("One two three. Four five six.", False), ("Seven eight nine.", True)]
 
 
+def test_a_word_longer_than_the_limit_is_cut():
+    # a URL or a hash inside a sentence with spaces: no chunk may exceed the limit, and no character is lost
+    text = "see the link " + "x" * 1000 + " for details, please."
+    chunks = [c for c, _ in sa.split_text(text, 250)]
+    assert max(map(len, chunks)) <= 250
+    assert "".join(chunks).replace(" ", "") == text.replace(" ", "")
+
+
 def test_paragraphs_marked():
     assert sa.split_text("First para.\n\nSecond para.", 100) == [("First para.", True), ("Second para.", True)]
 
