@@ -123,3 +123,57 @@ def test_rescale_is_the_wrapper_expression():
     assert torch.equal(
         LP.gaudi2_rescale(w).view(torch.uint8), (w.float() * 0.5).to(torch.float8_e4m3fn).view(torch.uint8)
     )
+
+
+def _stock_rows(layers, experts, drop=()):
+    """Rows the stock MoE load_weights reports per parameter: one per expert and shard it took (vllm_model.load_tensors
+    counts them). `drop` lists (layer, expert, proj) checkpoint tensors that never arrived."""
+    rows = {}
+    for i in layers:
+        for e in range(experts):
+            for proj, p in (("gate_proj", "w13"), ("up_proj", "w13"), ("down_proj", "w2")):
+                if (i, e, proj) in drop:
+                    continue
+                for kind in ("weight", "weight_scale"):
+                    name = f"model.layers.{i}.mlp.experts.routed_experts.{p}_{kind}"
+                    rows[name] = rows.get(name, 0) + 1
+    return rows
+
+
+MOE_LAYERS = (3, 4)
+EXPERT_PARAMS = [
+    f"model.layers.{i}.mlp.experts.routed_experts.{p}" for i in MOE_LAYERS for p in LP.ExpertStage.PARAMS
+] + ["model.layers.0.mlp.gate_up_proj.weight", "model.layers.3.mlp.gate.weight"]
+
+
+def gaps(rows, staged=frozenset()):
+    n = {i: E for i in MOE_LAYERS}
+    return LP.expert_row_gaps(EXPERT_PARAMS, rows, n, {i: 2 for i in MOE_LAYERS}, staged)
+
+
+def test_expert_rows_complete():
+    assert gaps(_stock_rows(MOE_LAYERS, E)) == []
+
+
+def test_expert_row_gaps_name_a_missing_expert_tensor():
+    # one expert's up_proj missing (a checkpoint shard that never arrived): its param still received rows from the
+    # other experts, so a "was it touched at all" check passes it
+    rows = _stock_rows(MOE_LAYERS, E, drop={(4, 1, "up_proj")})
+    w13 = "model.layers.4.mlp.experts.routed_experts.w13_weight"
+    assert rows[w13] > 0
+    assert gaps(rows) == [f"{w13} ({2 * E - 1}/{2 * E} rows)", f"{w13}_scale ({2 * E - 1}/{2 * E} rows)"]
+
+
+def test_expert_rows_of_a_layer_never_loaded():
+    out = gaps(_stock_rows((3,), E))
+    assert len(out) == len(LP.ExpertStage.PARAMS) and all(".layers.4." in g and "(0/" in g for g in out)
+
+
+def test_staged_layers_are_left_to_the_stage_check():
+    assert gaps(_stock_rows((3,), E), staged={4}) == []
+
+
+def test_expert_layer_ignores_other_parameters():
+    assert LP.expert_layer("model.layers.12.mlp.experts.routed_experts.w2_weight") == 12
+    assert LP.expert_layer("model.layers.12.mlp.gate.e_score_correction_bias") is None
+    assert LP.expert_layer("model.layers.0.mlp.gate_up_proj.weight") is None

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import Counter
 from collections.abc import Iterable
 
 import torch
@@ -42,6 +43,7 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 
 from . import numerics as N
 from .attention import BeamHPUAttention, _Weight, install_fsdpa_query_tiling, make_rope
+from .load_plan import expert_layer, expert_row_gaps
 from .moe import BeamHPUMLP, BeamHPUSparseMoeBlock
 
 logger = logging.getLogger("vllm.beam_hpu")  # under "vllm", so its handlers print
@@ -214,10 +216,14 @@ class BeamHPUForCausalLM(nn.Module):
         return N.softcap(z, self.softcap)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+        """Load the checkpoint and return the parameters filled. Raises when a parameter got nothing, or a routed
+        expert parameter of this rank did not get one row per local expert and shard. Layers whose experts the
+        `beam` load format stages (`beam_staged_expert_layers`, set by loader.py) are checked by that loader."""
         params = dict(self.named_parameters())
-        loaded, skipped = load_tensors(params, weights, lambda i: self.model.layers[i], self.config.hidden_size)
-        expert_params = {n for n in params if ".mlp.experts." in n}
-        for layer in self.model.layers:
+        loaded, skipped, rows = load_tensors(params, weights, lambda i: self.model.layers[i], self.config.hidden_size)
+        staged = getattr(self, "beam_staged_expert_layers", frozenset())
+        local_experts, w13_shards = {}, {}
+        for i, layer in enumerate(self.model.layers):
             if layer.is_moe:
                 g = layer.mlp.gate
                 if g.weight.dtype != torch.float32 or g.e_score_correction_bias.dtype != torch.float32:
@@ -225,7 +231,12 @@ class BeamHPUForCausalLM(nn.Module):
                         f"beam_hpu: layer {layer.layer_id} router weight/bias not fp32 "
                         f"({g.weight.dtype}, {g.e_score_correction_bias.dtype})"
                     )
+                routed = layer.mlp.experts.routed_experts
+                local_experts[i] = routed.local_num_experts
+                w13_shards[i] = 2 if routed.moe_config.is_act_and_mul else 1
+        expert_params = {n for n in params if expert_layer(n) is not None}
         missing = sorted(set(params) - loaded - expert_params)
+        missing += expert_row_gaps(expert_params, rows, local_experts, w13_shards, staged)
         if missing:
             raise ValueError(
                 f"beam_hpu: parameters not loaded from the checkpoint: {missing[:20]}"
@@ -234,7 +245,7 @@ class BeamHPUForCausalLM(nn.Module):
         logger.warning(
             "beam_hpu: loaded %d parameters (%d expert tensors owned by other ranks)", len(loaded), len(skipped)
         )
-        return set(params)
+        return loaded | {n for n in expert_params if expert_layer(n) in staged}
 
 
 # checkpoint name piece -> (parameter name piece, shard id); dense MLP only (expert names never contain
@@ -251,12 +262,13 @@ _RENAMED = ((".self_attn.gate_proj.", ".self_attn.output_gate_proj."),)
 
 def load_tensors(
     params: dict, weights: Iterable[tuple[str, torch.Tensor]], layer_of, hidden: int
-) -> tuple[set[str], list[str]]:
+) -> tuple[set[str], list[str], Counter[str]]:
     """Route checkpoint tensors (Hugging Face names) into `params` (vLLM names). Experts go through the
     layer's MoE runner load_weights (FusedMoE expert mapping, EP-aware). Returns (loaded parameter names,
-    expert tensors no local expert took). Raises on a tensor without a parameter."""
+    expert tensors no local expert took, rows per expert parameter). Raises on a tensor without a parameter."""
     loaded: set[str] = set()
     skipped: list[str] = []
+    rows: Counter[str] = Counter()
     for name, w in weights:
         if "rotary_emb" in name:
             continue
@@ -266,8 +278,9 @@ def load_tensors(
             pre, rest = name.split(".mlp.experts.", 1)
             layer = layer_of(int(pre.rsplit(".", 1)[1]))
             got = list(layer.mlp.experts.load_weights([(rest, w)]))
-            for p in got:
+            for p in got:  # one name per expert row taken
                 loaded.add(f"{pre}.mlp.experts.routed_experts.{p}")
+                rows[f"{pre}.mlp.experts.routed_experts.{p}"] += 1
             if not got:
                 skipped.append(name)  # an expert owned by another EP rank
             continue
@@ -286,7 +299,7 @@ def load_tensors(
             param = params[name]
             getattr(param, "weight_loader", default_weight_loader)(param, w)
             loaded.add(name)
-    return loaded, skipped
+    return loaded, skipped, rows
 
 
 __all__ = ["BeamHPUForCausalLM", "BeamHPUModel", "BeamHPUDecoderLayer", "load_tensors"]

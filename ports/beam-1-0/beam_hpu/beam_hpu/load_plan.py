@@ -147,6 +147,33 @@ def plan_jobs(files: list[str], moe: dict, rescale: bool, file_group: int = 1) -
     return out, skipped
 
 
+_EXPERT_PARAM = re.compile(r"^model\.layers\.(\d+)\.mlp\.experts\.")
+
+
+def expert_layer(name: str) -> int | None:
+    """Layer id of a routed-expert parameter name, None for any other parameter."""
+    m = _EXPERT_PARAM.match(name)
+    return int(m.group(1)) if m else None
+
+
+def expert_row_gaps(params, rows: dict, local_experts: dict, w13_shards: dict, staged=frozenset()) -> list[str]:
+    """Expert parameters the stock path did not fill completely, as "name (got/need rows)".
+
+    `rows` counts, per parameter name, the rows the MoE layer's load_weights reported (one per expert and shard it
+    took). A parameter of layer i needs local_experts[i] x shards rows (w13_*: w13_shards[i], gate and up; w2_*: 1),
+    the count ExpertStage.need uses. Layers in `staged` are filled by ExpertStage, which load format `beam` checks."""
+    gaps = []
+    for name in sorted(params):
+        layer = expert_layer(name)
+        if layer is None or layer in staged:
+            continue
+        shards = w13_shards[layer] if name.rsplit(".", 1)[1].startswith("w13") else 1
+        need, got = local_experts[layer] * shards, rows.get(name, 0)
+        if got != need:
+            gaps.append(f"{name} ({got}/{need} rows)")
+    return gaps
+
+
 class ExpertStage:
     """Batched expert placement for one MoE layer.
 

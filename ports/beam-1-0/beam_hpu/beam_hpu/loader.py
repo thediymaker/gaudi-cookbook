@@ -156,6 +156,8 @@ class BeamModelLoader(DefaultModelLoader):
                 cfg.scale_adjustment = orig_adjust
                 it.close()
 
+        # the model's load_weights leaves these layers' experts to the complete() check below
+        model.beam_staged_expert_layers = frozenset(stages)
         try:
             model.load_weights(stream())
         finally:
