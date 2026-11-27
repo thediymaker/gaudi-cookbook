@@ -228,14 +228,27 @@ class DeviceWorker(threading.Thread):
         real requests pay no compile."""
         t0 = time.time()
         text = "Warming up the serving path. This sentence is spoken and thrown away."
+        failed: list[Exception] = []  # the audio is thrown away; a failure must still keep the replica unready
+
+        def keep_failures(item):
+            if isinstance(item, Exception):
+                failed.append(item)
+
+        jobs = 0
         for v, m in self.models.items():
             for n in sorted({1, min(2, MAX_CONCURRENT), MAX_CONCURRENT}):
                 self.waiting += [
-                    Job(v, split_text(text, CHUNK_CHARS), m.voices["default"], {"seed": 7} if i else {})
+                    Job(v, split_text(text, CHUNK_CHARS), m.voices["default"], {"seed": 7} if i else {}, keep_failures)
                     for i in range(n)
                 ]
+                jobs += n
                 while self.waiting or self.active:
                     self._iterate()
+        if failed:
+            first = failed[0]
+            raise RuntimeError(
+                f"serving-path self-test: {len(failed)} of {jobs} requests failed: {type(first).__name__}: {first}"
+            ) from first
         log.info("serving-path self-test done in %.1fs", time.time() - t0)
 
     def _iterate(self):

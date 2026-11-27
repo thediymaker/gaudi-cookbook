@@ -4,8 +4,11 @@
 * the convolution STFT and inverse STFT against torch.stft / torch.istft (HiFT's n_fft 16, hop 4, periodic Hann);
 * the threshold form of top-p against the sort-and-scatter definition, and the exponential race as a draw;
 * the streaming vocoder bookkeeping (context, held-back frames, crossfade) with a stand-in vocoder: every sample is
-  emitted exactly once and matches a whole-clip rendering, whatever the chunk sizes.
+  emitted exactly once and matches a whole-clip rendering, whatever the chunk sizes;
+* the serving-path self-test with a stand-in model: a synthesis that raises keeps the replica from reporting ready.
 """
+
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,3 +95,53 @@ def test_sync_free_mask_full_context_is_the_padding_mask():
     assert s3gen._sync_free_chunk_mask(xs, masks, False, False, 0, 0, -1) is masks
     chunked = s3gen._sync_free_chunk_mask(xs, masks, False, False, 0, 3, -1)
     assert chunked.shape == (2, 7, 7) and bool(chunked[0, 0, 2]) and not bool(chunked[0, 0, 3])
+
+
+# ------------------------------------------------------------- self-test
+class StubModel:
+    """Just enough of model.FastChatterbox for the scheduling loop: one slot, no T3 decoding, an utterance that is
+    ready at once and finishes in one empty flow pass, or raises when `broken`."""
+
+    def __init__(self, broken=False):
+        self.broken = broken
+        self.voices = {"default": object()}
+        self.free = [0]
+        self.t3e = SimpleNamespace(decoding=[False], start=lambda *a, **kw: None, release=self.free.append)
+        self.flow = SimpleNamespace(batch_sizes=[1])
+
+    def free_slot(self):
+        return self.free.pop() if self.free else None
+
+    def utterance(self, text, voice, **kw):
+        if self.broken:
+            raise RuntimeError("synthesis broke")
+        utt = SimpleNamespace(n_input=1, embeds=None, t3_kw={}, toks=[1], finished=True, ready=lambda: True)
+        utt.plan = lambda: None
+        utt.finish = lambda mel: np.zeros(0, np.float32)
+        return utt
+
+
+def load_server(monkeypatch):
+    pytest.importorskip("fastapi")
+    prom = pytest.importorskip("prometheus_client")
+    pytest.importorskip("uvicorn")
+    import speech_api
+
+    # the server's metrics on a private registry, so other servers' tests can register theirs in this process
+    real = speech_api.SpeechMetrics
+    monkeypatch.setattr(speech_api, "SpeechMetrics", lambda: real(prom.CollectorRegistry()))
+    (server,) = load(__file__, "server")
+    return server
+
+
+@pytest.mark.parametrize("broken", [False, True])
+def test_selftest_failure_blocks_ready(monkeypatch, broken):
+    server = load_server(monkeypatch)
+    w = server.DeviceWorker()
+    w.models = {"original": StubModel(broken)}
+    if broken:
+        with pytest.raises(RuntimeError, match=r"self-test: (\d+) of \1 requests failed: RuntimeError: synthesis"):
+            w._selftest()
+    else:
+        w._selftest()
+    assert not w.waiting and not w.active and w.models["original"].free == [0]
