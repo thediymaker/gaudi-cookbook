@@ -13,7 +13,7 @@ gate, plus INFO lines for speed. Details of every gate go to the JSON file named
             fp32-vs-w8a8 floor minus 2 points, mean top-20 KL to w8a8 at most 0.02
   dvp       8 greedy decodes of 512 tokens from prompts past the 512-token window, re-scored by
             prefill: mean |logprob difference| at most 0.05
-  needle    a short code in neutral filler at 16K / 64K / 126K / 250K tokens x depths 0.1 / 0.5 / 0.9,
+  needle    a short code in neutral filler at 16K / 64K / 129K / 255K tokens x depths 0.1 / 0.5 / 0.9,
             answered in the content; a control without the needle must not produce it
   copy      a 1,521-token passage early in a 130K and a 255K prompt, restarted at the end: the greedy
             continuation reproduces its next 64 tokens exactly (only the 9 full-attention layers can

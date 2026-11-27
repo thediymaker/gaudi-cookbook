@@ -68,7 +68,7 @@ All are read from the environment at start. The recipe sets every one of them.
 | Variable | Recipe | What it does | Off |
 | --- | --- | --- | --- |
 | `MUSE_SPARK_MOE_TP_SPLIT` | `4` | Experts EP2 x TP4 at TP 8: two groups of four cards, each card a quarter of every local expert. | `1` is EP8 (whole experts per card), 33% slower per stream at batch 1 |
-| `MUSE_SPARK_SWA_KV` | `1` | The 46 sliding layers get window-sized KV groups; 3.875x more tokens in the same pool. | Full-length KV in every layer (the pool then holds 4x less) |
+| `MUSE_SPARK_SWA_KV` | `1` | The 46 sliding layers get window-sized KV groups; 3.875x more tokens in the same pool. | Full-length KV in every layer (the pool then holds 3.875x fewer tokens) |
 | `MUSE_SPARK_LONG_ATTN` | `1` | Prompt chunks with more than 64K keys use a compact key-validity row and query tiles instead of a dense bias. | vllm-gaudi's dense bias, `[bs, 1, q, keys]` bf16: about 2 GiB plus a 1 GiB mask per 4096-token chunk at 256K |
 | `MUSE_SPARK_DECODE_GRAPH_MAX_BLOCKS` | `5408` | Decode batches above this many KV blocks run without an HPU graph (each captured graph keeps about 0.5 MiB per block). | `0`: no cap |
 | `MUSE_SPARK_DECODE_LAYER_GROUP` | `62` | One graph cut per 62 decoder layers in decode graphs instead of one per layer: 313 to 252 launches per step. | `1` (vllm-gaudi's cut per layer) |
