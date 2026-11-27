@@ -199,11 +199,21 @@ set -euo pipefail
 vllm serve "${MODEL}" --port 8000 <flags> &
 pid=$!
 trap 'kill -TERM "$pid"' TERM          # forward SIGTERM so the drain still works
-until curl -sf localhost:8000/health >/dev/null; do sleep 5; done
+until curl -sf localhost:8000/health >/dev/null; do
+  kill -0 "$pid" 2>/dev/null || exit 1  # the server died during start: do not wait for it
+  sleep 5
+done
 python3 /opt/warmup/warmup.py           # your representative prompts, to localhost
 touch /tmp/warm                         # STALL_PROBE_READY_FILE=/tmp/warm
-wait "$pid"
+rc=0
+wait "$pid" || rc=$?                    # a trapped SIGTERM ends this wait at once, server still draining
+while kill -0 "$pid" 2>/dev/null; do rc=0; wait "$pid" || rc=$?; done
+exit "$rc"
 ```
+
+The loop after the first `wait` matters: bash returns from `wait` as soon as the trap runs, and
+under `set -e` the script would exit there. The script is the container's main process, so the
+container would stop while vLLM is still inside `--shutdown-timeout` and every stream would be cut.
 
 ## Timeouts during start-up
 

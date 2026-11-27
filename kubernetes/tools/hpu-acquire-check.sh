@@ -49,7 +49,7 @@ TIMEOUT="${TIMEOUT:-300}"
 NODES=""
 PROCS=4
 
-usage() { sed -n '2,45p' "$0"; }
+usage() { sed -n '2,/^set /{/^#/p;}' "$0"; }
 
 while getopts "n:p:i:h" opt; do
   case $opt in

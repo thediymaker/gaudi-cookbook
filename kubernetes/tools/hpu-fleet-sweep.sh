@@ -55,7 +55,7 @@ while [[ $# -gt 0 ]]; do
     --nodes) NODES="${2//,/ }"; shift 2 ;;
     --jobs) JOBS="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^set /{/^#/p;}' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -114,7 +114,8 @@ printf '%s\n' $NODES | xargs -P "$JOBS" -I{} bash -c 'probe_node "$1"' _ {} >>"$
 echo "raw TSV: $OUT"
 echo
 
-awk -F'\t' -v exp="$EXPECTED_CARDS" '
+# "exp" is an awk builtin function, so the expected card count is passed as "want".
+awk -F'\t' -v want="$EXPECTED_CARDS" '
 NR == 1 { next }
 {
   node = $1; cap = $2 + 0; alloc = $3 + 0; st = $5; pci = $6 + 0; smi = $8 + 0; miss = $9 + 0; dead = $10
@@ -124,12 +125,12 @@ NR == 1 { next }
     if (cap > 0) { stale = stale " " node; ns++ } else { zero = zero " " node; nz++ }
     next
   }
-  if (miss > 0) { mcards += miss; mlist = mlist sprintf("  %-28s %d missing of %d\n", node, miss, exp); nm++ }
+  if (miss > 0) { mcards += miss; mlist = mlist sprintf("  %-28s %d missing of %d\n", node, miss, want); nm++ }
   if (dead != "-" && dead != "") {
     nd++; dcards += split(dead, tmp, " "); dlist = dlist sprintf("  %-28s %s\n", node, dead)
   }
   if (cap > alloc) { ucards += cap - alloc; ulist = ulist sprintf("  %-28s %d withheld\n", node, cap - alloc); nuh++ }
-  if (pci == exp && smi == exp && cap == alloc) healthy++
+  if (pci == want && smi == want && cap == alloc) healthy++
   cards += alloc
 }
 END {

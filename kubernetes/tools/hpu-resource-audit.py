@@ -70,15 +70,21 @@ def qty(value) -> float | None:
     return number * UNITS[unit]
 
 
-def pod_spec(doc: dict) -> dict | None:
-    kind = doc.get("kind")
+def pod_specs(doc: dict) -> list[tuple[str, dict]]:
+    """(label, pod spec) for every pod template in the document; the label is empty when there is only one."""
+    kind, spec = doc.get("kind"), doc.get("spec") or {}
     if kind == "Pod":
-        return doc.get("spec") or {}
-    if kind == "CronJob":
-        return ((doc.get("spec") or {}).get("jobTemplate") or {}).get("spec", {}).get("template", {}).get("spec")
-    if kind in POD_KINDS:
-        return ((doc.get("spec") or {}).get("template") or {}).get("spec")
-    return None
+        found = [("", spec)]
+    elif kind == "CronJob":
+        found = [("", ((spec.get("jobTemplate") or {}).get("spec") or {}).get("template", {}).get("spec"))]
+    elif kind == "LeaderWorkerSet":
+        lwt = spec.get("leaderWorkerTemplate") or {}
+        found = [(role, (lwt.get(f"{role}Template") or {}).get("spec")) for role in ("leader", "worker")]
+    elif kind in POD_KINDS:
+        found = [("", (spec.get("template") or {}).get("spec"))]
+    else:
+        found = []
+    return [(label, s) for label, s in found if s]
 
 
 def hostname_pinned(spec: dict) -> bool:
@@ -108,8 +114,10 @@ def audit_container(c: dict, args) -> tuple[int, list[str], list[str]]:
         return 0, errors, warnings
     if str(req.get("habana.ai/gaudi", cards)) != str(lim.get("habana.ai/gaudi", cards)):
         errors.append("habana.ai/gaudi requests != limits")
-    cpu, mem = qty(req.get("cpu")), qty(req.get("memory"))
-    hp_req, hp_lim = qty(req.get("hugepages-2Mi")), qty(lim.get("hugepages-2Mi"))
+    # Kubernetes sets a missing request to the limit, so a container with limits only still requests that much.
+    cpu, mem = qty(req.get("cpu", lim.get("cpu"))), qty(req.get("memory", lim.get("memory")))
+    hp_lim = qty(lim.get("hugepages-2Mi"))
+    hp_req = qty(req.get("hugepages-2Mi", lim.get("hugepages-2Mi")))
     mem_cap = args.whole_node_memory if cards >= args.cards_per_node else args.memory * cards
     if cpu is not None and cpu > args.cpu * cards:
         errors.append(f"cpu request {cpu:g} > {args.cpu * cards:g}")
@@ -146,36 +154,34 @@ def audit_file(path: Path, args) -> tuple[int, int]:
     for doc in docs:
         if not isinstance(doc, dict):
             continue
-        spec = pod_spec(doc)
-        if not spec:
-            continue
-        name = f"{doc.get('kind')}/{(doc.get('metadata') or {}).get('name', '?')}"
-        pod_warnings: list[str] = []
-        any_cards = False
-        for c in spec.get("containers") or []:
-            cards, errors, warnings = audit_container(c, args)
-            if not cards:
+        for label, spec in pod_specs(doc):
+            name = f"{doc.get('kind')}/{(doc.get('metadata') or {}).get('name', '?')}" + (f" {label}" if label else "")
+            pod_warnings: list[str] = []
+            any_cards = False
+            for c in spec.get("containers") or []:
+                cards, errors, warnings = audit_container(c, args)
+                if not cards:
+                    continue
+                any_cards = True
+                for msg in errors:
+                    print(f"ERROR {path} {name} [{c.get('name')}] {cards} card(s): {msg}")
+                for msg in warnings:
+                    print(f"warn  {path} {name} [{c.get('name')}]: {msg}")
+                n_err += len(errors)
+                n_warn += len(warnings)
+            if not any_cards:
                 continue
-            any_cards = True
-            for msg in errors:
-                print(f"ERROR {path} {name} [{c.get('name')}] {cards} card(s): {msg}")
-            for msg in warnings:
-                print(f"warn  {path} {name} [{c.get('name')}]: {msg}")
-            n_err += len(errors)
-            n_warn += len(warnings)
-        if not any_cards:
-            continue
-        if not spec.get("runtimeClassName"):
-            pod_warnings.append("no runtimeClassName (Gaudi pods normally run under the habana RuntimeClass)")
-        if spec.get("hostIPC") is not True:
-            pod_warnings.append("hostIPC is not true (multi-card starts can fail at device acquire)")
-        if hostname_pinned(spec):
-            pod_warnings.append("pinned to a hostname; pins go stale when nodes fail and block autoscaling")
-        if spec.get("terminationGracePeriodSeconds", 30) <= 30:
-            pod_warnings.append("default 30 s termination grace period leaves no time to drain")
-        for msg in pod_warnings:
-            print(f"warn  {path} {name}: {msg}")
-        n_warn += len(pod_warnings)
+            if not spec.get("runtimeClassName"):
+                pod_warnings.append("no runtimeClassName (Gaudi pods normally run under the habana RuntimeClass)")
+            if spec.get("hostIPC") is not True:
+                pod_warnings.append("hostIPC is not true (multi-card starts can fail at device acquire)")
+            if hostname_pinned(spec):
+                pod_warnings.append("pinned to a hostname; pins go stale when nodes fail and block autoscaling")
+            if spec.get("terminationGracePeriodSeconds", 30) <= 30:
+                pod_warnings.append("default 30 s termination grace period leaves no time to drain")
+            for msg in pod_warnings:
+                print(f"warn  {path} {name}: {msg}")
+            n_warn += len(pod_warnings)
     return n_err, n_warn
 
 
@@ -195,6 +201,8 @@ def main() -> int:
 
     files: list[Path] = []
     for p in map(Path, args.paths):
+        if not p.exists():
+            ap.error(f"no such file or directory: {p}")
         files += sorted(p.rglob("*.y*ml")) if p.is_dir() else [p]
     n_err = n_warn = 0
     for f in files:
