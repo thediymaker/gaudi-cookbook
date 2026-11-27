@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 torch = pytest.importorskip("torch")
+pytest.importorskip("numpy")  # the fixtures and the converter use Tensor.numpy()
 
 PORT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PORT / "convert"))

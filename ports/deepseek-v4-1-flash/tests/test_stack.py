@@ -12,6 +12,7 @@ top-k flips, which says nothing about the code.
 import pytest
 
 torch = pytest.importorskip("torch")
+pytest.importorskip("numpy")  # tiny.py builds the model with it
 
 import tiny  # noqa: E402
 from dsv41_hpu import csa, mhc, numerics, paged  # noqa: E402

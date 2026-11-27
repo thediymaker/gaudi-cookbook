@@ -21,6 +21,7 @@ SAFE = {torch.float8_e4m3fn: "F8_E4M3", torch.bfloat16: "BF16", torch.float32: "
 
 
 def write_safetensors(path, tensors):
+    pytest.importorskip("numpy")  # Tensor.numpy() below
     header, blobs, off = {}, [], 0
     for name, t in tensors.items():
         b = t.contiguous().view(torch.uint8).numpy().tobytes()
