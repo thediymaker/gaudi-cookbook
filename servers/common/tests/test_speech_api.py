@@ -3,6 +3,7 @@
 prometheus-client when they are not installed."""
 
 import asyncio
+import contextlib
 import json
 
 import pytest
@@ -206,3 +207,45 @@ def test_hang_up_closes_the_producer():
         return p
 
     assert asyncio.run(run()).closed
+
+
+# A streamed response runs as an ASGI app. Under ASGI spec 2.3 Starlette races the body against a disconnect
+# listener, so a client that hangs up before the first chunk means the body iterator is never started; under 2.4 a
+# failed send raises out of the loop. Either way the request must leave the active gauge and free its producer.
+async def serve(resp, spec_version, hang_up):
+    async def receive():
+        if hang_up:
+            return {"type": "http.disconnect"}
+        await asyncio.Event().wait()  # an open connection says nothing until the response ends
+
+    async def send(message):
+        await asyncio.sleep(0)  # a real send yields to the event loop, where a disconnect can cancel it
+        if hang_up and spec_version == "2.4":
+            raise OSError("client went away")
+
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": spec_version}}
+    with contextlib.suppress(Exception):  # Starlette's ClientDisconnect under 2.4
+        await resp(scope, receive, send)
+
+
+@pytest.mark.parametrize("mode", ["stream", "sse"])
+@pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
+@pytest.mark.parametrize("hang_up", [False, True])
+def test_streamed_request_cleans_up_once(mode, spec_version, hang_up):
+    registry = prom.CollectorRegistry()
+
+    async def run():
+        p = Producer([b"\x01\x00"] * 4)
+        resp = await sa.speech_response(
+            p.gen(), mode=mode, fmt="pcm", sample_rate=24000, headers={}, usage={}, metrics=sa.SpeechMetrics(registry)
+        )
+        assert registry.get_sample_value("tts_active_requests") == 1
+        await serve(resp, spec_version, hang_up)
+        # checked before the event loop gets a chance to finalize abandoned generators
+        return p, registry.get_sample_value("tts_active_requests")
+
+    p, active = asyncio.run(run())
+    outcome = "cancelled" if hang_up else "ok"
+    assert active == 0 and p.closed
+    assert registry.get_sample_value("tts_requests_total", {"outcome": outcome}) == 1
+    assert sum(s.value for m in registry.collect() for s in m.samples if s.name == "tts_requests_total") == 1

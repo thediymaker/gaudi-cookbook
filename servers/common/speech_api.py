@@ -20,6 +20,7 @@ import re
 import subprocess
 import time
 
+import anyio
 import numpy as np
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import Counter, Gauge, Histogram
@@ -208,6 +209,23 @@ class SpeechMetrics:
 
 
 # ------------------------------------------------------------------ response
+class _StreamingSpeech(StreamingResponse):
+    """A StreamingResponse that runs `release` however it ends. Starlette never starts the body when the client
+    hangs up before the first chunk (ASGI spec 2.3), and skips background tasks when a send fails (2.4), so the
+    body generator's own `finally` is not enough to leave the active gauge and free the producer."""
+
+    def __init__(self, content, release, **kw):
+        super().__init__(content, **kw)
+        self._release = release
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await self._release()
+
+
 async def speech_response(
     audio,
     *,
@@ -226,10 +244,13 @@ async def speech_response(
     `error_status(exc)` maps a failure to 500 or 503 (and is where a server latches a device fatality).
     """
     start = time.monotonic()
-    st = {"bytes": 0, "first": None}
+    st = {"bytes": 0, "first": None, "done": False}
     metrics.active.inc()
 
     def finish(outcome: str) -> None:
+        if st["done"]:
+            return
+        st["done"] = True
         wall = time.monotonic() - start
         secs = st["bytes"] / 2 / sample_rate
         metrics.active.dec()
@@ -284,6 +305,10 @@ async def speech_response(
             await audio.aclose()
             finish(outcome)
 
+    async def release() -> None:  # a no-op once pcm_chunks has finished
+        await audio.aclose()
+        finish("cancelled")
+
     if mode == "sse":
 
         async def events():
@@ -298,7 +323,7 @@ async def speech_response(
             total = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
             yield f"data: {json.dumps({'type': 'speech.audio.done', 'usage': {**usage, 'total_tokens': total}})}\n\n"
 
-        return StreamingResponse(events(), media_type="text/event-stream", headers=headers)
+        return _StreamingSpeech(events(), release, media_type="text/event-stream", headers=headers)
 
     if mode == "stream":
 
@@ -311,7 +336,7 @@ async def speech_response(
             except Exception:  # the status is already sent; all that is left is to end the stream
                 return
 
-        return StreamingResponse(raw(), media_type=STREAM_TYPES[fmt], headers=headers)
+        return _StreamingSpeech(raw(), release, media_type=STREAM_TYPES[fmt], headers=headers)
 
     pcm = bytearray()
     try:
