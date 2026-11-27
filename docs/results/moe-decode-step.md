@@ -145,6 +145,14 @@ step period; the three changes alone gave 57.35 on another node.
 
 ## Availability
 
-The integration code is not published in this repository yet. It depends on the GLM model code, the custom MXFP4
-decode kernels and vllm-gaudi v0.24 internals, all outside the releases this cookbook covers. The MXFP4 kernel in
-this repository is for gpt-oss: see [MXFP4 MoE kernel](../kernels/mxfp4-moe.md).
+Everything measured here ships in the [GLM-5.x MXFP4 port](../ports/glm-5-mxfp4.md) (`ports/glm-5-mxfp4`), on
+vllm-gaudi `v0.30.0` rather than the v0.24 build this study ran on:
+
+| Change on this page | Port switch |
+| --- | --- |
+| MXFP4 decode kernels | `GLM_MXK=1` (built by `kernels/mxfp4-moe/build.sh`, `glm` variant; see [MXFP4 MoE kernel](../kernels/mxfp4-moe.md)) |
+| EP4 x TP2 layout with a fitted placement | `GLM_MOE_TP=2`, `GLM_MOE_PLACEMENT=` the GLM-5.3 file in `ports/glm-5-mxfp4/serving/` |
+| Router fast path, early draft, device-side rejection | `GLM_ROUTER_FAST=1`, `GLM_EARLY_DRAFT=1`, `GLM_SPEC_DEVICE_REJECT=1` |
+
+The numbers on this page are from the v0.24 build and were not re-measured on `v0.30.0`; the port's own
+[recipe pages](../recipes/index.md) carry the current measurements.

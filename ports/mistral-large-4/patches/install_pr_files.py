@@ -16,7 +16,7 @@ Exit codes follow the fix contract (fixes/README.md): 0 installed (or already in
 (--check), 2 a file or target does not match (nothing is written).
 
 Steps, each fail-closed (exit 2, nothing half-written is left as "done"):
-  1. every file listed in vendor/MANIFEST exists under <vendor_pr> with the recorded sha256;
+  1. every file listed in vendor/MANIFEST exists under <vendor dir> with the recorded sha256;
   2. every target in the tree is either the recorded stock v0.30.0 file (it is replaced)
      or already the vendored file (left alone); anything else (another vLLM, a local
      edit, a different PR revision) stops the install before any write;
